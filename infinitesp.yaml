@@ -1,0 +1,224 @@
+substitutions:
+  name: infinitesp
+  btn_slop: '0.1'
+
+esphome:
+  name: $name
+  board: esp32s3box
+  platform: esp32
+  libraries:
+    - SPI
+    - FS
+    - SPIFFS
+    - bodmer/TFT_eSPI@^2.5.21
+  includes:
+    - tftespi.h
+
+wifi:
+  networks:
+  - ssid: !secret ssid
+    password: !secret pass
+  ap:
+    ssid: $name-ap
+
+api:
+ota:
+logger:
+  level: DEBUG
+web_server:
+  port: 80
+
+switch:
+  - platform: restart
+    name: "$name reboot"
+
+
+custom_component:
+  - lambda: |-
+      auto my_tftespi = new MyTFTeSPI();
+      return {my_tftespi};
+    components:
+    - id: my_tftespi_id
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+psram:
+#spi:
+#  clk_pin: GPIO7
+#  mosi_pin: GPIO6
+
+i2c:
+  scl: GPIO18
+  sda: GPIO8
+  scan: true
+
+dallas:
+  pin: GPIO14
+  update_interval: 6s
+
+mqtt:
+  broker: 192.168.1.3
+  id: mqtt_client
+
+#meassistant/climate/primary/fan_mode "auto"
+#homeassistant/climate/primary/hvac_action "idle"
+#homeassistant/climate/primary/preset_mode "Override"
+#homeassistant/climate/primary/current_activity "manual"
+#homeassistant/climate/primary/scheduled_activity "home"
+text_sensor:
+  - platform: mqtt_subscribe
+    topic: homeassistant/climate/primary/fan_mode
+    id: mq_fan_mode_text
+    name: "mqtt primary current fan mode"
+
+  - platform: mqtt_subscribe
+    topic: homeassistant/climate/primary/hvac_action
+    id: mq_hvac_action_text
+    name: "mqtt primary hvac action"
+
+  - platform: mqtt_subscribe
+    topic: homeassistant/climate/primary/preset_mode
+    id: mq_preset_mode_text
+    name: "mqtt primary preset mode"
+
+  - platform: mqtt_subscribe
+    topic: homeassistant/climate/primary/current_activity
+    id: mq_current_activity_text
+    name: "mqtt primary current activity"
+
+  - platform: mqtt_subscribe
+    topic: homeassistant/climate/primary/scheduled_activity
+    id: mq_scheduled_activity_text
+    name: "mqtt primary scheduled activity"
+
+sensor:
+  - platform: wifi_signal
+    name: "$name WiFi Signal"
+    update_interval: 300s
+    accuracy_decimals: 0
+
+  - platform: dallas
+    index: 0
+    name: "$name temperature"
+    id: ds18b20
+    #address: 0x873ce1e381b49828
+
+  - platform: adc
+    id: btns_val
+    pin: GPIO1
+    name: "$name front buttons"
+    update_interval: 50ms
+    attenuation: auto
+    filters:
+      - delta: 0.1
+
+  - platform: mqtt_subscribe
+    topic: homeassistant/climate/primary/temperature
+    id: mq_temperature_num
+    name: "mqtt primary temperature num"
+  - platform: mqtt_subscribe
+    topic: homeassistant/climate/primary/current_temperature
+    id: mq_current_temperature_num
+    name: "mqtt primary current humidity num"
+  - platform: mqtt_subscribe
+    topic: homeassistant/climate/primary/current_humidity
+    id: mq_current_humidity
+    name: "mqtt primary current humidity num"
+
+binary_sensor:
+  - platform: template
+    name: "$name left"
+    id: btn_left
+    lambda: 'return (2.41+$btn_slop > id(btns_val).state && 2.41-$btn_slop < id(btns_val).state);'
+#    on_release:
+#      - then:
+#          - display.page.show_previous: my_display
+#          - component.update: my_display
+  - platform: template
+    name: "$name center"
+    id: btn_center
+    lambda: 'return (1.99+$btn_slop > id(btns_val).state && 1.99-$btn_slop < id(btns_val).state);'
+    on_state:
+      - then:
+          - lambda: |-
+              auto mydp = (MyTFTeSPI *)(id(my_tftespi_id));
+              mydp->setRefresh();
+  - platform: template
+    name: "$name right"
+    id: btn_right
+    lambda: 'return (0.82+$btn_slop > id(btns_val).state && 0.82-$btn_slop < id(btns_val).state);'
+    on_press:
+      - then:
+
+#  - platform: gpio
+#    name: "$name side"
+#    id: btn_side
+#    pin
+#      number: GPIO0
+#      inverted: true
+#      mode:
+#        input: true
+#        pullup: true
+
+climate:
+  - platform: thermostat
+    name: "$name thermostat"
+    sensor: ds18b20
+
+    min_idle_time: 1s
+
+    min_cooling_off_time: 1s
+    min_cooling_run_time: 4s
+
+    min_heating_off_time: 1s
+    min_heating_run_time: 4s
+
+    min_fanning_off_time: 1s
+    min_fanning_run_time: 4s
+
+    min_fan_mode_switching_time: 1s
+
+# these are actions which PERFORM the needed device control
+    idle_action:
+      - then:
+          - logger.log: "IDLE"
+    heat_action:
+      - then:
+          - logger.log: "HEAT"
+    cool_action:
+      - then:
+          - logger.log: "COOL"
+    fan_only_action:
+      - then:
+          - logger.log: "FAN ONLY"
+    target_temperature_change_action:
+      - then:
+          - logger.log: "CHANGE TARGET TEMPERATURE"
+
+
+    fan_mode_on_action:
+      - then:
+          - logger.log: "The action to call when the fan should run continuously."
+
+
+#these are callbacks which respond to climate state changes
+    auto_mode:
+      - then:
+          - logger.log: "The action to call when the climate device is placed into “auto” mode (it may both cool and heat as required)"
+    off_mode:
+      - then:
+          - logger.log: "The action to call when the climate device is placed into “off” mode (it is completely disabled)."
+    heat_mode:
+      - then:
+          - logger.log: "The action to call when the climate device is placed into heat mode (it may heat as required, but not cool)."
+    cool_mode:
+      - then:
+          - logger.log: "The action to call when the climate device is placed into cool mode (it may cool as required, but not heat)."
+    fan_only_mode:
+      - then:
+          - logger.log: "The action to call when the climate device is placed into fan only mode (it may not heat or cool, but will activate its fan as needed based on the upper target temperature value)"
+
+
+
