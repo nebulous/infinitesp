@@ -14,6 +14,33 @@ esphome:
   includes:
     - tftespi.h
 
+  platformio_options:
+    build_flags:
+      - -Os
+      - -DCORE_DEBUG_LEVEL=ARDUHAL_LOG_LEVEL_DEBUG
+      - -DUSER_SETUP_LOADED=1
+      - -DST7789_DRIVER=1
+      - -DTFT_WIDTH=240
+      - -DTFT_HEIGHT=320
+      - -DTFT_RGB_ORDER=TFT_BGR
+      - -DTFT_MOSI=6
+      - -DTFT_SCLK=7
+      - -DTFT_CS=5
+      - -DTFT_DC=4
+      - -DTFT_RST=48
+      - -DTFT_BL=45
+      - -DTFT_BACKLIGHT_ON=LOW
+      - -DLOAD_GLCD=1
+      - -DLOAD_FONT2=1
+      - -DLOAD_FONT4=1
+      - -DLOAD_FONT6=1
+      - -DLOAD_FONT7=1
+      - -DLOAD_FONT8=1
+      - -DLOAD_GFXFF=1
+      - -DSMOOTH_FONT=1
+      - -DSPI_FREQUENCY=40000000
+
+
 wifi:
   networks:
   - ssid: !secret ssid
@@ -32,7 +59,6 @@ switch:
   - platform: restart
     name: "$name reboot"
 
-
 custom_component:
   - lambda: |-
       auto my_tftespi = new MyTFTeSPI();
@@ -44,22 +70,21 @@ time:
   - platform: homeassistant
     id: ha_time
 
-psram:
 #spi:
 #  clk_pin: GPIO7
 #  mosi_pin: GPIO6
 
-i2c:
-  scl: GPIO18
-  sda: GPIO8
-  scan: true
+#i2c:
+#  scl: GPIO18
+#  sda: GPIO8
+#  scan: true
 
-dallas:
-  pin: GPIO14
-  update_interval: 6s
+#dallas:
+#  pin: GPIO14
+#  update_interval: 6s
 
 mqtt:
-  broker: 192.168.1.3
+  broker: !secret mqtt
   id: mqtt_client
 
 #meassistant/climate/primary/fan_mode "auto"
@@ -94,16 +119,27 @@ text_sensor:
     name: "mqtt primary scheduled activity"
 
 sensor:
+  - platform: homeassistant
+    name: "cloned HA thermostat setpoint"
+    id: climate_clone_setpoint
+    entity_id: climate.primary
+    attribute: temperature
+  - platform: homeassistant
+    name: "cloned HA thermostat temperature"
+    id: climate_clone_current_temperature
+    entity_id: climate.primary
+    attribute: current_temperature
+
   - platform: wifi_signal
     name: "$name WiFi Signal"
     update_interval: 300s
     accuracy_decimals: 0
 
-  - platform: dallas
-    index: 0
-    name: "$name temperature"
-    id: ds18b20
-    #address: 0x873ce1e381b49828
+#  - platform: dallas
+#    index: 0
+#    name: "$name temperature"
+#    id: ds18b20
+#    #address: 0x873ce1e381b49828
 
   - platform: adc
     id: btns_val
@@ -165,7 +201,7 @@ binary_sensor:
 climate:
   - platform: thermostat
     name: "$name thermostat"
-    sensor: ds18b20
+    sensor: climate_clone_current_temperature
 
     min_idle_time: 1s
 
@@ -219,6 +255,5 @@ climate:
     fan_only_mode:
       - then:
           - logger.log: "The action to call when the climate device is placed into fan only mode (it may not heat or cool, but will activate its fan as needed based on the upper target temperature value)"
-
 
 
