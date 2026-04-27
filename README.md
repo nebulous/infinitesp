@@ -1,12 +1,14 @@
 # InfinitESP
 
-ESPHome firmware for ESP32-S3 that emulates a Carrier/Bryant/ICP System Access Module (SAM) on the ABCD RS485 bus, giving Home Assistant native control of Infinity/Evolution HVAC systems.
+ESPHome firmware for ESP32 that emulates a Carrier/Bryant/ICP System Access Module (SAM) on the ABCD RS485 bus, giving Home Assistant native control of Infinity/Evolution HVAC systems.
 
-No cloud. No Carrier API. No monthly fee. Just a serial bus and an ESP32.
+No cloud or Carrier API. Just a serial bus and a microcontroller.
 
-## What It Does
+> **Disclaimer:** This firmware was developed by reverse-engineering a proprietary protocol. Everything described below has been confirmed working in the author's system. Your mileage may vary with different equipment, firmware versions, or bus configurations.
 
-InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address `0x92`). Your thermostat sees a valid SAM on the bus; Home Assistant gets full control over every zone:
+## Design
+
+InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address `0x92`). The thermostat sees a valid SAM on the bus and InfinitESP creates a climate device in Home Assistant to control each active zone:
 
 | Entity Type | What You Get |
 |---|---|
@@ -15,23 +17,23 @@ InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address 
 | **Binary Sensors** | Bus online/offline status, compressor running, electric heat active |
 | **Selects** | System mode (heat/cool/auto/off/emergency heat), per-zone fan speed (auto/low/med/high) |
 | **Text Sensors** | Zone names, thermostat WiFi SSID/hostname/MAC, proxy server, dealer info, comfort profile dump |
-| **6 Relay Outputs** | Independent GPIO-controlled switches |
-| **Boot Button** | GPIO0 input binary sensor (active-low, internal pullup) |
 
-## Supported Hardware
 
-Any ESP32-S3 with an RS485 transceiver. Tested on:
+## Suggested Hardware
+
+Any ESP32 with an RS485 transceiver should work. ESP8266 may also work but has not been tested.
+The author's setup uses the **[Waveshare ESP32-S3-Relay-6CH](https://amzn.to/4mX6tLp)** board.
 
 [<img src="https://www.waveshare.com/w/upload/thumb/e/ee/ESP32-S3-Relay-6CH.jpg/1200px-ESP32-S3-Relay-6CH.jpg" width="400" />](https://amzn.to/4mX6tLp)
 
-- **[Waveshare ESP32-S3-Relay-6CH](https://amzn.to/4mX6tLp)** — onboard RS485 (GPIO17 TX / GPIO18 RX), 6 relays, RGB LED, buzzer
-- Generic ESP32-S3 dev boards with a separate RS485 transceiver module
+The Waveshare board was chosen as a reference design for its nice case, onboard RS485 interface, and its 6 relay outputs. The relays open the door to emulating other devices beyond the SAM — notably the NIM (Network Interface Module, SYSTXCCNIM01) or a Damper Control Module (SYSTXCC4ZC01), either of which could directly switch equipment via those relays.  The relay GPIOs are exposed in the example YAML config but are not part of the core SAM emulation. The firmware is hardware-agnostic — it just needs a `uart::UARTComponent`. The RS485 transceiver, ESP32 variant, and relay hardware are all irrelevant to the protocol engine.
+Generic ESP32 dev boards with a separate RS485 transceiver module should also work.
 
-The Waveshare board was chosen for its onboard RS485 interface (no external transceiver needed) and its 6 relay outputs, which open the door to emulating other ABCD bus devices beyond the SAM — notably the NIM (Network Interface Module, SYSTXCCNIM01) or a Damper Control Module (SYSTXCC4ZC01), either of which could directly switch equipment via those relays. The firmware is hardware-agnostic — it just needs a `uart::UARTComponent`. The RS485 transceiver, ESP32 variant, and relay hardware are all irrelevant to the protocol engine.
+> **Note:** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an insufficiently-biased bus, the line voltage collapses and the receiver reads garbage. **However**, on a live Carrier ABCD bus, the existing equipment provides strong biasing (pull-up on A, pull-down on B) that holds the bus in a logic `1` state when the driver cuts out — masking the flaw. If you see TX corruption in testing or on an unusual bus configuration, you can potentially add external biasing resistors, bypass the onboard transceiver entirely with a [pico-HAT-compatible RS485 module](https://amzn.to/4eMssT1) which plugs right into the header, or if you're brave, desperate, or foolish modify the SMD components on the board.
 
-> **Calling all NIM and zone board owners:** If you have a Carrier NIM (SYSTXCCNIM01), Damper Control Module (SYSTXCC4ZC01), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue or reach out via Discord. Emulating these devices requires protocol traces that can only come from real hardware — even a few minutes of logs would be incredibly valuable. You can share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
+### 📣 Calling all NIM and zone board owners:
+If you have a Carrier NIM (SYSTXCCNIM01), Damper Control Module (SYSTXCC4ZC01), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue or reach out via Discord. Emulating these devices requires protocol traces that can only come from real hardware — even a few minutes of logs would be incredibly valuable. You can share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
 
-> **Note (important):** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an unbiased bus, the line voltage collapses and the receiver reads garbage. **However**, on a live Carrier ABCD bus, the existing equipment provides failsafe biasing (pull-up on A, pull-down on B) that holds the bus in a logic `1` state when the driver cuts out — masking the flaw. If you see TX corruption in testing or on an unusual bus configuration, you can add external biasing resistors, bypass the onboard transceiver entirely with a pico-HAT-compatible RS485 module (widely available, plugs right into the header), or — if you're brave — modify the SMD components on the board.
 
 ## Wiring
 
@@ -56,14 +58,14 @@ Carrier ABCD bus (RS485, 38400 baud, 8N1)
     └── 0x92  InfinitESP (SAM emulator)
 ```
 
-InfinitESP can coexist with or fully replace an existing SAM module. If placed alongside a real SAM, both will respond to bus traffic (avoid this — pick one or the other).
+InfinitESP registers as address `0x92` — the same address used by physical SAM modules and other SAM emulators. **Only one device should be at this address on the bus.** If you have a physical SAM installed, you'll need to disconnect or remove it. Likewise, do not run InfinitESP alongside infinitude (if its SAM emulation is enabled) or infinitive, which also occupy `0x92`.
 
 ## Quick Start
 
 ### 1. Prerequisites
 
 - [ESPHome](https://esphome.io/) 2026.1 or newer
-- An ESP32-S3 with an RS485 transceiver connected to your Carrier ABCD bus
+- An ESP32 with an RS485 transceiver connected to your Carrier ABCD bus
 
 ### 2. Clone and Configure
 
@@ -97,7 +99,7 @@ esphome upload infinitesp.yaml --device infinitesp.local
 ### 5. Connect to the Bus
 
 1. Power off the ESP32
-2. Connect RS485 A and B to the Carrier ABCD bus (alongside or replacing your existing SAM)
+2. Connect RS485 A and B to the Carrier ABCD bus
 3. Power on the ESP32
 4. Check logs for `Parsed frame` messages — this confirms bus traffic is being decoded:
 
@@ -298,21 +300,21 @@ In addition to SAM-register traffic, InfinitESP passively observes inter-device 
 - **Indoor unit** (0x40): blower RPM, airflow CFM, electric heat status
 - **Outdoor unit** (0x50): compressor RPM, demand %, operating stage, modulation, superheat/subcooling, outdoor/coil/suction/liquid/discharge temperatures
 
+No extra polling needed — the thermostat already queries these devices, and InfinitESP just listens in.
+
 ### WiFi Credential Caching
 
 When using hardware UART transport, InfinitESP can automatically discover the thermostat's WiFi credentials from register 4608 and cache them to NVS flash. If the ESP32 subsequently boots without WiFi connectivity (e.g., changed router), it injects the cached credentials after a 15-second grace period. This lets the device self-provision from the bus — no manual WiFi config needed after initial setup.
 
 This feature is not available with the TCP serial bridge transport (circular dependency: need WiFi to reach the TCP bridge, need the bus to get WiFi credentials).
 
-No extra polling needed — the thermostat already queries these devices, and InfinitESP just listens in.
-
 ## Compatible Systems
 
-Carrier Infinity / Bryant Evolution / ICP brands using the ABCD RS485 bus with a System Access Module:
+Tested with Carrier Infinity / Bryant Evolution / ICP systems using the ABCD RS485 bus with a System Access Module. Other systems using the same bus protocol may also work:
 
 - **SAM modules**: SYSTXCCSAM01, SYSTXCCSAMC01
 - **Thermostats**: Infinity Touch (SYSTXCCITC01), Evolution Connex (SYSTXBBECC01), legacy UID/UIZ controls with firmware 14+
-- **HVAC equipment**: Any Infinity/Evolution furnace, air handler, or heat pump on the ABCD bus
+- **HVAC equipment**: Infinity/Evolution furnace, air handler, or heat pump on the ABCD bus
 
 ## Troubleshooting
 
@@ -337,7 +339,7 @@ Carrier Infinity / Bryant Evolution / ICP brands using the ABCD RS485 bus with a
 ### Can't flash over USB
 
 - Hold the BOOT button while plugging in USB to enter download mode
-- GPIO45 and GPIO46 are strapping pins on ESP32-S3 — the YAML includes `ignore_strapping_warning: true`
+- On ESP32-S3, GPIO45 and GPIO46 are strapping pins — the YAML includes `ignore_strapping_warning: true`
 
 ### Bus traffic looks garbled
 
@@ -373,7 +375,7 @@ If that bothers you, don't use this.
 
 ## Acknowledgments
 
-- [infinitude](https://github.com/nebulous/infinitude) — Perl SAM emulator and protocol reference
+- [infinitude](https://github.com/nebulous/infinitude) — Perl-based Infinity system controller and the origin of this project. Provides a full web interface for Infinity/Evolution systems, includes a SAM emulator, and was the primary protocol reference for InfinitESP.
 - [infinitive](https://github.com/acd/infinitive) — Go-based SAM emulator, reference for the write protocol
 - Carrier/ICP protocol details from the open-source HVAC community
 
