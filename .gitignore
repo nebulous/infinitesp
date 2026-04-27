@@ -1,36 +1,15 @@
-# Prerequisites
-*.d
+# ESPHome build artifacts
+.esphome/
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# other
+# Secrets
 secrets.yaml
-.esphome/*
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Dev-only files
+AGENTS.md
+DEVLOG.md
+.claude/
+docs/
