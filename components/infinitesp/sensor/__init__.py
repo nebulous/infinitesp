@@ -38,16 +38,20 @@ SENSOR_TYPES = {
     "odu_discharge_temp": {"key": "odu_discharge_temp", "unit": "\u00b0F"},   # Discharge / hot gas temperature
 }
 
-CONFIG_SCHEMA = sensor.sensor_schema(
-    InfinitESPSensor,
-    accuracy_decimals=0,
-    state_class=STATE_CLASS_MEASUREMENT,
-).extend(
-    {
-        cv.GenerateID(CONF_INFINITESP_ID): cv.use_id(CONF_INFINITESP_ID),
-        cv.Required(CONF_TYPE): cv.one_of(*SENSOR_TYPES, lower=True),
-        cv.Optional(CONF_ZONE, default=1): cv.int_range(min=1, max=8),
-    }
+CONFIG_SCHEMA = cv.All(
+    cv.Schema({cv.Required(CONF_TYPE): cv.one_of(*SENSOR_TYPES, lower=True)}).extend(
+        sensor.sensor_schema(
+            InfinitESPSensor,
+            accuracy_decimals=0,
+            state_class=STATE_CLASS_MEASUREMENT,
+        ).extend(
+            {
+                cv.GenerateID(CONF_INFINITESP_ID): cv.use_id(CONF_INFINITESP_ID),
+                cv.Optional(CONF_ZONE, default=1): cv.int_range(min=1, max=8),
+            }
+        )
+    ),
+    lambda config: {**config, sensor.CONF_UNIT_OF_MEASUREMENT: SENSOR_TYPES[config[CONF_TYPE]]["unit"]},
 )
 
 
@@ -55,7 +59,6 @@ async def to_code(config):
     stype = config[CONF_TYPE]
     info = SENSOR_TYPES[stype]
     var = cg.new_Pvariable(config[CONF_ID])
-    cg.add(var.set_unit_of_measurement(info["unit"]))
     await sensor.register_sensor(var, config)
     cg.add(var.set_zone(config[CONF_ZONE]))
     cg.add(var.set_sensor_type(info["key"]))

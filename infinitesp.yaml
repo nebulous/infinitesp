@@ -63,8 +63,8 @@ time:
 
 external_components:
   - source:
-      type: git
-      url: https://github.com/nebulous/esphome-uart-link
+      type: local
+      path: ../esphome-uart-link/components
   - source:
       type: local
       path: components
@@ -73,7 +73,6 @@ external_components:
 # UART — Carrier ABCD RS485 bus
 # ──────────────────────────────────────────────
 
-# Hardware UART (Waveshare onboard RS485, auto-direction — no DE/RE pin needed)
 uart:
   id: bus_uart
   tx_pin: GPIO17
@@ -100,19 +99,40 @@ uart:
 # Connects to a remote TCP serial bridge (socat, ser2net, etc.).
 #
 # uart_tcp_client:
-#   id: bus_tcpuart
-#   host: "192.168.1.23"
-#   port: 23
-#   rx_buffer_size: 4096
-#   reconnect_interval: 5s
+#    id: bus_tcpuart
+#    host: "192.168.1.23"
+#    port: 23
+#    rx_buffer_size: 4096
+#    reconnect_interval: 5s
 
-# --- TCP serial server (exposes the bus to telnet/bridge clients) ---
+# TCP serial servers
+# uart_tcp_server:
+#   # SAM ASCII protocol (nc infinitesp.local 23)
+#   - id: ascii_uart
+#     port: 23
+#     max_clients: 4
+#     client_mode: fanout
+#     idle_timeout: 300s
+# --- Raw bus monitor (uncomment to mirror ABCD traffic to a TCP port) ---
+# Exposes raw bus frames for tools like Infinitude's serial tab or nc:
+#   nc infinitesp.local 5000
+#
+# direction: a_to_b means bus_uart → raw_bus_uart only — clients can observe
+# traffic but cannot inject bytes onto the ABCD bus. To allow bidirectional
+# passthrough (e.g. for a remote serial bridge), change to:
+#   direction: bidirectional
 #
 # uart_tcp_server:
-#   id: bus_tcpserver
-#   port: 23
-#   max_clients: 2
-#   client_mode: exclusive
+#   - id: raw_bus_uart
+#     port: 5000
+#     max_clients: 2
+#     client_mode: fanout
+#     idle_timeout: 300s
+#
+# uart_bridge:
+#   uart_a: bus_uart          # Hardware UART connected to RS485 bus
+#   uart_b: raw_bus_uart       # TCP server clients connect to
+#   direction: a_to_b          # Bus → TCP only (read-only monitor)
 
 # ──────────────────────────────────────────────
 # InfinitESP hub
@@ -120,9 +140,18 @@ uart:
 
 infinitesp:
   id: infinitesp_hub
-  uart_id: bus_uart          # Change to bus_cdcuart or bus_tcpuart for alternatives
+  uart_id: bus_uart           # Change to bus_cdcuart or bus_tcpuart for alternatives
   address: 0x92              # 0x92 = SAM, 0x93 = FakeSAM (test mode)
   status_light_id: rgb_led
+
+# ──────────────────────────────────────────────
+# SAM ASCII protocol server
+# ──────────────────────────────────────────────
+
+# sam_ascii:
+#   id: sam_ascii_server
+#   infinitesp_id: infinitesp_hub
+#   uart_id: ascii_uart
 
 # ──────────────────────────────────────────────
 # Climate zones (uncomment the zones you have)
@@ -376,6 +405,7 @@ binary_sensor:
       inverted: true
     name: "Boot Button"
     entity_category: diagnostic
+
   - platform: status
     name: "Status"
 
