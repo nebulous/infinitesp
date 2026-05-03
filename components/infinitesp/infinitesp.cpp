@@ -448,7 +448,7 @@ void InfinitESPComponent::handle_passive_frame_() {
     }
   }
 
-  // Handle 3B0E activity writes from thermostat (not addressed to us but broadcast/SAM)
+  // Handle broadcast WRITE frames from thermostat (3B0E activity, 3B02 state/time, etc.)
   if (current_frame_.func == FUNC_WRITE && current_frame_.payload.size() >= 3) {
     uint8_t table = current_frame_.payload[1];
     uint8_t row = current_frame_.payload[2];
@@ -459,6 +459,19 @@ void InfinitESPComponent::handle_passive_frame_() {
         std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
         store_register_(current_frame_.src, reg_key, data);
         notify_devices_(current_frame_.src, reg_key);
+      }
+    }
+
+    // Broadcast 3B02 state writes from thermostat (contains time, weekday, etc.)
+    // Thermostat periodically broadcasts updated 3B02 data to all devices on the bus.
+    // Since dst != our address, these land in handle_passive_frame_ instead of handle_reply_.
+    // Mirror the data to our address so SAM reads get current time.
+    if (reg_key == REG_SAM_STATE && current_frame_.src == ADDR_THERMOSTAT) {
+      if (current_frame_.payload.size() > 3) {
+        std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
+        ESP_LOGD("InfinitESP", "Broadcast 3B02 state update (%u bytes)", data.size());
+        store_register_(address_, reg_key, data);
+        notify_devices_(address_, reg_key);
       }
     }
   }
@@ -612,6 +625,12 @@ void InfinitESPComponent::handle_reply_() {
     // to the SAM serve current values instead of stale defaults
     if (reg_key == REG_SAM_STATE || reg_key == REG_SAM_ZONES) {
       store_register_(address_, reg_key, data);
+      // Log time fields from 3B02 for debugging
+      if (reg_key == REG_SAM_STATE && data.size() >= REG3B02_MINUTES + 2) {
+        uint16_t minutes = ((uint16_t) data[REG3B02_MINUTES] << 8) | (uint16_t) data[REG3B02_MINUTES + 1];
+        ESP_LOGD("InfinitESP", "3B02 reply: weekday=%u minutes=%u (%02u:%02u)",
+                 data[REG3B02_WEEKDAY], minutes, minutes / 60, minutes % 60);
+      }
     }
 
     // Log parsed 0x4xxx register contents
@@ -955,8 +974,8 @@ void InfinitESPComponent::initialize_defaults_() {
     data[REG3B02_OUTDOOR_TEMP] = 70;                             // 70°F
     data[REG3B02_STAGMODE] = 0x04;                               // stage=0, mode=off
     data[REG3B02_WEEKDAY] = 0x01;                                // Monday
-    data[REG3B02_MINUTES] = 0xE0;                                // 480 (8:00am) LE low byte
-    data[REG3B02_MINUTES + 1] = 0x01;                            // LE high byte
+    data[REG3B02_MINUTES] = 0x01;                                // 480 (8:00am) BE high byte
+    data[REG3B02_MINUTES + 1] = 0xE0;                            // BE low byte
     data[REG3B02_DISPLAYED_ZONE] = 0x01;
     store_register_(address_, REG_SAM_STATE, data);
   }

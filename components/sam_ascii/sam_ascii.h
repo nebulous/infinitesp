@@ -34,8 +34,11 @@ class SamAsciiComponent : public Component, public uart::UARTDevice {
   // Line buffer
   std::string line_buf_;
   uint32_t last_char_time_{0};
+  uint32_t last_activity_time_{0};  // Last time any byte was received
+  bool banner_sent_{false};         // True after banner sent for current "connection"
   static const size_t MAX_LINE = 64;
   static const uint32_t INTER_CHAR_TIMEOUT_MS = 5000;
+  static const uint32_t CONNECTION_IDLE_MS = 10000;  // ≥10s silence = new connection
 };
 
 }  // namespace sam_ascii

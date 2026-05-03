@@ -112,25 +112,25 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
       case climate::CLIMATE_PRESET_NONE:
         // Cancel hold — resume schedule
         parent_->set_zone_hold(zone_, 0);
-        this->preset = preset;
+        this->set_preset_(preset);
         hold_duration_ = 0;
         last_activity_ = NO_ACTIVITY;
         break;
       case climate::CLIMATE_PRESET_HOME:
         parent_->apply_activity(zone_, COMFORT_HOME, HOLD_PERMANENT);
-        this->preset = preset;
+        this->set_preset_(preset);
         hold_duration_ = HOLD_PERMANENT;
         last_activity_ = COMFORT_HOME;
         break;
       case climate::CLIMATE_PRESET_AWAY:
         parent_->apply_activity(zone_, COMFORT_AWAY, HOLD_PERMANENT);
-        this->preset = preset;
+        this->set_preset_(preset);
         hold_duration_ = HOLD_PERMANENT;
         last_activity_ = COMFORT_AWAY;
         break;
       case climate::CLIMATE_PRESET_SLEEP:
         parent_->apply_activity(zone_, COMFORT_SLEEP, HOLD_PERMANENT);
-        this->preset = preset;
+        this->set_preset_(preset);
         hold_duration_ = HOLD_PERMANENT;
         last_activity_ = COMFORT_SLEEP;
         break;
@@ -297,9 +297,9 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
               (*comfort)[base + 2] == new_fan) {
             last_activity_ = a;
             switch (a) {
-              case COMFORT_HOME:  this->preset = climate::CLIMATE_PRESET_HOME; break;
-              case COMFORT_AWAY:  this->preset = climate::CLIMATE_PRESET_AWAY; break;
-              case COMFORT_SLEEP: this->preset = climate::CLIMATE_PRESET_SLEEP; break;
+              case COMFORT_HOME:  this->set_preset_(climate::CLIMATE_PRESET_HOME); break;
+              case COMFORT_AWAY:  this->set_preset_(climate::CLIMATE_PRESET_AWAY); break;
+              case COMFORT_SLEEP: this->set_preset_(climate::CLIMATE_PRESET_SLEEP); break;
               case COMFORT_WAKE:  this->set_custom_preset_(PRESET_WAKE); break;
               default:
                 this->preset = climate::CLIMATE_PRESET_HOME;
@@ -316,9 +316,9 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
         // If hold active, show HOME as fallback.
         last_activity_ = NO_ACTIVITY;
         if (hold_duration_ == 0) {
-          this->preset = climate::CLIMATE_PRESET_NONE;
+          this->set_preset_(climate::CLIMATE_PRESET_NONE);
         } else {
-          this->preset = climate::CLIMATE_PRESET_HOME;
+          this->set_preset_(climate::CLIMATE_PRESET_HOME);
         }
       }
 

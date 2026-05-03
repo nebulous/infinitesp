@@ -99,7 +99,7 @@ static const uint8_t REG3B02_OUTDOOR_TEMP = 20;      // outdoor air temp °F
 static const uint8_t REG3B02_UNOCCUPIED = 21;        // zones_unoccupied bitmask
 static const uint8_t REG3B02_STAGMODE = 22;          // high nibble=stage, low nibble=mode
 static const uint8_t REG3B02_WEEKDAY = 25;
-static const uint8_t REG3B02_MINUTES = 26;           // uint16 LE, minutes since midnight
+static const uint8_t REG3B02_MINUTES = 26;           // uint16 BE, minutes since midnight
 static const uint8_t REG3B02_DISPLAYED_ZONE = 28;
 static const uint8_t REG3B02_SIZE = 29;
 

@@ -32,8 +32,31 @@ void SamAsciiComponent::loop() {
 
   const uint32_t now = millis();
 
+  // Reset banner flag when idle so next connection triggers it
+  if (banner_sent_ && last_activity_time_ != 0 &&
+      (now - last_activity_time_) > CONNECTION_IDLE_MS) {
+    banner_sent_ = false;
+  }
+
   // Read available bytes into line buffer
   while (available()) {
+    // Detect new connection: bytes arriving after long silence (or first byte ever)
+    if (!banner_sent_) {
+      if (last_activity_time_ != 0)
+        ESP_LOGI(TAG, "New connection detected (idle %.1fs)",
+                 (now - last_activity_time_) / 1000.0f);
+      write_str(
+          " _____       __ _       _ _   _____ ___________   _____  ___  ___  ___\r\n"
+          "|_   _|     / _(_)     (_) | |  ___/  ___| ___ \\ /  ___|/ _ \\ |  \\/  |\r\n"
+          "  | | _ __ | |_ _ _ __  _| |_| |__ \\ `--.| |_/ / \\ `--./ /_\\ \\| .  . |\r\n"
+          "  | || '_ \\|  _| | '_ \\| | __|  __| `--. \\  __/   `--. \\  _  || |\\/| |\r\n"
+          " _| || | | | | | | | | | | |_| |___/\__/ / |     /\__/ / | | || |  | |\r\n"
+          " \\___/_| |_|_| |_|_| |_|_|\\__\\____/\\____/\\_|     \\____/\\_| |_/\\_|  |_/\r\n");
+      flush();
+      banner_sent_ = true;
+    }
+    last_activity_time_ = now;
+
     uint8_t byte;
     read_byte(&byte);
 
@@ -202,8 +225,8 @@ void SamAsciiComponent::process_line_(const std::string &line) {
       return;
     }
     // uint16 LE: minutes since midnight
-    uint16_t minutes = (uint16_t) (*state)[REG3B02_MINUTES] |
-                       ((uint16_t) (*state)[REG3B02_MINUTES + 1] << 8);
+    uint16_t minutes = ((uint16_t) (*state)[REG3B02_MINUTES] << 8) |
+                       (uint16_t) (*state)[REG3B02_MINUTES + 1];
     respond_(prefix, format_time_(minutes));
 
   } else if (body == "ZONE") {
