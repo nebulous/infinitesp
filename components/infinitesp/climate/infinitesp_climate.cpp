@@ -10,7 +10,7 @@ climate::ClimateTraits InfinitESPClimate::traits() {
   using namespace esphome::climate;
   traits.add_feature_flags(CLIMATE_SUPPORTS_CURRENT_TEMPERATURE |
                            CLIMATE_SUPPORTS_ACTION |
-                           CLIMATE_REQUIRES_TWO_POINT_TARGET_TEMPERATURE);
+                           CLIMATE_SUPPORTS_TWO_POINT_TARGET_TEMPERATURE);
 
   // The ABCD bus works in whole °F. HA treats all ESPHome climate as °C internally.
   // min/max are in °C (HA converts to °F for display via show_temp()).
@@ -74,6 +74,19 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     sys_mode_ = sys;
   }
 
+  // Handle setpoint changes. HA sends target_temperature in heat/cool modes,
+  // target_temperature_low/high in heat_cool mode.
+  if (call.get_target_temperature().has_value()) {
+    float target_c = call.get_target_temperature().value();
+    uint8_t target_f = (uint8_t) roundf(target_c * (9.0f / 5.0f) + 32.0f);
+    if (this->mode == climate::CLIMATE_MODE_HEAT) {
+      heat_sp_ = target_f;
+    } else if (this->mode == climate::CLIMATE_MODE_COOL) {
+      cool_sp_ = target_f;
+    }
+    parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
+    this->target_temperature = target_c;
+  }
   if (call.get_target_temperature_low().has_value()) {
     float target_c = call.get_target_temperature_low().value();
     uint8_t target_f = (uint8_t) roundf(target_c * (9.0f / 5.0f) + 32.0f);
@@ -221,8 +234,15 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
           case SYSMODE_OFF:
           default: this->mode = climate::CLIMATE_MODE_OFF; break;
         }
-        this->target_temperature_low = ((float)heat_sp_ - 32.0f) * (5.0f / 9.0f);
-        this->target_temperature_high = ((float)cool_sp_ - 32.0f) * (5.0f / 9.0f);
+        // Update setpoints based on mode: single target for heat/cool, dual for heat_cool
+        float heat_c = ((float) heat_sp_ - 32.0f) * (5.0f / 9.0f);
+        float cool_c = ((float) cool_sp_ - 32.0f) * (5.0f / 9.0f);
+        this->target_temperature_low = heat_c;
+        this->target_temperature_high = cool_c;
+        if (this->mode == climate::CLIMATE_MODE_HEAT)
+          this->target_temperature = heat_c;
+        else if (this->mode == climate::CLIMATE_MODE_COOL)
+          this->target_temperature = cool_c;
         changed = true;
       }
     }
@@ -250,8 +270,15 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
         sp_changed = true;
       }
       if (sp_changed) {
-        this->target_temperature_low = ((float)new_heat - 32.0f) * (5.0f / 9.0f);
-        this->target_temperature_high = ((float)new_cool - 32.0f) * (5.0f / 9.0f);
+        float heat_c = ((float) new_heat - 32.0f) * (5.0f / 9.0f);
+        float cool_c = ((float) new_cool - 32.0f) * (5.0f / 9.0f);
+        this->target_temperature_low = heat_c;
+        this->target_temperature_high = cool_c;
+        // Set single target_temperature for the current mode (HA uses this in heat/cool)
+        if (this->mode == climate::CLIMATE_MODE_HEAT)
+          this->target_temperature = heat_c;
+        else if (this->mode == climate::CLIMATE_MODE_COOL)
+          this->target_temperature = cool_c;
         changed = true;
       }
       if (new_fan != fan_mode_) {
