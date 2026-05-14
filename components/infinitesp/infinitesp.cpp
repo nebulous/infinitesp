@@ -16,11 +16,12 @@ static const uint8_t POLL_REG_COUNT = 2;
 static const uint8_t SLOW_POLL_REGS[][2] = {
     {0x40, 0x0A},  // comfort profiles (home/away/sleep/wake/manual setpoints+fan)
     {0x40, 0x12},  // vacation settings (min/max temp, fan)
+    {0x42, 0x02},  // fault history (10 entries × 7 bytes)
     {0x46, 0x08},  // WiFi: SSID, password, hostname
     {0x46, 0x09},  // Cloud: host, device IP
     {0x46, 0x0A},  // dealer info: name, brand, URL
 };
-static const uint8_t SLOW_POLL_REG_COUNT = 5;
+static const uint8_t SLOW_POLL_REG_COUNT = 6;
 static const uint32_t SLOW_POLL_INTERVAL_MS = 31000;  // poll every 31s (prime, avoids beating with other timers)
 
 void InfinitESPComponent::setup() {
@@ -48,6 +49,14 @@ void InfinitESPComponent::setup() {
   }
 
   // Initialize status LED (if configured via YAML)
+#ifdef USE_INFINITESP_FLOW_CONTROL_PIN
+  if (flow_control_pin_ != nullptr) {
+    flow_control_pin_->setup();
+    flow_control_pin_->digital_write(false);
+    ESP_LOGI("InfinitESP", "TX enable pin: configured");
+  }
+#endif
+
 #ifdef USE_INFINITESP_STATUS_LED_PIN
   if (status_led_gpio_ != nullptr) {
     status_led_gpio_->setup();
@@ -509,8 +518,16 @@ void InfinitESPComponent::transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t 
 
   uint32_t flush_start = millis();
   diag_in_tx_ = true;
+#ifdef USE_INFINITESP_FLOW_CONTROL_PIN
+  if (flow_control_pin_ != nullptr)
+    flow_control_pin_->digital_write(true);
+#endif
   write_array(frame);
   flush();
+#ifdef USE_INFINITESP_FLOW_CONTROL_PIN
+  if (flow_control_pin_ != nullptr)
+    flow_control_pin_->digital_write(false);
+#endif
   diag_in_tx_ = false;
   uint32_t flush_ms = millis() - flush_start;
   if (flush_ms > diag_tx_flush_max_ms_)

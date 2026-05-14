@@ -19,6 +19,7 @@ TEXT_SENSOR_TYPES = {
     "tstat_dealer_brand": "tstat_dealer_brand",
     "tstat_dealer_url": "tstat_dealer_url",
     "comfort_profile": "comfort_profile",
+    "fault_history": "fault_history",
 }
 
 CONFIG_SCHEMA = text_sensor.text_sensor_schema(InfinitESPTextSensor).extend(

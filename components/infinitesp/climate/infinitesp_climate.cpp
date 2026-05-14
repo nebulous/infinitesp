@@ -211,9 +211,17 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
 
       climate::ClimateAction action = climate::CLIMATE_ACTION_IDLE;
       if (stage > 0) {
+        // The bus stagmode encodes active direction in the mode nibble:
+        // When AUTO mode is actively heating, mode=heat(0); when cooling, mode=cool(1).
+        // When idle, mode=auto(2). So we can read direction directly.
         switch (mode) {
           case SYSMODE_HEAT: action = climate::CLIMATE_ACTION_HEATING; break;
           case SYSMODE_COOL: action = climate::CLIMATE_ACTION_COOLING; break;
+          case SYSMODE_AUTO:
+            // Should not happen: when actively running in AUTO, the bus
+            // changes mode nibble to heat(0) or cool(1). Log if seen.
+            ESP_LOGW("infinitesp", "Unexpected: stage=%d but mode=AUTO", stage);
+            break;
           case SYSMODE_EHEAT: action = climate::CLIMATE_ACTION_HEATING; break;
           default: break;
         }
@@ -224,7 +232,14 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
         changed = true;
       }
 
-      if (mode != sys_mode_) {
+      // Only update climate mode when stage=0. When stage>0, the mode nibble
+      // changes to active direction (heat/cool) instead of requested mode (auto).
+      // We wait for an idle reading to get the true requested mode.
+      // On first boot, HA may restore a stale mode via control() — the first
+      // stage=0 reading from the bus will correct it.
+      bool can_update_mode = (stage == 0);
+
+      if (can_update_mode && mode != sys_mode_) {
         sys_mode_ = mode;
         switch (mode) {
           case SYSMODE_HEAT: this->mode = climate::CLIMATE_MODE_HEAT; break;

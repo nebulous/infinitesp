@@ -1,11 +1,19 @@
 # InfinitESP — Carrier Infinity / Bryant Evolution ABCD bus SAM emulator
 #
-# Tested on the Waveshare ESP32-S3-Relay-6CH (onboard RS485, 6 relays, RGB LED, buzzer).
-# Works with any ESP32-S3 + RS485 transceiver — just change the UART pins.
+# This is a reference configuration. Copy it, modify it for your hardware,
+# and flash to your ESP32. See infinitesp-dev.yaml for a real-world example
+# with all transports enabled.
 #
-# Before flashing, create secrets.yaml in this directory:
-#   ssid: "YourWiFiNetwork"
-#   password: "YourWiFiPassword"
+# Requirements:
+#   - An ESP32 (recommended) or ESP8266 with an RS485 transceiver
+#   - Carrier Infinity / Bryant Evolution HVAC system with ABCD bus
+#   - secrets.yaml in this directory with:
+#       ssid: "YourWiFiNetwork"
+#       password: "YourWiFiPassword"
+#
+# The Waveshare ESP32-S3-Relay-6CH is used as the example board because it
+# has an onboard RS485 transceiver. Any ESP32-S3 works — just change the
+# UART pins. For ESP8266, see infinitesp-dev-esp8266.yaml.
 
 substitutions:
   name: infinitesp
@@ -33,15 +41,16 @@ logger:
   baud_rate: 0  # Free up UART0; logs available via WiFi/USB only
 
 api:
-  max_connections: 4
+  # max_connections: 16  # Increase if using esphome logs frequently
 
 ota:
   - platform: esphome
 
 wifi:
-  # InfinitESP can autodiscover WiFi credentials from the thermostat's bus register
-  # and cache them to NVS flash. If the ESP32 later boots without connectivity, it
-  # injects the cached creds after a 15-second grace period — no manual config needed.
+  # InfinitESP can autodiscover WiFi credentials from the thermostat's bus
+  # register 0x4608 and cache them to NVS flash. If the ESP32 later boots
+  # without connectivity, it injects the cached creds after a 15-second
+  # grace period — no manual config needed.
   # (Experimental, hardware UART only — TCP client has a circular dependency.)
   networks:
     - ssid: !secret ssid
@@ -49,9 +58,6 @@ wifi:
   ap: {}  # Fallback captive portal if WiFi fails
 
 captive_portal:
-
-# web_server:
-#   port: 80
 
 time:
   - platform: homeassistant
@@ -72,7 +78,12 @@ external_components:
 # ──────────────────────────────────────────────
 # UART — Carrier ABCD RS485 bus
 # ──────────────────────────────────────────────
+# The ABCD bus runs at 38400 baud, 8N1. Connect TX/RX to your RS485
+# transceiver. Three transport options are shown below — uncomment
+# the one that matches your setup and comment out the others.
+# ──────────────────────────────────────────────
 
+# --- Option A: Hardware UART (simplest, recommended) ---
 uart:
   id: bus_uart
   tx_pin: GPIO17
@@ -83,9 +94,9 @@ uart:
   stop_bits: 1
   rx_buffer_size: 4096
 
-# --- Alternative: USB CDC ACM (TinyUSB virtual serial) ---
+# --- Option B: USB CDC ACM (TinyUSB virtual serial) ---
 # For when the ESP32 connects to the bus indirectly via a USB-to-serial
-# adapter on a separate host machine.
+# adapter on a separate host machine. Requires esp-idf framework.
 #
 # tinyusb:
 #
@@ -95,32 +106,37 @@ uart:
 #   interfaces:
 #     - id: bus_cdcuart
 
-# --- Alternative: TCP serial client ---
+# --- Option C: TCP serial client ---
 # Connects to a remote TCP serial bridge (socat, ser2net, etc.).
+# Useful for development when the RS485 dongle is on a different machine.
 #
 # uart_tcp_client:
-#    id: bus_tcpuart
-#    host: "192.168.1.23"
-#    port: 23
-#    rx_buffer_size: 4096
-#    reconnect_interval: 5s
+#   id: bus_tcpuart
+#   host: "192.168.1.23"
+#   port: 23
+#   rx_buffer_size: 4096
+#   reconnect_interval: 5s
 
-# TCP serial servers
+# --- Optional: SAM ASCII protocol server ---
+# Provides a text-based interface to the bus via telnet:
+#   nc infinitesp.local 23
+# Requires a uart_tcp_server or usb_cdc_acm interface.
+#
 # uart_tcp_server:
-#   # SAM ASCII protocol (nc infinitesp.local 23)
 #   - id: ascii_uart
 #     port: 23
 #     max_clients: 4
 #     client_mode: fanout
 #     idle_timeout: 300s
-# --- Raw bus monitor (uncomment to mirror ABCD traffic to a TCP port) ---
-# Exposes raw bus frames for tools like Infinitude's serial tab or nc:
-#   nc infinitesp.local 5000
 #
-# direction: a_to_b means bus_uart → raw_bus_uart only — clients can observe
-# traffic but cannot inject bytes onto the ABCD bus. To allow bidirectional
-# passthrough (e.g. for a remote serial bridge), change to:
-#   direction: bidirectional
+# sam_ascii:
+#   id: sam_ascii_server
+#   infinitesp_id: infinitesp_hub
+#   uart_id: ascii_uart
+
+# --- Optional: Raw bus monitor via TCP ---
+# Mirrors ABCD traffic to a TCP port for tools like Infinitude:
+#   nc infinitesp.local 5000
 #
 # uart_tcp_server:
 #   - id: raw_bus_uart
@@ -130,9 +146,9 @@ uart:
 #     idle_timeout: 300s
 #
 # uart_bridge:
-#   uart_a: bus_uart          # Hardware UART connected to RS485 bus
-#   uart_b: raw_bus_uart       # TCP server clients connect to
-#   direction: a_to_b          # Bus → TCP only (read-only monitor)
+#   uart_a: bus_uart
+#   uart_b: raw_bus_uart
+#   direction: a_to_b  # Read-only; use bidirectional for write access
 
 # ──────────────────────────────────────────────
 # InfinitESP hub
@@ -140,21 +156,16 @@ uart:
 
 infinitesp:
   id: infinitesp_hub
-  uart_id: bus_uart           # Change to bus_cdcuart or bus_tcpuart for alternatives
-  address: 0x92              # 0x92 = SAM, 0x93 = FakeSAM (test mode)
-  status_light_id: rgb_led
+  uart_id: bus_uart           # Change to bus_cdcuart or bus_tcpuart if using those
+  address: 0x92               # 0x92 = SAM, 0x93 = FakeSAM (test mode)
+  # flow_control_pin: GPIO13   # RS485 DE/RE control (needed for some transceivers)
+  # status_light_id: rgb_led  # Status LED reference (see light: section below)
 
 # ──────────────────────────────────────────────
-# SAM ASCII protocol server
+# Climate zones
 # ──────────────────────────────────────────────
-
-# sam_ascii:
-#   id: sam_ascii_server
-#   infinitesp_id: infinitesp_hub
-#   uart_id: ascii_uart
-
-# ──────────────────────────────────────────────
-# Climate zones (uncomment the zones you have)
+# Uncomment one entry per active zone (1–8). The Infinity system supports
+# up to 8 zones; most installations have 1–3.
 # ──────────────────────────────────────────────
 
 climate:
@@ -166,37 +177,13 @@ climate:
   #   infinitesp_id: infinitesp_hub
   #   name: "Zone 2 Climate"
   #   zone: 2
-  # - platform: infinitesp
-  #   infinitesp_id: infinitesp_hub
-  #   name: "Zone 3 Climate"
-  #   zone: 3
-  # - platform: infinitesp
-  #   infinitesp_id: infinitesp_hub
-  #   name: "Zone 4 Climate"
-  #   zone: 4
-  # - platform: infinitesp
-  #   infinitesp_id: infinitesp_hub
-  #   name: "Zone 5 Climate"
-  #   zone: 5
-  # - platform: infinitesp
-  #   infinitesp_id: infinitesp_hub
-  #   name: "Zone 6 Climate"
-  #   zone: 6
-  # - platform: infinitesp
-  #   infinitesp_id: infinitesp_hub
-  #   name: "Zone 7 Climate"
-  #   zone: 7
-  # - platform: infinitesp
-  #   infinitesp_id: infinitesp_hub
-  #   name: "Zone 8 Climate"
-  #   zone: 8
 
 # ──────────────────────────────────────────────
 # Sensors
 # ──────────────────────────────────────────────
 
 sensor:
-  # Zone environment (add temperature + humidity for each active zone)
+  # Zone environment — add temperature + humidity for each active zone
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Zone 1 Temperature"
@@ -208,13 +195,13 @@ sensor:
     type: humidity
     zone: 1
 
-  # Outdoor
+  # Outdoor temperature
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Outdoor Temperature"
     type: outdoor_temperature
 
-  # Indoor unit
+  # Indoor unit diagnostics (passively snooped from bus traffic)
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Blower RPM"
@@ -228,7 +215,7 @@ sensor:
     icon: "mdi:air-filter"
     entity_category: diagnostic
 
-  # Outdoor unit — compressor
+  # Outdoor unit — compressor (passively snooped)
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Compressor RPM"
@@ -368,7 +355,7 @@ sensor:
     icon: "mdi:thermometer-high"
     entity_category: diagnostic
 
-  # Board diagnostics
+  # WiFi
   - platform: wifi_signal
     name: "WiFi Signal"
     update_interval: 60s
@@ -395,17 +382,6 @@ binary_sensor:
     type: electric_heat
     icon: "mdi:fire"
     entity_category: diagnostic
-  # Board
-  - platform: gpio
-    pin:
-      number: GPIO0
-      mode:
-        input: true
-        pullup: true
-      inverted: true
-    name: "Boot Button"
-    entity_category: diagnostic
-
   - platform: status
     name: "Status"
 
@@ -429,12 +405,29 @@ select:
 # ──────────────────────────────────────────────
 
 text_sensor:
-  # Zone info (add zone_name for each active zone)
+  # Zone info — add zone_name for each active zone
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Zone 1 Name"
     type: zone_name
     zone: 1
+
+  # Fault history (polled every ~31s)
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Fault History"
+    type: fault_history
+    icon: "mdi:alert-circle-outline"
+    entity_category: diagnostic
+
+  # Comfort profiles (home/away/sleep/wake setpoints + fan)
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Comfort Profiles"
+    type: comfort_profile
+    icon: "mdi:thermostat"
+    entity_category: diagnostic
+
   # Thermostat network info
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
@@ -466,13 +459,7 @@ text_sensor:
     type: tstat_proxy_server
     icon: "mdi:ip-network"
     entity_category: diagnostic
-  # Thermostat data
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Comfort Profiles"
-    type: comfort_profile
-    icon: "mdi:thermostat"
-    entity_category: diagnostic
+
   # Dealer info
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
@@ -492,64 +479,78 @@ text_sensor:
     type: tstat_dealer_url
     icon: "mdi:web"
     entity_category: diagnostic
-  # Board
+
+  # WiFi
   - platform: wifi_info
     ip_address:
       name: "IP Address"
       entity_category: diagnostic
 
 # ──────────────────────────────────────────────
-# Board hardware — Waveshare ESP32-S3-Relay-6CH
+# Board hardware — OPTIONAL
+# ──────────────────────────────────────────────
+# The following section is specific to the Waveshare ESP32-S3-Relay-6CH.
+# Remove or replace it if using a different board. The infinitesp component
+# itself only needs UART + power — relays, LEDs, and buzzers are extras.
 # ──────────────────────────────────────────────
 
-switch:
-  - platform: gpio
-    pin: GPIO1
-    id: relay1
-    name: "Relay 1"
-  - platform: gpio
-    pin: GPIO2
-    id: relay2
-    name: "Relay 2"
-  - platform: gpio
-    pin: GPIO41
-    id: relay3
-    name: "Relay 3"
-  - platform: gpio
-    pin: GPIO42
-    id: relay4
-    name: "Relay 4"
+# # Relays (Waveshare 6CH)
+# switch:
+#   - platform: gpio
+#     pin: GPIO1
+#     name: "Relay 1"
+#   - platform: gpio
+#     pin: GPIO2
+#     name: "Relay 2"
+#   - platform: gpio
+#     pin: GPIO41
+#     name: "Relay 3"
+#   - platform: gpio
+#     pin: GPIO42
+#     name: "Relay 4"
+#   - platform: gpio
+#     pin:
+#       number: GPIO45
+#       ignore_strapping_warning: true
+#     name: "Relay 5"
+#   - platform: gpio
+#     pin:
+#       number: GPIO46
+#       ignore_strapping_warning: true
+#     name: "Relay 6"
+
+# # RGB LED (Waveshare 6CH has a WS2812 on GPIO38)
+# light:
+#   - platform: esp32_rmt_led_strip
+#     id: rgb_led
+#     name: "RGB LED"
+#     rgb_order: RGB
+#     pin: GPIO38
+#     num_leds: 1
+#     chipset: WS2812
+
+# # Buzzer (Waveshare 6CH has a piezo on GPIO21)
+# output:
+#   - platform: ledc
+#     pin: GPIO21
+#     id: buzzer
+#
+# rtttl:
+#   output: buzzer
+#   id: rtttl_buzzer
+#   gain: 30%
+
+# Boot button (available on most ESP32 dev boards)
+binary_sensor:
   - platform: gpio
     pin:
-      number: GPIO45
-      ignore_strapping_warning: true
-    id: relay5
-    name: "Relay 5"
-  - platform: gpio
-    pin:
-      number: GPIO46
-      ignore_strapping_warning: true
-    id: relay6
-    name: "Relay 6"
-
-light:
-  - platform: esp32_rmt_led_strip
-    id: rgb_led
-    name: "RGB LED"
-    rgb_order: RGB
-    pin: GPIO38
-    num_leds: 1
-    chipset: WS2812
-
-output:
-  - platform: ledc
-    pin: GPIO21
-    id: buzzer
-
-rtttl:
-  output: buzzer
-  id: rtttl_buzzer
-  gain: 30%
+      number: GPIO0
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    name: "Boot Button"
+    entity_category: diagnostic
 
 button:
   - platform: restart

@@ -150,6 +150,88 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
     publish_state(result);
     return;
   }
+
+  // Fault history from 4202
+  // 10 entries × 7 bytes: code(1), source(1), hour(1), minute(1), days_be16(2), status(1)
+  // Days since 2013-01-01 epoch. Status bit 7 = active (0=active, 1=cleared), bits 0-6 = occurrence count.
+  if (sensor_type_ == "fault_history") {
+    if (register_key != REG_TSTAT_FAULTS)
+      return;
+    auto *data = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_FAULTS);
+    if (!data || data->size() < 70)
+      return;
+
+    const char *source_names[] = {"?", "?", "UI", "?", "?", "?", "?", "?",
+                                  "?", "?", "?", "?", "?", "?", "?", "?",
+                                  "?", "?", "?", "?", "?", "?", "?", "?",
+                                  "?", "?", "?", "?", "?", "?", "?", "?",
+                                  "IDU", "?", "?", "?", "?", "?", "?", "?",
+                                  "?", "?", "?", "?", "?", "?", "?", "?",
+                                  "?", "?", "ODU"};
+    std::string result;
+    for (int i = 0; i < 10; i++) {
+      uint8_t base = i * 7;
+      uint8_t code = (*data)[base + 0];
+      uint8_t source = (*data)[base + 1];
+      uint8_t hour = (*data)[base + 2];
+      uint8_t minute = (*data)[base + 3];
+      uint16_t days = ((uint16_t) (*data)[base + 4] << 8) | (*data)[base + 5];
+      uint8_t status = (*data)[base + 6];
+      bool active = !(status & 0x80);  // bit 7: 0=active, 1=cleared
+      uint8_t occurrences = status & 0x7F;
+
+      // Skip empty entries (all zeros)
+      if (code == 0 && source == 0 && days == 0)
+        continue;
+
+      if (!result.empty())
+        result += "\n";
+
+      // Convert days since 2013-01-01 to a date string
+      // 2013-01-01 epoch, account for leap years
+      uint32_t total_days = days;
+      int year = 2013;
+      while (total_days >= 365) {
+        uint16_t year_days = ((year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 366 : 365);
+        if (total_days >= year_days) {
+          total_days -= year_days;
+          year++;
+        } else {
+          break;
+        }
+      }
+      static const uint8_t mdays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+      uint8_t month = 0;
+      while (month < 12) {
+        uint8_t dim = mdays[month];
+        if (month == 1 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)))
+          dim = 29;
+        if (total_days >= dim) {
+          total_days -= dim;
+          month++;
+        } else {
+          break;
+        }
+      }
+      uint8_t day = (uint8_t) total_days + 1;
+      month++;  // 1-indexed
+
+      const char *src_name = (source < sizeof(source_names) / sizeof(source_names[0]))
+                                 ? source_names[source]
+                                 : "?";
+      char buf[80];
+      snprintf(buf, sizeof(buf), "%s code=%02d src=%s %02d:%02d %04d-%02d-%02d occ=%d%s",
+               active ? "ACT" : "CLR", code, src_name, hour, minute, year, month, day,
+               occurrences, (i == 0 && active) ? " (latest)" : "");
+      result += buf;
+    }
+
+    if (result.empty())
+      result = "No faults";
+
+    publish_state(result);
+    return;
+  }
 }
 
 } // namespace infinitesp

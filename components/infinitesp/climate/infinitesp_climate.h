@@ -31,7 +31,7 @@ class InfinitESPClimate : public climate::Climate, public InfinitESPDevice {
   uint8_t heat_sp_{68};
   uint8_t cool_sp_{76};
   uint8_t fan_mode_{0};
-  uint8_t sys_mode_{4}; // off
+  uint8_t sys_mode_{0xFF}; // 0xFF = unknown/first boot
   uint16_t hold_duration_{0};  // last known hold_duration for this zone
   uint8_t last_activity_{NO_ACTIVITY};  // last activity we applied (for readback)
 };

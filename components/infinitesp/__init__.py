@@ -18,6 +18,7 @@ InfinitESPComponent = infinitesp_ns.class_("InfinitESPComponent", cg.Component, 
 InfinitESPDevice = infinitesp_ns.class_("InfinitESPDevice")
 
 CONF_ADDRESS = "address"
+CONF_FLOW_CONTROL_PIN = "flow_control_pin"
 
 
 def _validate_status_led(config):
@@ -36,6 +37,8 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_STATUS_LIGHT_ID): cv.use_id("light"),
             # Status LED: shorthand for a simple LED on a GPIO pin
             cv.Optional(CONF_STATUS_LED_PIN): pins.gpio_output_pin_schema,
+            # RS485 transmit enable pin (DE/RE control)
+            cv.Optional(CONF_FLOW_CONTROL_PIN): pins.gpio_output_pin_schema,
         }
     ).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA),
     _validate_status_led,
@@ -62,6 +65,11 @@ async def to_code(config):
         pin = await cg.gpio_pin_expression(config[CONF_STATUS_LED_PIN])
         cg.add(var.set_status_led_pin(pin))
         cg.add_define("USE_INFINITESP_STATUS_LED_PIN")
+
+    if CONF_FLOW_CONTROL_PIN in config:
+        pin = await cg.gpio_pin_expression(config[CONF_FLOW_CONTROL_PIN])
+        cg.add(var.set_flow_control_pin(pin))
+        cg.add_define("USE_INFINITESP_FLOW_CONTROL_PIN")
 
     if CONF_STATUS_LIGHT_ID in config:
         light_var = await cg.get_variable(config[CONF_STATUS_LIGHT_ID])

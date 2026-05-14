@@ -53,6 +53,7 @@ static const uint16_t REG_TSTAT_VACATION = 0x4012;      // Zone 1 vacation setti
 static const uint16_t REG_TSTAT_WIFI = 0x4608;          // SSID, password, hostname (~216 bytes)
 static const uint16_t REG_TSTAT_CLOUD = 0x4609;         // Cloud host, proxy server IP
 static const uint16_t REG_TSTAT_DEALER = 0x460A;        // Dealer name, brand, URL (120 bytes)
+static const uint16_t REG_TSTAT_FAULTS = 0x4202;        // Fault history (10 entries × 7 bytes = 70 bytes)
 static const uint16_t REG_TSTAT_WIFI_PROFILES = 0x460B; // WiFi profiles (4x 36 bytes)
 static const uint16_t REG_TSTAT_WIFI_SCAN = 0x460C;     // WiFi scan results (4x 36 bytes)
 
@@ -197,6 +198,11 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zone_fan(uint8_t zone, uint8_t fan_mode);
   void set_zone_hold(uint8_t zone, uint16_t duration_minutes);
   void set_system_mode(uint8_t mode);
+
+  // RS485 transmit enable pin
+#ifdef USE_INFINITESP_FLOW_CONTROL_PIN
+  void set_flow_control_pin(GPIOPin *pin) { flow_control_pin_ = pin; }
+#endif
 
   // Apply a comfort profile activity: writes setpoints+fan from 400A and sets hold
   void apply_activity(uint8_t zone, uint8_t activity_index, uint16_t hold_duration);
@@ -344,6 +350,11 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   StatusLedState status_led_state_{StatusLedState::BUS_NOT_READY};
 
   void update_status_led_();
+
+  // RS485 transmit enable pin (optional)
+#ifdef USE_INFINITESP_FLOW_CONTROL_PIN
+  GPIOPin *flow_control_pin_{nullptr};
+#endif
 };
 
 }  // namespace infinitesp
