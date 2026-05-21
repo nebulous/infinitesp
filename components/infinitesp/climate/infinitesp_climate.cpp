@@ -275,6 +275,7 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       uint8_t new_cool = data->at(REG3B03_COOL_SETPOINTS + idx);
       uint8_t new_fan = data->at(REG3B03_FAN_MODES + idx);
 
+      // Track whether cached setpoints changed (for publish gating)
       bool sp_changed = false;
       if (new_heat != heat_sp_) {
         heat_sp_ = new_heat;
@@ -284,18 +285,24 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
         cool_sp_ = new_cool;
         sp_changed = true;
       }
-      if (sp_changed) {
-        float heat_c = ((float) new_heat - 32.0f) * (5.0f / 9.0f);
-        float cool_c = ((float) new_cool - 32.0f) * (5.0f / 9.0f);
-        this->target_temperature_low = heat_c;
-        this->target_temperature_high = cool_c;
-        // Set single target_temperature for the current mode (HA uses this in heat/cool)
-        if (this->mode == climate::CLIMATE_MODE_HEAT)
-          this->target_temperature = heat_c;
-        else if (this->mode == climate::CLIMATE_MODE_COOL)
-          this->target_temperature = cool_c;
+
+      // Always update target temperatures from bus data.
+      // On first boot, target_temperature_low/high are NaN even though the bus
+      // values may match our defaults (68/76°F). We must set them unconditionally.
+      float heat_c = ((float) new_heat - 32.0f) * (5.0f / 9.0f);
+      float cool_c = ((float) new_cool - 32.0f) * (5.0f / 9.0f);
+      if (std::isnan(this->target_temperature_low) || std::isnan(this->target_temperature_high))
+        sp_changed = true;  // force publish to initialize HA state
+      this->target_temperature_low = heat_c;
+      this->target_temperature_high = cool_c;
+      // Set single target_temperature for the current mode (HA uses this in heat/cool)
+      if (this->mode == climate::CLIMATE_MODE_HEAT)
+        this->target_temperature = heat_c;
+      else if (this->mode == climate::CLIMATE_MODE_COOL)
+        this->target_temperature = cool_c;
+
+      if (sp_changed)
         changed = true;
-      }
       if (new_fan != fan_mode_) {
         fan_mode_ = new_fan;
         switch (new_fan) {
