@@ -4,12 +4,54 @@ namespace esphome {
 namespace infinitesp {
 
 void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t register_key) {
+  // Hold state display: "until HH:MM PM", "Permanent", or "Schedule"
+  if (sensor_type_ == "hold_state") {
+    if (register_key != REG_SAM_ZONES)
+      return;
+    auto *data = parent_->get_register(parent_->get_sam_address(), REG_SAM_ZONES);
+    if (!data || data->size() < REG3B03_HOLD_DURATIONS + zone_ * 2)
+      return;
+
+    uint8_t idx = zone_ - 1;
+    if (!(data->at(REG3B03_ACTIVE_ZONES) & (1 << idx)))
+      return;
+
+    uint16_t hold_dur = parent_->get_zone_hold_duration(zone_);
+
+    if (hold_dur == 0) {
+      publish_state("Schedule");
+    } else if (hold_dur >= InfinitESPComponent::HOLD_PERMANENT) {
+      publish_state("Hold - Permanent");
+    } else {
+      // Compute end time from bus clock + hold duration
+      auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
+      if (state && state->size() >= REG3B02_MINUTES + 2) {
+        uint16_t now_min = ((uint16_t) state->at(REG3B02_MINUTES) << 8) |
+                           state->at(REG3B02_MINUTES + 1);
+        uint16_t end_min = now_min + hold_dur;
+        if (end_min >= 1440) end_min -= 1440;
+        uint8_t hr24 = end_min / 60;
+        uint8_t mn = end_min % 60;
+        uint8_t hr12 = hr24 % 12;
+        if (hr12 == 0) hr12 = 12;
+        char buf[24];
+        snprintf(buf, sizeof(buf), "Hold until %02d:%02d %s", hr12, mn, hr24 < 12 ? "AM" : "PM");
+        publish_state(buf);
+      } else {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "Hold %d min", hold_dur);
+        publish_state(buf);
+      }
+    }
+    return;
+  }
+
   // Zone name from SAM 3B03 register
   if (sensor_type_ == "zone_name") {
     if (register_key != REG_SAM_ZONES)
       return;
 
-    auto *data = parent_->get_register(parent_->get_address(), REG_SAM_ZONES);
+    auto *data = parent_->get_register(parent_->get_sam_address(), REG_SAM_ZONES);
     if (!data || data->size() < REG3B03_SIZE)
       return;
 

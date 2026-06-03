@@ -1,4 +1,4 @@
-# InfinitESP — Carrier Infinity / Bryant Evolution ABCD bus SAM emulator
+# InfinitESP - Carrier Infinity / Bryant Evolution ABCD bus SAM emulator
 #
 # This is a reference configuration. Copy it, modify it for your hardware,
 # and flash to your ESP32. See infinitesp-dev.yaml for a real-world example
@@ -12,7 +12,7 @@
 #       password: "YourWiFiPassword"
 #
 # The Waveshare ESP32-S3-Relay-6CH is used as the example board because it
-# has an onboard RS485 transceiver. Any ESP32-S3 works — just change the
+# has an onboard RS485 transceiver. Any ESP32-S3 works - just change the
 # UART pins. For ESP8266, see infinitesp-dev-esp8266.yaml.
 
 substitutions:
@@ -50,8 +50,8 @@ wifi:
   # InfinitESP can autodiscover WiFi credentials from the thermostat's bus
   # register 0x4608 and cache them to NVS flash. If the ESP32 later boots
   # without connectivity, it injects the cached creds after a 15-second
-  # grace period — no manual config needed.
-  # (Experimental, hardware UART only — TCP client has a circular dependency.)
+  # grace period. No manual config needed.
+  # (Experimental, hardware UART only - TCP client has a circular dependency.)
   networks:
     - ssid: !secret ssid
       password: !secret password
@@ -76,10 +76,10 @@ external_components:
       path: components
 
 # ──────────────────────────────────────────────
-# UART — Carrier ABCD RS485 bus
+# UART - Carrier ABCD RS485 bus
 # ──────────────────────────────────────────────
 # The ABCD bus runs at 38400 baud, 8N1. Connect TX/RX to your RS485
-# transceiver. Three transport options are shown below — uncomment
+# transceiver. Three transport options are shown below - uncomment
 # the one that matches your setup and comment out the others.
 # ──────────────────────────────────────────────
 
@@ -135,20 +135,27 @@ uart:
 #   uart_id: ascii_uart
 
 # --- Optional: Raw bus monitor via TCP ---
-# Mirrors ABCD traffic to a TCP port for tools like Infinitude:
-#   nc infinitesp.local 5000
+# Mirrors ABCD traffic to a TCP port for external tools:
+#   nc infinitesp.local 4242
+#
+# The bridge owns the hardware UART and fans bytes to both InfinitESP
+# and the TCP tap. InfinitESP must read from the bridge, not bus_uart.
 #
 # uart_tcp_server:
-#   - id: raw_bus_uart
-#     port: 5000
+#   - id: raw_bus_tap
+#     port: 4242
 #     max_clients: 2
 #     client_mode: fanout
-#     idle_timeout: 300s
+#     idle_timeout: 30s
 #
 # uart_bridge:
-#   uart_a: bus_uart
-#   uart_b: raw_bus_uart
-#   direction: a_to_b  # Read-only; use bidirectional for write access
+#   id: bus_bridge
+#   uarts:
+#     - bus_uart                                           # hardware RS485
+#     - uart: raw_bus_tap
+#       flow: from_bridge  # monitor-only; change to 'both' to allow TCP writes
+#
+# Then change uart_id in infinitesp: from bus_uart to bus_bridge.
 
 # ──────────────────────────────────────────────
 # InfinitESP hub
@@ -157,7 +164,7 @@ uart:
 infinitesp:
   id: infinitesp_hub
   uart_id: bus_uart           # Change to bus_cdcuart or bus_tcpuart if using those
-  address: 0x92               # 0x92 = SAM, 0x93 = FakeSAM (test mode)
+  sam_address: 0x92               # 0x92 = SAM, 0x93 = FakeSAM (test mode), 0 = disabled
   # flow_control_pin: GPIO13   # RS485 DE/RE control (needed for some transceivers)
   # status_light_id: rgb_led  # Status LED reference (see light: section below)
 
@@ -183,7 +190,7 @@ climate:
 # ──────────────────────────────────────────────
 
 sensor:
-  # Zone environment — add temperature + humidity for each active zone
+  # Zone environment - add temperature + humidity for each active zone
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Zone 1 Temperature"
@@ -215,7 +222,7 @@ sensor:
     icon: "mdi:air-filter"
     entity_category: diagnostic
 
-  # Outdoor unit — compressor (passively snooped)
+  # Outdoor unit - compressor (passively snooped)
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Compressor RPM"
@@ -253,7 +260,7 @@ sensor:
     icon: "mdi:briefcase-edit"
     entity_category: diagnostic
 
-  # Outdoor unit — superheat / subcooling (float registers)
+  # Outdoor unit - superheat / subcooling (float registers)
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Superheat Target"
@@ -297,7 +304,7 @@ sensor:
     icon: "mdi:blur"
     entity_category: diagnostic
 
-  # Outdoor unit — temperatures
+  # Outdoor unit - temperatures
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "ODU Outdoor Temp"
@@ -405,11 +412,16 @@ select:
 # ──────────────────────────────────────────────
 
 text_sensor:
-  # Zone info — add zone_name for each active zone
+  # Zone info - add zone_name for each active zone
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Zone 1 Name"
     type: zone_name
+    zone: 1
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Zone 1 Hold State"
+    type: hold_state
     zone: 1
 
   # Fault history (polled every ~31s)
@@ -487,11 +499,11 @@ text_sensor:
       entity_category: diagnostic
 
 # ──────────────────────────────────────────────
-# Board hardware — OPTIONAL
+# Board hardware - OPTIONAL
 # ──────────────────────────────────────────────
 # The following section is specific to the Waveshare ESP32-S3-Relay-6CH.
 # Remove or replace it if using a different board. The infinitesp component
-# itself only needs UART + power — relays, LEDs, and buzzers are extras.
+# itself only needs UART + power - relays, LEDs, and buzzers are extras.
 # ──────────────────────────────────────────────
 
 # # Relays (Waveshare 6CH)
@@ -559,3 +571,4 @@ button:
   - platform: safe_mode
     name: "Safe Mode"
     entity_category: config
+

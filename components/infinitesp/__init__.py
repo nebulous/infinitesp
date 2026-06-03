@@ -1,8 +1,11 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import logging
 from esphome import pins
 from esphome.components import uart
 from esphome.const import CONF_ID
+
+_LOGGER = logging.getLogger(__name__)
 
 CODEOWNERS = ["@nebulous"]
 DEPENDENCIES = ["uart"]
@@ -17,8 +20,21 @@ infinitesp_ns = cg.esphome_ns.namespace("infinitesp")
 InfinitESPComponent = infinitesp_ns.class_("InfinitESPComponent", cg.Component, uart.UARTDevice)
 InfinitESPDevice = infinitesp_ns.class_("InfinitESPDevice")
 
-CONF_ADDRESS = "address"
+CONF_SAM_ADDRESS = "sam_address"
+CONF_ADDRESS = "address"  # deprecated alias for sam_address
 CONF_FLOW_CONTROL_PIN = "flow_control_pin"
+CONF_ZONE_CONTROLLER_ADDRESS = "zone_controller_address"
+
+
+def _validate_addresses(config):
+    """Handle address → sam_address deprecation and mutual exclusion."""
+    if CONF_ADDRESS in config:
+        if CONF_SAM_ADDRESS in config:
+            raise cv.Invalid("Specify 'sam_address' or 'address', not both")
+        _LOGGER.warning("'address' is deprecated, use 'sam_address' instead")
+        config[CONF_SAM_ADDRESS] = config.pop(CONF_ADDRESS)
+    config.setdefault(CONF_SAM_ADDRESS, 0x92)
+    return config
 
 
 def _validate_status_led(config):
@@ -32,15 +48,19 @@ CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(InfinitESPComponent),
-            cv.Optional(CONF_ADDRESS, default=147): cv.int_range(min=1, max=255),
+            cv.Optional(CONF_ADDRESS): cv.int_range(min=0, max=255),
+            cv.Optional(CONF_SAM_ADDRESS): cv.int_range(min=0, max=255),
             # Status LED: reference an existing light entity (e.g. WS2812 RGB)
             cv.Optional(CONF_STATUS_LIGHT_ID): cv.use_id("light"),
             # Status LED: shorthand for a simple LED on a GPIO pin
             cv.Optional(CONF_STATUS_LED_PIN): pins.gpio_output_pin_schema,
             # RS485 transmit enable pin (DE/RE control)
             cv.Optional(CONF_FLOW_CONTROL_PIN): pins.gpio_output_pin_schema,
+            # Zone controller emulation: set to 0x60 to emulate a SYSTXCC4ZC01
+            cv.Optional(CONF_ZONE_CONTROLLER_ADDRESS, default=0): cv.int_range(min=0, max=255),
         }
     ).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA),
+    _validate_addresses,
     _validate_status_led,
 )
 
@@ -59,7 +79,10 @@ async def register_infinitesp_device(var, config):
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
-    cg.add(var.set_address(config[CONF_ADDRESS]))
+    cg.add(var.set_sam_address(config[CONF_SAM_ADDRESS]))
+
+    if config[CONF_ZONE_CONTROLLER_ADDRESS] != 0:
+        cg.add(var.set_zc_address(config[CONF_ZONE_CONTROLLER_ADDRESS]))
 
     if CONF_STATUS_LED_PIN in config:
         pin = await cg.gpio_pin_expression(config[CONF_STATUS_LED_PIN])

@@ -9,7 +9,7 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
 
   // SAM state registers (3B02): temperature, humidity, outdoor temp
   if (register_key == REG_SAM_STATE) {
-    auto *data = parent_->get_register(parent_->get_address(), REG_SAM_STATE);
+    auto *data = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
     if (!data || data->size() < 21)
       return;
 

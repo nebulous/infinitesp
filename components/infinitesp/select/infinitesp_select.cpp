@@ -33,7 +33,7 @@ void InfinitESPSelect::control(const std::string &value) {
 
 void InfinitESPSelect::on_register_update(uint8_t device_addr, uint16_t register_key) {
   if (select_type_ == "system_mode" && register_key == REG_SAM_STATE) {
-    auto *data = parent_->get_register(parent_->get_address(), REG_SAM_STATE);
+    auto *data = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
     if (data && data->size() >= REG3B02_STAGMODE + 1) {
       uint8_t stagmode = data->at(REG3B02_STAGMODE);
       uint8_t mode = stagmode & 0x0F;
@@ -43,7 +43,7 @@ void InfinitESPSelect::on_register_update(uint8_t device_addr, uint16_t register
       }
     }
   } else if (select_type_ == "fan_mode" && register_key == REG_SAM_ZONES) {
-    auto *data = parent_->get_register(parent_->get_address(), REG_SAM_ZONES);
+    auto *data = parent_->get_register(parent_->get_sam_address(), REG_SAM_ZONES);
     if (data && data->size() >= REG3B03_FAN_MODES + 8) {
       uint8_t idx = zone_ - 1;
       if (data->at(REG3B03_ACTIVE_ZONES) & (1 << idx)) {

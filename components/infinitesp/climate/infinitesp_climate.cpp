@@ -3,8 +3,6 @@
 namespace esphome {
 namespace infinitesp {
 
-static const uint16_t HOLD_PERMANENT = 65535;  // max uint16 = permanent hold
-
 climate::ClimateTraits InfinitESPClimate::traits() {
   auto traits = climate::ClimateTraits();
   using namespace esphome::climate;
@@ -40,18 +38,15 @@ climate::ClimateTraits InfinitESPClimate::traits() {
   // NONE = cancel hold (resume schedule).
   // HOME/AWAY/SLEEP/WAKE = apply that activity's setpoints+fan from 400A with a permanent hold.
   // The thermostat stores 5 activities: home, away, sleep, wake, manual.
-  traits.add_supported_preset(climate::CLIMATE_PRESET_NONE);
   traits.add_supported_preset(climate::CLIMATE_PRESET_HOME);
   traits.add_supported_preset(climate::CLIMATE_PRESET_AWAY);
   traits.add_supported_preset(climate::CLIMATE_PRESET_SLEEP);
 
-  // Custom presets: WAKE activity + timed holds using current comfort profile's setpoints
   const char *const custom_presets[] = {
-      PRESET_WAKE,    // Comfort activity: wake
-      PRESET_HOLD_1H, // 60 min
-      PRESET_HOLD_2H, // 120 min
-      PRESET_HOLD_4H, // 240 min
-      PRESET_HOLD_8H, // 480 min
+      PRESET_SCHEDULE,
+      PRESET_WAKE,
+      PRESET_HOLD_TIMED,
+      PRESET_HOLD_PERM,
   };
   traits.set_supported_custom_presets(custom_presets);
 
@@ -122,29 +117,22 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
   if (call.get_preset().has_value()) {
     auto preset = call.get_preset().value();
     switch (preset) {
-      case climate::CLIMATE_PRESET_NONE:
-        // Cancel hold — resume schedule
-        parent_->set_zone_hold(zone_, 0);
-        this->set_preset_(preset);
-        hold_duration_ = 0;
-        last_activity_ = NO_ACTIVITY;
-        break;
       case climate::CLIMATE_PRESET_HOME:
-        parent_->apply_activity(zone_, COMFORT_HOME, HOLD_PERMANENT);
+        parent_->apply_activity(zone_, COMFORT_HOME, InfinitESPComponent::HOLD_PERMANENT);
         this->set_preset_(preset);
-        hold_duration_ = HOLD_PERMANENT;
+        hold_duration_ = InfinitESPComponent::HOLD_PERMANENT;
         last_activity_ = COMFORT_HOME;
         break;
       case climate::CLIMATE_PRESET_AWAY:
-        parent_->apply_activity(zone_, COMFORT_AWAY, HOLD_PERMANENT);
+        parent_->apply_activity(zone_, COMFORT_AWAY, InfinitESPComponent::HOLD_PERMANENT);
         this->set_preset_(preset);
-        hold_duration_ = HOLD_PERMANENT;
+        hold_duration_ = InfinitESPComponent::HOLD_PERMANENT;
         last_activity_ = COMFORT_AWAY;
         break;
       case climate::CLIMATE_PRESET_SLEEP:
-        parent_->apply_activity(zone_, COMFORT_SLEEP, HOLD_PERMANENT);
+        parent_->apply_activity(zone_, COMFORT_SLEEP, InfinitESPComponent::HOLD_PERMANENT);
         this->set_preset_(preset);
-        hold_duration_ = HOLD_PERMANENT;
+        hold_duration_ = InfinitESPComponent::HOLD_PERMANENT;
         last_activity_ = COMFORT_SLEEP;
         break;
       default:
@@ -152,35 +140,25 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     }
   }
 
-  // Handle custom presets (WAKE activity + timed holds)
+  // Handle custom presets
   if (call.has_custom_preset()) {
     auto custom = call.get_custom_preset();
-    if (custom == PRESET_WAKE) {
-      parent_->apply_activity(zone_, COMFORT_WAKE, HOLD_PERMANENT);
-      hold_duration_ = HOLD_PERMANENT;
+    if (custom == PRESET_SCHEDULE) {
+      // Cancel hold — resume schedule
+      parent_->set_zone_hold(zone_, 0);
+      hold_duration_ = 0;
+      last_activity_ = NO_ACTIVITY;
+      this->set_custom_preset_(PRESET_SCHEDULE);
+      ESP_LOGI("InfinitESP", "Zone %d: preset PER SCHEDULE → cancel hold", zone_);
+    } else if (custom == PRESET_WAKE) {
+      parent_->apply_activity(zone_, COMFORT_WAKE, InfinitESPComponent::HOLD_PERMANENT);
+      hold_duration_ = InfinitESPComponent::HOLD_PERMANENT;
       last_activity_ = COMFORT_WAKE;
       this->set_custom_preset_(PRESET_WAKE);
       ESP_LOGI("InfinitESP", "Zone %d: preset WAKE → permanent hold", zone_);
-    } else {
-      uint16_t duration = 0;
-      if (custom == PRESET_HOLD_1H)
-        duration = 60;
-      else if (custom == PRESET_HOLD_2H)
-        duration = 120;
-      else if (custom == PRESET_HOLD_4H)
-        duration = 240;
-      else if (custom == PRESET_HOLD_8H)
-        duration = 480;
-
-      if (duration > 0) {
-        parent_->set_zone_hold(zone_, duration);
-        hold_duration_ = duration;
-        last_activity_ = NO_ACTIVITY;
-        this->set_custom_preset_(custom);
-        ESP_LOGI("InfinitESP", "Zone %d: custom preset '%s' → hold for %d min",
-                 zone_, custom.c_str(), duration);
-      }
     }
+    // Hold Timer and Hold Indefinitely are read-only states set from bus data.
+    // Users cancel holds via the Per Schedule preset.
   }
 
   publish_state();
@@ -190,7 +168,7 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
   bool changed = false;
 
   if (register_key == REG_SAM_STATE) {
-    auto *data = parent_->get_register(parent_->get_address(), REG_SAM_STATE);
+    auto *data = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
     if (data && data->size() >= REG3B02_STAGMODE + 1) {
       uint8_t idx = zone_ - 1;
       uint8_t active = data->at(REG3B02_ACTIVE_ZONES);
@@ -264,7 +242,7 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
   }
 
   if (register_key == REG_SAM_ZONES) {
-    auto *data = parent_->get_register(parent_->get_address(), REG_SAM_ZONES);
+    auto *data = parent_->get_register(parent_->get_sam_address(), REG_SAM_ZONES);
     if (data && data->size() >= REG3B03_COOL_SETPOINTS + 8) {
       uint8_t idx = zone_ - 1;
       uint8_t active = data->at(REG3B03_ACTIVE_ZONES);
@@ -318,61 +296,84 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       // Always run — not gated on hold_duration change — so preset reflects current
       // schedule activity even when no hold is active.
       bool hold_changed = false;
-      if (data->size() >= REG3B03_HOLD_DURATIONS + idx * 2 + 2) {
-        uint16_t hold_dur = (data->at(REG3B03_HOLD_DURATIONS + idx * 2) << 8) |
-                            data->at(REG3B03_HOLD_DURATIONS + idx * 2 + 1);
-        ESP_LOGD("InfinitESP", "Zone %d hold: zones_holding=0x%02X duration=%d",
-                 zone_, data->at(REG3B03_ZONES_HOLDING), hold_dur);
-        if (hold_dur != hold_duration_) {
-          hold_duration_ = hold_dur;
-          hold_changed = true;
-        }
+      uint16_t hold_dur = parent_->get_zone_hold_duration(zone_);
+      ESP_LOGD("InfinitESP", "Zone %d hold: zones_holding=0x%02X duration=%d",
+               zone_, data->at(REG3B03_ZONES_HOLDING), hold_dur);
+      if (hold_dur != hold_duration_) {
+        hold_duration_ = hold_dur;
+        hold_changed = true;
       }
 
-      // Match current setpoints+fan against comfort profiles from register 400A.
-      // Track whether the inferred preset actually changed to avoid spurious publishes.
+      // Determine preset display.
+      // Priority: if hold is active, show hold preset. Otherwise, match
+      // setpoints+fan against comfort profiles to infer activity.
+      auto old_custom = this->get_custom_preset();
       auto old_preset = this->preset;
 
-      auto *comfort = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_COMFORT);
-      ESP_LOGD("InfinitESP", "Zone %d preset match: heat=%d cool=%d fan=%d comfort=%p size=%d",
-               zone_, new_heat, new_cool, new_fan,
-               comfort ? (void*)comfort : nullptr,
-               comfort ? (int)comfort->size() : -1);
-      bool matched = false;
-      if (comfort && comfort->size() >= COMFORT_ACTIVITY_COUNT * COMFORT_ENTRY_SIZE) {
-        for (uint8_t a = 0; a < COMFORT_ACTIVITY_COUNT; a++) {
-          uint8_t base = a * COMFORT_ENTRY_SIZE;
-          if ((*comfort)[base + 0] == new_heat && (*comfort)[base + 1] == new_cool &&
-              (*comfort)[base + 2] == new_fan) {
-            last_activity_ = a;
-            switch (a) {
-              case COMFORT_HOME:  this->set_preset_(climate::CLIMATE_PRESET_HOME); break;
-              case COMFORT_AWAY:  this->set_preset_(climate::CLIMATE_PRESET_AWAY); break;
-              case COMFORT_SLEEP: this->set_preset_(climate::CLIMATE_PRESET_SLEEP); break;
-              case COMFORT_WAKE:  this->set_custom_preset_(PRESET_WAKE); break;
-              default:
-                this->preset = climate::CLIMATE_PRESET_HOME;
-                break;
-            }
-            matched = true;
-            break;
+      if (hold_duration_ > 0) {
+        // Hold is active — show hold preset and compute end time
+        if (hold_duration_ >= InfinitESPComponent::HOLD_PERMANENT) {
+          this->set_custom_preset_(PRESET_HOLD_PERM);
+          hold_end_time_ = "Permanent";
+        } else {
+          this->set_custom_preset_(PRESET_HOLD_TIMED);
+          // Compute end time from current bus time + hold duration
+          auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
+          if (state && state->size() >= REG3B02_MINUTES + 2) {
+            uint16_t now_min = ((uint16_t) state->at(REG3B02_MINUTES) << 8) |
+                               state->at(REG3B02_MINUTES + 1);
+            uint16_t end_min = now_min + hold_duration_;
+            if (end_min >= 1440)
+              end_min -= 1440;
+            uint8_t end_hr24 = end_min / 60;
+            uint8_t end_mn = end_min % 60;
+            uint8_t end_hr12 = end_hr24 % 12;
+            if (end_hr12 == 0) end_hr12 = 12;
+            const char *ampm = (end_hr24 < 12) ? "AM" : "PM";
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%02d:%02d %s", end_hr12, end_mn, ampm);
+            hold_end_time_ = buf;
           }
         }
-      }
-      if (!matched) {
-        // Setpoints don't match any known activity.
-        // If no hold, show NONE (schedule running with unknown activity).
-        // If hold active, show HOME as fallback.
-        last_activity_ = NO_ACTIVITY;
-        if (hold_duration_ == 0) {
-          this->set_preset_(climate::CLIMATE_PRESET_NONE);
-        } else {
-          this->set_preset_(climate::CLIMATE_PRESET_HOME);
+      } else {
+        hold_end_time_.clear();
+        // No hold — match setpoints+fan against comfort profiles from register 400A.
+        auto *comfort = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_COMFORT);
+        ESP_LOGD("InfinitESP", "Zone %d preset match: heat=%d cool=%d fan=%d comfort=%p size=%d",
+                 zone_, new_heat, new_cool, new_fan,
+                 comfort ? (void*)comfort : nullptr,
+                 comfort ? (int)comfort->size() : -1);
+        bool matched = false;
+        if (comfort && comfort->size() >= COMFORT_ACTIVITY_COUNT * COMFORT_ENTRY_SIZE) {
+          for (uint8_t a = 0; a < COMFORT_ACTIVITY_COUNT; a++) {
+            uint8_t base = a * COMFORT_ENTRY_SIZE;
+            if ((*comfort)[base + 0] == new_heat && (*comfort)[base + 1] == new_cool &&
+                (*comfort)[base + 2] == new_fan) {
+              last_activity_ = a;
+              switch (a) {
+                case COMFORT_HOME:  this->set_preset_(climate::CLIMATE_PRESET_HOME); break;
+                case COMFORT_AWAY:  this->set_preset_(climate::CLIMATE_PRESET_AWAY); break;
+                case COMFORT_SLEEP: this->set_preset_(climate::CLIMATE_PRESET_SLEEP); break;
+                case COMFORT_WAKE:  this->set_custom_preset_(PRESET_WAKE); break;
+                default:
+                  this->set_custom_preset_(PRESET_SCHEDULE);
+                  break;
+              }
+              matched = true;
+              break;
+            }
+          }
+        }
+        if (!matched) {
+          last_activity_ = NO_ACTIVITY;
+          this->set_custom_preset_(PRESET_SCHEDULE);
         }
       }
 
       // Only publish if something actually changed
-      if (sp_changed || hold_changed || this->preset != old_preset) {
+      bool preset_changed = (this->preset != old_preset) ||
+                            (this->get_custom_preset() != old_custom);
+      if (sp_changed || hold_changed || preset_changed) {
         changed = true;
       }
     }

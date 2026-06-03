@@ -107,7 +107,7 @@ void SamAsciiComponent::loop() {
 // If dealer register says Celsius, convert: °C = (°F-32)*5/9.
 std::string SamAsciiComponent::format_temp_(uint8_t temp_f) {
   using namespace infinitesp;
-  auto *dealer = parent_->get_register(parent_->get_address(), REG_SAM_DEALER);
+  auto *dealer = parent_->get_register(parent_->get_sam_address(), REG_SAM_DEALER);
   char unit = 'F';
   if (dealer && dealer->size() > 7)
     unit = (char) (*dealer)[7];
@@ -153,7 +153,19 @@ void SamAsciiComponent::process_line_(const std::string &line) {
 
   // HELP anywhere in the command triggers help response (works even with bus offline)
   if (cmd.find("HELP") != std::string::npos) {
-    respond_(prefix, "COMMANDS: MODE RT RH HTSP CLSP FAN HOLD OAT TIME DAY ZONE NAME BLIGHT CFGEM");
+    respond_(prefix, "COMMANDS: MODE RT RH HTSP CLSP FAN HOLD OAT TIME DAY ZONE NAME BLIGHT CFGEM REPORT");
+    respond_(prefix, "SET: MODE!<mode> Z#HTSP!<temp> Z#CLSP!<temp> Z#FAN!<mode> Z#HOLD!<on|off|minutes>");
+    return;
+  }
+
+  // REPORT? streams full JSON bus diagnostic (works even when bus offline)
+  if (cmd.find("REPORT") != std::string::npos) {
+    auto write_cb = [](const uint8_t *data, size_t len, void *ctx) {
+      auto *self = static_cast<SamAsciiComponent *>(ctx);
+      self->write_array(data, len);
+    };
+    parent_->stream_bus_report_(write_cb, this);
+    flush();
     return;
   }
 
@@ -185,11 +197,77 @@ void SamAsciiComponent::process_line_(const std::string &line) {
   using namespace infinitesp;
 
   // Get register data pointers (SAM registers stored under SAM address)
-  auto *state = parent_->get_register(parent_->get_address(), REG_SAM_STATE);     // 3B02
-  auto *zones = parent_->get_register(parent_->get_address(), REG_SAM_ZONES);      // 3B03
-  auto *dealer = parent_->get_register(parent_->get_address(), REG_SAM_DEALER);    // 3B06
+  auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);     // 3B02
+  auto *zones_data = parent_->get_register(parent_->get_sam_address(), REG_SAM_ZONES);      // 3B03
+  auto *dealer = parent_->get_register(parent_->get_sam_address(), REG_SAM_DEALER);    // 3B06
 
-  // ---- System-level commands (no zone) ----
+  // ---- Write commands (! separator) ----
+  size_t bang = body.find('!');
+  if (bang != std::string::npos) {
+    std::string write_cmd = body.substr(0, bang);
+    std::string write_val = body.substr(bang + 1);
+
+    if (write_cmd == "MODE") {
+      uint8_t new_mode = 0xFF;
+      for (uint8_t i = 0; i < MODE_COUNT; i++) {
+        if (write_val == MODE_NAMES[i]) { new_mode = i; break; }
+      }
+      if (new_mode == 0xFF) { respond_nak_(prefix, "VAL"); return; }
+      parent_->set_system_mode(new_mode);
+      respond_(prefix, "ACK");
+      return;
+    }
+
+    if (write_cmd == "HTSP") {
+      int temp = atoi(write_val.c_str());
+      if (temp < 40 || temp > 99) { respond_nak_(prefix, "VAL"); return; }
+      uint8_t cool_sp = (zones_data && zones_data->size() > REG3B03_COOL_SETPOINTS + idx)
+                            ? (*zones_data)[REG3B03_COOL_SETPOINTS + idx] : 0;
+      parent_->set_zone_setpoint(zone, (uint8_t) temp, cool_sp);
+      respond_(prefix, "ACK");
+      return;
+    }
+
+    if (write_cmd == "CLSP") {
+      int temp = atoi(write_val.c_str());
+      if (temp < 40 || temp > 99) { respond_nak_(prefix, "VAL"); return; }
+      uint8_t heat_sp = (zones_data && zones_data->size() > REG3B03_HEAT_SETPOINTS + idx)
+                            ? (*zones_data)[REG3B03_HEAT_SETPOINTS + idx] : 0;
+      parent_->set_zone_setpoint(zone, heat_sp, (uint8_t) temp);
+      respond_(prefix, "ACK");
+      return;
+    }
+
+    if (write_cmd == "FAN") {
+      uint8_t new_fan = 0xFF;
+      for (uint8_t i = 0; i < FAN_COUNT; i++) {
+        if (write_val == FAN_NAMES[i]) { new_fan = i; break; }
+      }
+      if (new_fan == 0xFF) { respond_nak_(prefix, "VAL"); return; }
+      parent_->set_zone_fan(zone, new_fan);
+      respond_(prefix, "ACK");
+      return;
+    }
+
+    if (write_cmd == "HOLD") {
+      if (write_val == "ON") {
+        parent_->set_zone_hold(zone, InfinitESPComponent::HOLD_PERMANENT);
+      } else if (write_val == "OFF") {
+        parent_->set_zone_hold(zone, 0);
+      } else {
+        int minutes = atoi(write_val.c_str());
+        if (minutes <= 0) { respond_nak_(prefix, "VAL"); return; }
+        parent_->set_zone_hold(zone, (uint16_t) minutes);
+      }
+      respond_(prefix, "ACK");
+      return;
+    }
+
+    respond_nak_(prefix, "CMD");
+    return;
+  }
+
+  // ---- System-level read commands (no zone) ----
 
   if (body == "MODE") {
     if (!state || state->size() <= REG3B02_STAGMODE) {
@@ -253,43 +331,68 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     respond_(prefix, std::to_string((*state)[REG3B02_HUMIDITY + idx]) + "%");
 
   } else if (body == "HTSP") {
-    if (!zones || zones->size() <= REG3B03_HEAT_SETPOINTS + idx) {
+    if (!zones_data || zones_data->size() <= REG3B03_HEAT_SETPOINTS + idx) {
       respond_nak_(prefix, "");
       return;
     }
-    respond_(prefix, format_temp_((*zones)[REG3B03_HEAT_SETPOINTS + idx]));
+    respond_(prefix, format_temp_((*zones_data)[REG3B03_HEAT_SETPOINTS + idx]));
 
   } else if (body == "CLSP") {
-    if (!zones || zones->size() <= REG3B03_COOL_SETPOINTS + idx) {
+    if (!zones_data || zones_data->size() <= REG3B03_COOL_SETPOINTS + idx) {
       respond_nak_(prefix, "");
       return;
     }
-    respond_(prefix, format_temp_((*zones)[REG3B03_COOL_SETPOINTS + idx]));
+    respond_(prefix, format_temp_((*zones_data)[REG3B03_COOL_SETPOINTS + idx]));
 
   } else if (body == "FAN") {
-    if (!zones || zones->size() <= REG3B03_FAN_MODES + idx) {
+    if (!zones_data || zones_data->size() <= REG3B03_FAN_MODES + idx) {
       respond_nak_(prefix, "");
       return;
     }
-    uint8_t fan = (*zones)[REG3B03_FAN_MODES + idx];
+    uint8_t fan = (*zones_data)[REG3B03_FAN_MODES + idx];
     respond_(prefix, (fan < FAN_COUNT) ? FAN_NAMES[fan] : "UNKNOWN");
 
   } else if (body == "HOLD") {
-    if (!zones || zones->size() <= REG3B03_ZONES_HOLDING) {
+    if (!zones_data || zones_data->size() < REG3B03_HOLD_DURATIONS + idx * 2 + 2) {
       respond_nak_(prefix, "");
       return;
     }
-    uint8_t holding = (*zones)[REG3B03_ZONES_HOLDING];
-    respond_(prefix, (holding & (1 << idx)) ? "ON" : "OFF");
+    uint16_t hold_dur = ((uint16_t) (*zones_data)[REG3B03_HOLD_DURATIONS + idx * 2] << 8) |
+                        (*zones_data)[REG3B03_HOLD_DURATIONS + idx * 2 + 1];
+    if (hold_dur == 0) {
+      respond_(prefix, "OFF");
+    } else if (hold_dur >= InfinitESPComponent::HOLD_PERMANENT) {
+      respond_(prefix, "PERMANENT");
+    } else {
+      // Show hold with end time
+      auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
+      if (state && state->size() >= REG3B02_MINUTES + 2) {
+        uint16_t now_min = ((uint16_t) state->at(REG3B02_MINUTES) << 8) |
+                           state->at(REG3B02_MINUTES + 1);
+        uint16_t end_min = now_min + hold_dur;
+        if (end_min >= 1440) end_min -= 1440;
+        uint8_t hr24 = end_min / 60;
+        uint8_t mn = end_min % 60;
+        uint8_t hr12 = hr24 % 12;
+        if (hr12 == 0) hr12 = 12;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "ON until %02d:%02d %s", hr12, mn, hr24 < 12 ? "AM" : "PM");
+        respond_(prefix, buf);
+      } else {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "ON (%d min)", hold_dur);
+        respond_(prefix, buf);
+      }
+    }
 
   } else if (body == "NAME") {
-    if (!zones || zones->size() < REG3B03_ZONE_NAMES + idx * 12 + 12) {
+    if (!zones_data || zones_data->size() < REG3B03_ZONE_NAMES + idx * 12 + 12) {
       respond_nak_(prefix, "");
       return;
     }
     std::string name;
     for (size_t i = 0; i < 12; i++) {
-      char c = (char) (*zones)[REG3B03_ZONE_NAMES + idx * 12 + i];
+      char c = (char) (*zones_data)[REG3B03_ZONE_NAMES + idx * 12 + i];
       if (c == 0)
         break;
       name += c;

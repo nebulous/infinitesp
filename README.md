@@ -12,27 +12,27 @@ InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address 
 
 | Entity Type | What You Get |
 |---|---|
-| **Climate** | Per-zone thermostat with heat/cool/auto/off modes, dual heat+cool setpoints, fan control, and preset support (home/away/sleep/wake + timed holds) |
+| **Climate** | Per-zone thermostat with heat/cool/auto/off modes, dual heat+cool setpoints, fan control, and preset support (per schedule, home, away, sleep, wake, hold timer, hold indefinitely) |
 | **Sensors** | Zone temperature, zone humidity, outdoor air temp, blower RPM, airflow CFM, compressor RPM, ODU demand/stage/modulation, superheat/subcooling targets & actuals, ODU temperatures (outdoor/coil/suction/liquid/discharge), vacation min/max temps |
 | **Binary Sensors** | Bus online/offline status, compressor running, electric heat active |
 | **Selects** | System mode (heat/cool/auto/off/emergency heat), per-zone fan speed (auto/low/med/high) |
-| **Text Sensors** | Zone names, thermostat WiFi SSID/hostname/MAC, proxy server, dealer info, comfort profile dump |
+| **Text Sensors** | Zone names, hold state, thermostat WiFi SSID/hostname/MAC, proxy server, dealer info, comfort profile dump |
 
 
 ## Suggested Hardware
 
-Any ESP32 with an RS485 transceiver should work. ESP8266 may also work but has not been tested.
+Any ESP32 with an RS485 transceiver works. ESP8266 is untested.
 The author's setup uses the **[Waveshare ESP32-S3-Relay-6CH](https://amzn.to/4mX6tLp)** board.
 
 [<img src="https://www.waveshare.com/w/upload/thumb/e/ee/ESP32-S3-Relay-6CH.jpg/1200px-ESP32-S3-Relay-6CH.jpg" width="400" />](https://amzn.to/4mX6tLp)
 
-The Waveshare board was chosen as a reference design for its nice case, onboard RS485 interface, and its 6 relay outputs. The relays open the door to emulating other devices beyond the SAM — notably the NIM (Network Interface Module, SYSTXCCNIM01) or a Damper Control Module (SYSTXCC4ZC01), either of which could directly switch equipment via those relays.  The relay GPIOs are exposed in the example YAML config but are not part of the core SAM emulation. The firmware is hardware-agnostic — it just needs a `uart::UARTComponent`. The RS485 transceiver, ESP32 variant, and relay hardware are all irrelevant to the protocol engine.
+The Waveshare board was chosen as a reference design for its nice case, onboard RS485 interface, and its 6 relay outputs. The relays open the door to emulating other devices beyond the SAM, notably the NIM (Network Interface Module, SYSTXCCNIM01) or a Damper Control Module (SYSTXCC4ZC01), either of which could directly switch equipment via those relays. The relay GPIOs are exposed in the example YAML config but are not part of the core SAM emulation. The firmware is hardware-agnostic. It just needs a `uart::UARTComponent`. The RS485 transceiver, ESP32 variant, and relay hardware are all irrelevant to the protocol engine.
 Generic ESP32 dev boards with a separate RS485 transceiver module should also work.
 
-> **Note:** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an insufficiently-biased bus, the line voltage collapses and the receiver reads garbage. **However**, on a live Carrier ABCD bus, the existing equipment provides strong biasing (pull-up on A, pull-down on B) that holds the bus in a logic `1` state when the driver cuts out — masking the flaw. If you see TX corruption in testing or on an unusual bus configuration, you can potentially add external biasing resistors, bypass the onboard transceiver entirely with a [pico-HAT-compatible RS485 module](https://amzn.to/4eMssT1) which plugs right into the header, or if you're brave, desperate, or foolish modify the SMD components on the board.
+> **Note:** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an insufficiently-biased bus, the line voltage collapses and the receiver reads garbage. **However**, on a live Carrier ABCD bus, the existing equipment provides strong biasing (pull-up on A, pull-down on B) that holds the bus in a logic `1` state when the driver cuts out, masking the flaw. If you see TX corruption in testing or on an unusual bus configuration, add external biasing resistors, bypass the onboard transceiver entirely with a [pico-HAT-compatible RS485 module](https://amzn.to/4eMssT1) which plugs right into the header, or (if you're brave, desperate, or foolish) modify the SMD components on the board.
 
 ### 📣 Calling all NIM and zone board owners:
-If you have a Carrier NIM (SYSTXCCNIM01), Damper Control Module (SYSTXCC4ZC01), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Emulating these devices requires protocol traces that can only come from real hardware — even a few minutes of logs would be incredibly valuable. You can share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
+If you have a Carrier NIM (SYSTXCCNIM01), Damper Control Module (SYSTXCC4ZC01), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be incredibly valuable. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
 
 
 ## Wiring
@@ -45,7 +45,7 @@ Carrier ABCD Bus          ESP32 Board
   GND        ──────────── GND
 ```
 
-The Waveshare board has an auto-direction RS485 transceiver — no DE/RE pin to manage. If using a generic transceiver (e.g. MAX485), tie DE and RE high for transmit or manage them with a GPIO.
+The Waveshare board has an auto-direction RS485 transceiver. No DE/RE pin to manage. If using a generic transceiver (e.g. MAX485), tie DE and RE high for transmit or manage them with a GPIO.
 
 ## Bus Architecture
 
@@ -58,7 +58,7 @@ Carrier ABCD bus (RS485, 38400 baud, 8N1)
     └── 0x92  InfinitESP (SAM emulator)
 ```
 
-InfinitESP registers as address `0x92` — the same address used by physical SAM modules and other SAM emulators. **Only one device should be at this address on the bus.** If you have a physical SAM installed, you'll need to disconnect or remove it. Likewise, do not run InfinitESP alongside infinitude (if its SAM emulation is enabled) or infinitive, which also occupy `0x92`.
+InfinitESP registers as address `0x92`, the same address used by physical SAM modules and other SAM emulators. **Only one device can be at this address on the bus.** If you have a physical SAM installed, disconnect or remove it. Likewise, do not run InfinitESP alongside infinitude (if its SAM emulation is enabled) or infinitive, which also occupy `0x92`.
 
 ## Quick Start
 
@@ -101,7 +101,7 @@ esphome upload infinitesp.yaml --device infinitesp.local
 1. Power off the ESP32
 2. Connect RS485 A and B to the Carrier ABCD bus
 3. Power on the ESP32
-4. Check logs for `Parsed frame` messages — this confirms bus traffic is being decoded:
+4. Check logs for `Parsed frame` messages to confirm bus traffic is being decoded:
 
 ```bash
 esphome logs infinitesp.yaml --device infinitesp.local
@@ -162,7 +162,35 @@ infinitesp:
   uart_id: tcp_bus_0
 ```
 
-The TCP and USB CDC transports are provided by [esphome-uart-link](https://github.com/nebulous/esphome-uart-link), a companion ESPHome component that implements UART-over-TCP and UART-over-USB transports. InfinitESP neither knows nor cares which transport backs the UART — they're all interchangeable.
+The TCP and USB CDC transports are provided by [esphome-uart-link](https://github.com/nebulous/esphome-uart-link), a companion ESPHome component that implements UART-over-TCP and UART-over-USB transports. InfinitESP neither knows nor cares which transport backs the UART. They're all interchangeable.
+
+### Raw Bus Tap (Network)
+
+Expose the raw ABCD serial bus over TCP so external tools (Infinitude, Wireshark dissector, custom scripts) can observe the bus in real time. This is useful for protocol analysis and for running Infinitude alongside InfinitESP.
+
+```yaml
+# Add these alongside the normal infinitesp config.
+# IMPORTANT: infinitesp must read from the bridge, not the hardware UART.
+# Change uart_id on the infinitesp: block from bus_uart to bus_bridge.
+
+uart_tcp_server:
+  - id: raw_bus_tap
+    port: 4242
+    max_clients: 2
+    client_mode: fanout
+    idle_timeout: 30s
+
+uart_bridge:
+  id: bus_bridge
+  uarts:
+    - bus_uart                                           # hardware RS485 (bidirectional)
+    - uart: raw_bus_tap
+      flow: from_bridge      # monitor-only; use 'both' to allow TCP client writes
+```
+
+Connect with `nc infinitesp.local 4242` to see raw hex traffic. The `from_bridge` flow direction means TCP clients can only observe, not inject bytes onto the bus. This is the safer default. Change to `both` for bidirectional access (e.g., running Infinitude through the tap).
+
+> **Warning:** When using `flow: both`, TCP clients share the bus with InfinitESP. The ABCD bus has no arbitration. Simultaneous transmits will collide. Only use bidirectional mode if your tool understands the protocol timing.
 
 ## Configuration Reference
 
@@ -172,7 +200,9 @@ The TCP and USB CDC transports are provided by [esphome-uart-link](https://githu
 infinitesp:
   id: infinitesp_hub
   uart_id: bus_uart
-  address: 0x92  # SAM address. Use 0x93 for FakeSAM test mode.
+  sam_address: 0x92  # SAM address. 0x93 = FakeSAM test mode, 0 = disabled (passive monitor)
+  # Optional: emulate a zone controller (SYSTXCC4ZC01)
+  # zone_controller_address: 0x60
   # Optional status LED (mutually exclusive):
   status_light_id: rgb_led    # Reference an existing ESPHome light (RGB supported)
   # status_led_pin: GPIO2      # Or just a GPIO pin for a simple LED
@@ -196,7 +226,7 @@ climate:
     zone: 1    # 1–8, matches Carrier zone number
 ```
 
-Supports `heat`, `cool`, `heat_cool` (auto), and `off` modes. Temperature range: 40–99°F in whole-degree steps. Fan modes: auto, low, medium, high. Presets: home, away, sleep, wake, with optional timed holds (1h/2h/4h/8h).
+Supports `heat`, `cool`, `heat_cool` (auto), and `off` modes. Temperature range: 40-99°F in whole-degree steps. Fan modes: auto, low, medium, high. Presets: per schedule, home, away, sleep, wake, hold timer, hold indefinitely.
 
 ### Sensors
 
@@ -261,11 +291,60 @@ text_sensor:
     type: zone_name        # zone_name (per-zone)
     zone: 1
 
+  # Per-zone hold state: "Schedule", "Hold until HH:MM PM", or "Hold - Permanent"
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Zone 1 Hold State"
+    type: hold_state        # hold_state (per-zone, requires zone:)
+    zone: 1
+
   # Diagnostic text sensors (no zone required)
   # tstat_ssid, tstat_hostname, tstat_wifi_mac,
   # tstat_cloud_host, tstat_proxy_server,
   # tstat_dealer_name, tstat_dealer_brand, tstat_dealer_url,
-  # comfort_profile
+  # comfort_profile, fault_history
+```
+
+## SAM ASCII Interface
+
+InfinitESP provides a command-line interface over TCP port 23 for live bus inspection and control. Connect with any telnet client:
+
+```
+nc infinitesp.local 23
+```
+
+### Read Commands
+
+| Command | Description |
+|---------|-------------|
+| `MODE?` | System mode (HEAT/COOL/AUTO/OFF/EMERGENCY HEAT) |
+| `OAT?` | Outdoor air temperature (°F) |
+| `TIME?` | Current time from bus clock |
+| `DAY?` | Current day of week |
+| `HOLD?` | Hold state (OFF / ON until HH:MM PM / PERMANENT) |
+| `Z1HTSP?` | Zone 1 heat setpoint (°F) |
+| `Z1CLSP?` | Zone 1 cool setpoint (°F) |
+| `Z1FAN?` | Zone 1 fan mode (AUTO/LOW/MED/HIGH) |
+| `Z1RT?` | Zone 1 room temperature (°F) |
+| `Z1RH?` | Zone 1 humidity (%) |
+| `Z1NAME?` | Zone 1 name |
+| `ZONE?` | Active zone bitmask |
+| `HELP` | List all commands |
+
+Prefix with `Z#` for other zones (e.g., `Z2HTSP?`).
+
+### Write Commands
+
+Append `!` and a value to set parameters:
+
+```
+MODE!COOL           # Set system mode
+Z1HTSP!72            # Set zone 1 heat setpoint
+Z1CLSP!68            # Set zone 1 cool setpoint
+Z1FAN!AUTO           # Set zone 1 fan mode
+Z1HOLD!120           # Hold zone 1 for 120 minutes
+Z1HOLD!on            # Permanent hold
+Z1HOLD!off           # Cancel hold, resume schedule
 ```
 
 ## How It Works
@@ -291,7 +370,7 @@ InfinitESP does four things:
 3. **Polls** the thermostat every 3 seconds for live state (temperatures, mode, setpoints)
 4. **Writes** setpoint/mode/fan changes from Home Assistant to the thermostat as bus writes
 
-Mode and setpoint changes use a two-pronged approach: a 3B03 notification write (with change flags) primes the thermostat, then a direct data write delivers the actual values. Both are required — neither alone works.
+Mode and setpoint changes use a two-pronged approach: a 3B03 notification write (with change flags) primes the thermostat, then a direct data write delivers the actual values. Both are required. Neither alone works.
 
 ### Passive Snooping
 
@@ -300,17 +379,17 @@ In addition to SAM-register traffic, InfinitESP passively observes inter-device 
 - **Indoor unit** (0x40): blower RPM, airflow CFM, electric heat status
 - **Outdoor unit** (0x50): compressor RPM, demand %, operating stage, modulation, superheat/subcooling, outdoor/coil/suction/liquid/discharge temperatures
 
-No extra polling needed — the thermostat already queries these devices, and InfinitESP just listens in.
+No extra polling needed. The thermostat already queries these devices, and InfinitESP just listens in.
 
 ### WiFi Credential Caching
 
-When using hardware UART transport, InfinitESP can automatically discover the thermostat's WiFi credentials from register 4608 and cache them to NVS flash. If the ESP32 subsequently boots without WiFi connectivity (e.g., changed router), it injects the cached credentials after a 15-second grace period. This lets the device self-provision from the bus — no manual WiFi config needed after initial setup.
+When using hardware UART transport, InfinitESP can automatically discover the thermostat's WiFi credentials from register 4608 and cache them to NVS flash. If the ESP32 subsequently boots without WiFi connectivity (e.g., changed router), it injects the cached credentials after a 15-second grace period. This lets the device self-provision from the bus. No manual WiFi config needed after initial setup.
 
 This feature is not available with the TCP serial bridge transport (circular dependency: need WiFi to reach the TCP bridge, need the bus to get WiFi credentials).
 
 ## Compatible Systems
 
-Tested with Carrier Infinity / Bryant Evolution / ICP systems using the ABCD RS485 bus with a System Access Module. Other systems using the same bus protocol may also work:
+Tested with Carrier Infinity / Bryant Evolution / ICP systems using the ABCD RS485 bus with a System Access Module. Other systems using the same bus protocol likely work as well:
 
 - **SAM modules**: SYSTXCCSAM01, SYSTXCCSAMC01
 - **Thermostats**: Infinity Touch (SYSTXCCITC01), Evolution Connex (SYSTXBBECC01), legacy UID/UIZ controls with firmware 14+
@@ -320,26 +399,26 @@ Tested with Carrier Infinity / Bryant Evolution / ICP systems using the ABCD RS4
 
 ### Thermostat shows "SAM Communication Fault"
 
-- Verify RS485 A/B wiring — try swapping if unsure (wrong polarity won't damage anything)
+- Verify RS485 A/B wiring. Try swapping if unsure (wrong polarity won't damage anything)
 - Check that UART baud rate is exactly 38400
 - Watch ESPHome logs for any `crc_fail` in the STATS line
 
 ### No climate entities in Home Assistant
 
 - Check that the Bus Status binary sensor shows `on`
-- Zones populate after the ESP sees register data from the thermostat — allow 10–15 seconds after first bus connection
+- Zones populate after the ESP sees register data from the thermostat. Allow 10-15 seconds after first bus connection
 - Verify your zone number (1–8) matches a zone that's active on your thermostat
 
 ### Setpoint changes don't take effect
 
 - There's a 1–3 second propagation delay (poll cycle)
 - If changes never take effect, check logs for CRC errors indicating RS485 signal quality issues
-- Mode OFF may be rejected by some thermostat firmwares — this is a thermostat limitation, not a bug
+- Mode OFF may be rejected by some thermostat firmwares. This is a thermostat limitation, not a bug.
 
 ### Can't flash over USB
 
 - Hold the BOOT button while plugging in USB to enter download mode
-- On ESP32-S3, GPIO45 and GPIO46 are strapping pins — the YAML includes `ignore_strapping_warning: true`
+- On ESP32-S3, GPIO45 and GPIO46 are strapping pins. The YAML includes `ignore_strapping_warning: true`.
 
 ### Bus traffic looks garbled
 
@@ -367,7 +446,7 @@ components/
 
 ## Disclaimer
 
-You are connecting a multi-thousand-dollar HVAC system to some random person's code on the internet. This project was built by reverse-engineering a proprietary serial protocol — there is no official documentation, no vendor endorsement, and no guarantee that anything here is correct. A bug, a misinterpreted register, or a corrupted write could in principle send commands to your equipment that it wasn't designed to handle.
+You are connecting a multi-thousand-dollar HVAC system to some random person's code on the internet. This project was built by reverse-engineering a proprietary serial protocol. There is no official documentation, no vendor endorsement, and no guarantee that anything here is correct. A bug, a misinterpreted register, or a corrupted write could send commands to your equipment that it wasn't designed to handle.
 
 If that happens, that's on you. You chose to wire an ESP32 into your furnace. Nobody involved in this project is coming to fix your HVAC, replace your compressor, or explain to your spouse why the house is 90°F in July.
 
@@ -375,8 +454,8 @@ If that bothers you, don't use this.
 
 ## Acknowledgments
 
-- [infinitude](https://github.com/nebulous/infinitude) — Perl-based Infinity system controller and the origin of this project. Provides a full web interface for Infinity/Evolution systems, includes a SAM emulator, and was the primary protocol reference for InfinitESP.
-- [infinitive](https://github.com/acd/infinitive) — Go-based SAM emulator, reference for the write protocol
+- [infinitude](https://github.com/nebulous/infinitude): Perl-based Infinity system controller and the origin of this project. Provides a full web interface for Infinity/Evolution systems, includes a SAM emulator, and was the primary protocol reference for InfinitESP.
+- [infinitive](https://github.com/acd/infinitive): Go-based SAM emulator, reference for the write protocol
 - Carrier/ICP protocol details from the open-source HVAC community
 
 ## License

@@ -27,6 +27,7 @@ static const uint8_t ADDR_INDOOR_UNIT = 0x40;
 static const uint8_t ADDR_OUTDOOR_UNIT = 0x50;
 static const uint8_t ADDR_SAM = 0x92;
 static const uint8_t ADDR_FAKESAM = 0x93;
+static const uint8_t ADDR_ZONE_CTRL = 0x60;
 static const uint8_t ADDR_BROADCAST = 0xF1;
 
 // Function codes
@@ -91,6 +92,11 @@ static const uint8_t FAN_AUTO = 0;
 static const uint8_t FAN_LOW = 1;
 static const uint8_t FAN_MED = 2;
 static const uint8_t FAN_HIGH = 3;
+
+// Zone Controller registers (device address 0x60)
+static const uint16_t REG_ZC_ZONE_STATUS = 0x0302;  // Zone sensor readings (24 bytes, TLV)
+static const uint16_t REG_ZC_ZONE_CONFIG = 0x0319;  // Zone config (8 bytes)
+static const uint16_t REG_ZC_HEARTBEAT = 0x3404;     // Write/heartbeat flag (1 byte)
 
 // Register 3B02 layout offsets (see AGENTS.md for full layout)
 static const uint8_t REG3B02_ACTIVE_ZONES = 0;
@@ -182,8 +188,12 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void loop() override;
   float get_setup_priority() const override { return setup_priority::DATA; }
 
-  void set_address(uint8_t addr) { address_ = addr; }
-  uint8_t get_address() const { return address_; }
+  void set_sam_address(uint8_t addr) { sam_address_ = addr; }
+  uint8_t get_sam_address() const { return sam_address_; }
+  bool sam_enabled() const { return sam_address_ != 0; }
+  void set_zc_address(uint8_t addr) { zc_address_ = addr; }
+  uint8_t get_zc_address() const { return zc_address_; }
+  bool zc_enabled() const { return zc_address_ != 0; }
   void register_device(InfinitESPDevice *device) { devices_.push_back(device); }
 
   // Status LED configuration
@@ -214,6 +224,19 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint8_t get_zone_count() const;
   bool is_bus_online() const { return bus_online_; }
 
+  // Get normalized hold duration for a zone (1-indexed).
+  // Carrier protocol uses zones_holding bit + duration<=1 to mean permanent hold;
+  // this method normalizes that to 0xFFFF so callers see a consistent encoding.
+  // Returns 0 = no hold, 0xFFFF (65535) = permanent, else minutes remaining.
+  static constexpr uint16_t HOLD_PERMANENT = 0xFFFF;
+  uint16_t get_zone_hold_duration(uint8_t zone) const;
+
+  // Bus diagnostic report — streams directly via callback (no heap allocation)
+  void stream_bus_report_(void (*write_fn)(const uint8_t *, size_t, void *), void *ctx);
+  // Direct register manipulation (used by button platform for virtual registers)
+  void store_register_(uint8_t addr, uint16_t key, const std::vector<uint8_t> &data);
+  void notify_devices_(uint8_t device_addr, uint16_t register_key);
+
   // Decode big-endian IEEE754 float32 from byte vector
   static float decode_f32_be_(const std::vector<uint8_t> &data, size_t offset) {
     if (offset + 4 > data.size())
@@ -239,11 +262,11 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void dispatch_frame_();
   void handle_passive_frame_();
 
-  void transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t src_bus, uint8_t func,
+  void transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t func,
                        const std::vector<uint8_t> &payload);
   void send_frame_(uint8_t dst, uint8_t dst_bus, uint8_t func, const std::vector<uint8_t> &payload);
-  void send_reply_(uint8_t dst, uint8_t dst_bus, uint8_t src_bus, const std::vector<uint8_t> &payload);
-  void send_exception_(uint8_t dst, uint8_t dst_bus, uint8_t src_bus, uint8_t table, uint8_t row, uint8_t code);
+  void send_reply_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, const std::vector<uint8_t> &payload);
+  void send_exception_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t table, uint8_t row, uint8_t code);
 
   void handle_read_request_();
   void handle_write_request_();
@@ -251,8 +274,31 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 
   void poll_thermostat_();
   void initialize_defaults_();
-  void store_register_(uint8_t addr, uint16_t key, const std::vector<uint8_t> &data);
-  void notify_devices_(uint8_t device_addr, uint16_t register_key);
+
+  // Bus traffic capture for diagnostics / protocol reverse engineering
+  struct TrafficEntry {
+    uint32_t count{0};
+    std::vector<uint8_t> last_payload;
+    uint32_t last_seen_ms{0};
+  };
+  // Key: (src << 24) | (dst << 16) | (func << 8) | (reg_key & 0xFF)
+  // Uses reg_key low byte only to keep key in 32 bits — sufficient for traffic grouping
+  // since the table byte is already encoded in reg_key's high byte, which we fold differently.
+  // Actually: key = (src << 24) | (dst << 16) | (func << 8) | ((table ^ row) & 0xFF) is lossy.
+  // Better: use uint64_t or a small struct key.
+  struct TrafficKey {
+    uint8_t src, dst, func;
+    uint16_t reg_key;
+    bool operator<(const TrafficKey &o) const {
+      if (src != o.src) return src < o.src;
+      if (dst != o.dst) return dst < o.dst;
+      if (func != o.func) return func < o.func;
+      return reg_key < o.reg_key;
+    }
+  };
+  std::map<TrafficKey, TrafficEntry> traffic_log_;
+  void log_traffic_(uint8_t src, uint8_t dst, uint8_t func, uint16_t reg_key,
+                     const std::vector<uint8_t> &payload);
 
   uint16_t compute_crc_(const uint8_t *data, uint16_t len) const;
 
@@ -263,7 +309,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   std::vector<uint8_t> rx_hex_log_;
   InfinitESPFrame current_frame_;
   std::vector<InfinitESPDevice *> devices_;
-  uint8_t address_{ADDR_FAKESAM};
+  uint8_t sam_address_{ADDR_FAKESAM};
+  uint8_t zc_address_{0};  // 0 = zone controller emulation disabled
   uint32_t last_rx_time_{0};
   uint32_t last_poll_time_{0};
   uint8_t poll_index_{0};
@@ -281,10 +328,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint32_t diag_last_stats_time_{0};
   bool diag_in_tx_{false};
 
-  // Echo suppression: RS485 transceivers echo TX bytes back to RX.
-  // After transmitting, we drain echo bytes from the RX buffer.
-  uint32_t last_tx_done_time_{0};   // millis() when last TX completed
-  uint32_t tx_echo_drain_count_{0};  // bytes drained as echo
+
 
   // Frame-drop debugging
   uint32_t diag_rx_seq_{0};        // monotonically increasing RX frame sequence

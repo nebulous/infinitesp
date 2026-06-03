@@ -10,6 +10,7 @@ InfinitESPTextSensor = infinitesp_ns.class_("InfinitESPTextSensor", text_sensor.
 
 TEXT_SENSOR_TYPES = {
     "zone_name": "zone_name",
+    "hold_state": "hold_state",
     "tstat_ssid": "tstat_ssid",
     "tstat_hostname": "tstat_hostname",
     "tstat_wifi_mac": "tstat_wifi_mac",

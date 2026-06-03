@@ -26,7 +26,9 @@ static const uint32_t SLOW_POLL_INTERVAL_MS = 31000;  // poll every 31s (prime, 
 
 void InfinitESPComponent::setup() {
   ESP_LOGI("InfinitESP", "InfinitESP v0.1.0 build %s %s", __DATE__, __TIME__);
-  ESP_LOGI("InfinitESP", "Address=0x%02X", address_);
+  ESP_LOGI("InfinitESP", "SAM Address=0x%02X", sam_address_);
+  if (zc_enabled())
+    ESP_LOGI("InfinitESP", "Zone Controller emulation at 0x%02X", zc_address_);
 
   // Initialize NVS-backed preference for cached WiFi credentials
   wifi_pref_ = global_preferences->make_preference<CachedWifi>(
@@ -44,8 +46,10 @@ void InfinitESPComponent::setup() {
 
   // Push initialized register defaults to all sub-platforms
   // so they don't sit in "unknown" until the first bus reply
-  for (auto &kv : device_registers_[address_]) {
-    notify_devices_(address_, kv.first);
+  if (sam_enabled()) {
+    for (auto &kv : device_registers_[sam_address_]) {
+      notify_devices_(sam_address_, kv.first);
+    }
   }
 
   // Initialize status LED (if configured via YAML)
@@ -77,26 +81,12 @@ void InfinitESPComponent::setup() {
 void InfinitESPComponent::loop() {
   uint32_t loop_start = millis();
 
-  // Echo suppression: after TX, drain any echo bytes from the RS485 transceiver.
-  // The echo arrives within ~60ms of TX completion (38400 baud + TCP RTT).
-  // Large frames (133-byte REPLY) take ~35ms just to transmit at 38400 baud.
-  // We drain for 60ms after each TX to avoid corrupted frame parsing.
-  // This sacrifices some passively-snooped bus data but prevents CRC failure cascades.
-  if (last_tx_done_time_ > 0 && (loop_start - last_tx_done_time_ < 60)) {
-    int drained = 0;
-    while (available()) {
-      uint8_t discard;
-      read_byte(&discard);
-      drained++;
-    }
-    if (drained > 0) {
-      tx_echo_drain_count_ += drained;
-      ESP_LOGD("InfinitESP", "Echo drain: %d bytes (total_drained=%u, since_tx=%ums)",
-               drained, tx_echo_drain_count_, loop_start - last_tx_done_time_);
-    }
-    // Don't process any bus data during echo drain window
-    return;
-  }
+  // NOTE: no echo suppression needed. RS485 auto-direction transceivers disable
+  // RX during TX, so the UART RX buffer is empty after transmission — there is no
+  // echo to drain. A previous 60ms drain window was removed because it was
+  // discarding legitimate bus traffic (replies from other devices that arrived
+  // within 60ms of our TX), causing ~50% poll timeouts and cascading CRC failures
+  // from partial frames that straddled the drain boundary.
 
   // Check UART buffer fill level before draining
   int uart_available = available();
@@ -110,12 +100,13 @@ void InfinitESPComponent::loop() {
              uart_available, diag_uart_hwm_, diag_uart_overflow_events_);
   }
 
-  // Read all available bytes from UART
+  // Read all available bytes from primary UART (ABCD bus)
   while (available()) {
     uint8_t byte;
     read_byte(&byte);
     diag_total_rx_bytes_++;
-    rx_hex_log_.push_back(byte);
+    if (rx_hex_log_.size() < 512)
+      rx_hex_log_.push_back(byte);
     parse_byte_(byte);
   }
   uint32_t now = millis();
@@ -140,15 +131,14 @@ void InfinitESPComponent::loop() {
     ESP_LOGI("InfinitESP", "STATS rx_bytes=%u tx_bytes=%u rx_frames=%u tx_frames=%u "
              "crc_fail=%u stale=%u uart_hwm=%u overflow_evts=%u "
              "reply_exp=%u reply_got=%u reply_timeout=%u poll_pending=%u "
-             "tx_flush_max=%ums loop_max=%ums inter_frame=%u..%ums echo_drain=%u",
+             "tx_flush_max=%ums loop_max=%ums inter_frame=%u..%ums",
              diag_total_rx_bytes_, diag_total_tx_bytes_, diag_frames_parsed_, diag_tx_seq_,
              diag_crc_fail_, diag_stale_discard_, diag_uart_hwm_, diag_uart_overflow_events_,
              diag_reply_expected_, diag_reply_received_, diag_reply_timeout_,
              (uint32_t) pending_polls_.size(),
              diag_tx_flush_max_ms_, diag_loop_max_ms_,
              diag_inter_frame_min_ms_ == UINT32_MAX ? 0 : diag_inter_frame_min_ms_,
-             diag_inter_frame_max_ms_,
-             tx_echo_drain_count_);
+             diag_inter_frame_max_ms_);
     diag_last_stats_time_ = now;
     // Reset peak trackers each stats interval
     diag_uart_hwm_ = 0;
@@ -196,7 +186,7 @@ void InfinitESPComponent::loop() {
   // This is tighter than the old 200ms byte-gap but still conservative.
   const uint32_t bus_idle_ms = diag_last_frame_time_ ? (now - diag_last_frame_time_) : 1000;
   bool fast_poll_sent = false;
-  if ((now - last_poll_time_ > 3000) && bus_idle_ms > 50) {
+  if (sam_enabled() && (now - last_poll_time_ > 3000) && bus_idle_ms > 50) {
     poll_thermostat_();
     last_poll_time_ = now;
     fast_poll_sent = true;
@@ -206,7 +196,7 @@ void InfinitESPComponent::loop() {
   // MUST NOT fire in the same loop iteration as the fast poll — sending
   // two READ frames to the same thermostat back-to-back causes the echo
   // drain to eat one of the replies (observed 44% poll timeout rate).
-  if (!fast_poll_sent && bus_online_ &&
+  if (sam_enabled() && !fast_poll_sent && bus_online_ &&
       (now - last_slow_poll_time_ >= SLOW_POLL_INTERVAL_MS) && bus_idle_ms > 50) {
     const auto &sreg = SLOW_POLL_REGS[slow_poll_index_ % SLOW_POLL_REG_COUNT];
     uint16_t sreg_key = (sreg[0] << 8) | sreg[1];
@@ -340,8 +330,9 @@ void InfinitESPComponent::dispatch_frame_() {
            func_name, current_frame_.length, current_frame_.payload.size(),
            payload_hex, current_frame_.payload.size() > 32 ? "..." : "");
 
-  // Check if addressed to us
-  bool to_us = (current_frame_.dst == address_);
+  // Check if addressed to us (SAM or optional zone controller)
+  bool to_us = (sam_enabled() && current_frame_.dst == sam_address_);
+  bool to_zc = (zc_enabled() && current_frame_.dst == zc_address_);
 
   // Reply matching: if this is a REPLY addressed to us, check against pending polls
   if (current_frame_.func == FUNC_REPLY && to_us) {
@@ -377,7 +368,7 @@ void InfinitESPComponent::dispatch_frame_() {
     handle_reply_();
   }
 
-  if (to_us) {
+  if (to_us || to_zc) {
     switch (current_frame_.func) {
       case FUNC_READ:
         handle_read_request_();
@@ -390,6 +381,13 @@ void InfinitESPComponent::dispatch_frame_() {
     }
   } else {
     handle_passive_frame_();
+  }
+
+  // Log all RX frames to traffic capture
+  if (current_frame_.payload.size() >= 3) {
+    log_traffic_(current_frame_.src, current_frame_.dst, current_frame_.func,
+                (current_frame_.payload[1] << 8) | current_frame_.payload[2],
+                current_frame_.payload);
   }
 }
 
@@ -474,13 +472,13 @@ void InfinitESPComponent::handle_passive_frame_() {
     // Broadcast 3B02 state writes from thermostat (contains time, weekday, etc.)
     // Thermostat periodically broadcasts updated 3B02 data to all devices on the bus.
     // Since dst != our address, these land in handle_passive_frame_ instead of handle_reply_.
-    // Mirror the data to our address so SAM reads get current time.
-    if (reg_key == REG_SAM_STATE && current_frame_.src == ADDR_THERMOSTAT) {
+    // Mirror the data to SAM address so climate/sensor entities get current values.
+    if (sam_enabled() && reg_key == REG_SAM_STATE && current_frame_.src == ADDR_THERMOSTAT) {
       if (current_frame_.payload.size() > 3) {
         std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
         ESP_LOGD("InfinitESP", "Broadcast 3B02 state update (%u bytes)", data.size());
-        store_register_(address_, reg_key, data);
-        notify_devices_(address_, reg_key);
+        store_register_(sam_address_, reg_key, data);
+        notify_devices_(sam_address_, reg_key);
       }
     }
   }
@@ -494,14 +492,14 @@ uint16_t InfinitESPComponent::compute_crc_(const uint8_t *data, uint16_t len) co
 
 // --- Shared frame transmission ---
 
-void InfinitESPComponent::transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t src_bus, uint8_t func,
+void InfinitESPComponent::transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t func,
                                           const std::vector<uint8_t> &payload) {
   std::vector<uint8_t> frame;
   frame.reserve(FRAME_HEADER_SIZE + payload.size() + FRAME_CRC_SIZE);
 
   frame.push_back(dst);
   frame.push_back(dst_bus);
-  frame.push_back(address_);
+  frame.push_back(src);
   frame.push_back(src_bus);
   frame.push_back(payload.size());
   frame.push_back(0x00);  // pid
@@ -515,6 +513,11 @@ void InfinitESPComponent::transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t 
 
   diag_tx_seq_++;
   diag_total_tx_bytes_ += frame.size();
+
+  // Log TX frames to traffic capture
+  if (payload.size() >= 3) {
+    log_traffic_(src, dst, func, (payload[1] << 8) | payload[2], payload);
+  }
 
   uint32_t flush_start = millis();
   diag_in_tx_ = true;
@@ -535,28 +538,26 @@ void InfinitESPComponent::transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t 
   if (flush_ms > 5)
     ESP_LOGW("InfinitESP", "SLOW FLUSH: %ums for %u bytes func=%02X to %02X",
              flush_ms, frame.size(), func, dst);
-
-  last_tx_done_time_ = millis();
 }
 
 void InfinitESPComponent::send_frame_(uint8_t dst, uint8_t dst_bus, uint8_t func,
                                       const std::vector<uint8_t> &payload) {
   ESP_LOGV("InfinitESP", "TX#%u %02X->%02X func=%02X len=%d uart_avail=%d",
-           diag_tx_seq_ + 1, address_, dst, func, payload.size(), available());
-  transmit_frame_(dst, dst_bus, 0x01, func, payload);
+           diag_tx_seq_ + 1, sam_address_, dst, func, payload.size(), available());
+  transmit_frame_(dst, dst_bus, sam_address_, 0x01, func, payload);
 }
 
-void InfinitESPComponent::send_reply_(uint8_t dst, uint8_t dst_bus, uint8_t src_bus,
+void InfinitESPComponent::send_reply_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus,
                                       const std::vector<uint8_t> &payload) {
-  ESP_LOGV("InfinitESP", "TX#%u REPLY to 0x%02X uart_avail=%d",
-           diag_tx_seq_ + 1, dst, available());
-  transmit_frame_(dst, dst_bus, src_bus, FUNC_REPLY, payload);
+  ESP_LOGV("InfinitESP", "TX#%u REPLY %02X->%02X uart_avail=%d",
+           diag_tx_seq_ + 1, src, dst, available());
+  transmit_frame_(dst, dst_bus, src, src_bus, FUNC_REPLY, payload);
 }
 
-void InfinitESPComponent::send_exception_(uint8_t dst, uint8_t dst_bus, uint8_t src_bus,
+void InfinitESPComponent::send_exception_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus,
                                            uint8_t table, uint8_t row, uint8_t code) {
   std::vector<uint8_t> payload = {0x00, table, row, code};
-  transmit_frame_(dst, dst_bus, src_bus, FUNC_EXCEPTION, payload);
+  transmit_frame_(dst, dst_bus, src, src_bus, FUNC_EXCEPTION, payload);
 }
 
 // --- Frame Handlers ---
@@ -568,10 +569,13 @@ void InfinitESPComponent::handle_read_request_() {
   uint8_t table = current_frame_.payload[1];
   uint8_t row = current_frame_.payload[2];
   uint16_t reg_key = (table << 8) | row;
+  uint8_t dest = current_frame_.dst;  // who they're talking to (SAM or ZC)
+  bool is_zc = (dest == zc_address_);
 
-  ESP_LOGD("InfinitESP", "READ request for register %04X from %02X", reg_key, current_frame_.src);
+  ESP_LOGD("InfinitESP", "%s READ %04X from %02X",
+           is_zc ? "ZC" : "SAM", reg_key, current_frame_.src);
 
-  const std::vector<uint8_t> *reg_data = get_register(address_, reg_key);
+  const std::vector<uint8_t> *reg_data = get_register(dest, reg_key);
   if (reg_data != nullptr) {
     // Build reply payload: [0x00, table, row] + register data
     std::vector<uint8_t> reply_payload = {0x00, table, row};
@@ -579,13 +583,15 @@ void InfinitESPComponent::handle_read_request_() {
 
     // Debug: log model/serial fields from 0104 to verify register data before TX
     if (reg_key == REG_DEVICE_INFO && reg_data->size() >= 96) {
-      ESP_LOGI("InfinitESP", "0104 model: %.*s", 20, (const char *) &(*reg_data)[64]);
-      ESP_LOGI("InfinitESP", "0104 serial: %.*s", 24, (const char *) &(*reg_data)[96]);
+      ESP_LOGI("InfinitESP", "%s 0104 model: %.*s", is_zc ? "ZC" : "SAM", 20, (const char *) &(*reg_data)[64]);
+      ESP_LOGI("InfinitESP", "%s 0104 serial: %.*s", is_zc ? "ZC" : "SAM", 24, (const char *) &(*reg_data)[96]);
     }
 
-    send_reply_(current_frame_.src, current_frame_.src_bus, current_frame_.dst_bus, reply_payload);
+    send_reply_(current_frame_.src, current_frame_.src_bus, dest, current_frame_.dst_bus, reply_payload);
   } else {
-    send_exception_(current_frame_.src, current_frame_.src_bus, current_frame_.dst_bus, table, row, 0x04);
+    ESP_LOGI("InfinitESP", "%s READ unknown register %04X — returning EXCEPTION",
+             is_zc ? "ZC" : "SAM", reg_key);
+    send_exception_(current_frame_.src, current_frame_.src_bus, dest, current_frame_.dst_bus, table, row, 0x04);
   }
 }
 
@@ -597,24 +603,32 @@ void InfinitESPComponent::handle_write_request_() {
   uint8_t table = current_frame_.payload[1];
   uint8_t row = current_frame_.payload[2];
   uint16_t reg_key = (table << 8) | row;
+  uint8_t dest = current_frame_.dst;  // who they're writing to (SAM or ZC)
+  bool is_zc = (dest == zc_address_);
 
-  ESP_LOGD("InfinitESP", "WRITE to register %04X from %02X (%d bytes)", reg_key, current_frame_.src,
-           current_frame_.payload.size() - 3);
+  // Log ZC writes at INFO level for protocol discovery
+  if (is_zc) {
+    ESP_LOGI("InfinitESP", "ZC WRITE %04X from %02X (%d bytes)",
+             reg_key, current_frame_.src, current_frame_.payload.size() - 3);
+  } else {
+    ESP_LOGD("InfinitESP", "WRITE to register %04X from %02X (%d bytes)", reg_key, current_frame_.src,
+             current_frame_.payload.size() - 3);
+  }
 
-  // Store register data (skip the 3-byte header) under our own address
+  // Store register data (skip the 3-byte header) under the target address
   if (current_frame_.payload.size() > 3) {
     std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
-    // Protect our device identity from being overwritten
+    // Protect device identity from being overwritten
     if (reg_key != REG_DEVICE_INFO) {
-      store_register_(address_, reg_key, data);
+      store_register_(dest, reg_key, data);
     }
   }
 
   // Send ACK reply (echo the original payload back)
-  send_reply_(current_frame_.src, current_frame_.src_bus, current_frame_.dst_bus, current_frame_.payload);
+  send_reply_(current_frame_.src, current_frame_.src_bus, dest, current_frame_.dst_bus, current_frame_.payload);
 
   // Notify sub-platforms
-  notify_devices_(address_, reg_key);
+  notify_devices_(dest, reg_key);
 }
 
 void InfinitESPComponent::handle_reply_() {
@@ -641,7 +655,7 @@ void InfinitESPComponent::handle_reply_() {
     // Mirror state/zones registers to SAM's own address so READ requests
     // to the SAM serve current values instead of stale defaults
     if (reg_key == REG_SAM_STATE || reg_key == REG_SAM_ZONES) {
-      store_register_(address_, reg_key, data);
+      store_register_(sam_address_, reg_key, data);
       // Log time fields from 3B02 for debugging
       if (reg_key == REG_SAM_STATE && data.size() >= REG3B02_MINUTES + 2) {
         uint16_t minutes = ((uint16_t) data[REG3B02_MINUTES] << 8) | (uint16_t) data[REG3B02_MINUTES + 1];
@@ -742,10 +756,24 @@ const std::vector<uint8_t> *InfinitESPComponent::get_register(uint8_t addr, uint
 }
 
 uint8_t InfinitESPComponent::get_zone_count() const {
-  auto *state = get_register(address_, REG_SAM_STATE);
+  auto *state = get_register(sam_address_, REG_SAM_STATE);
   if (state && !state->empty())
     return state->at(0);  // active_zones bitmask
   return 0;
+}
+
+uint16_t InfinitESPComponent::get_zone_hold_duration(uint8_t zone) const {
+  auto *data = get_register(sam_address_, REG_SAM_ZONES);
+  uint8_t idx = zone - 1;
+  if (!data || data->size() < REG3B03_HOLD_DURATIONS + idx * 2 + 2)
+    return 0;
+  bool is_holding = (data->at(REG3B03_ZONES_HOLDING) & (1 << idx)) != 0;
+  uint16_t dur = ((uint16_t) data->at(REG3B03_HOLD_DURATIONS + idx * 2) << 8) |
+                 data->at(REG3B03_HOLD_DURATIONS + idx * 2 + 1);
+  // Carrier protocol: zones_holding bit + duration<=1 = permanent hold
+  if (is_holding && dur <= 1)
+    return HOLD_PERMANENT;
+  return dur;
 }
 
 void InfinitESPComponent::poll_register(uint8_t table, uint8_t row) {
@@ -767,7 +795,8 @@ void InfinitESPComponent::poll_register(uint8_t table, uint8_t row) {
 // --- Domain Methods ---
 
 void InfinitESPComponent::set_zone_setpoint(uint8_t zone, uint8_t heat_sp, uint8_t cool_sp) {
-  auto *zones_data = get_register(address_, REG_SAM_ZONES);
+  if (!sam_enabled()) return;
+  auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
   if (!zones_data || zones_data->size() < 27)
     return;
 
@@ -797,7 +826,7 @@ void InfinitESPComponent::set_zone_setpoint(uint8_t zone, uint8_t heat_sp, uint8
   // Update local cache first
   data[1] = 0;  // reserved stays 0
   data[REG3B03_CHANGE_FLAGS] = 0;  // clear change flags in cache
-  store_register_(address_, REG_SAM_ZONES, data);
+  store_register_(sam_address_, REG_SAM_ZONES, data);
 
   // Build write payload: [0x00, 0x3B, 0x03] + [0x00, 0x00, flags] + data[3:]
   std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, 0x00, 0x00, flags};
@@ -808,7 +837,8 @@ void InfinitESPComponent::set_zone_setpoint(uint8_t zone, uint8_t heat_sp, uint8
 }
 
 void InfinitESPComponent::set_zone_fan(uint8_t zone, uint8_t fan_mode) {
-  auto *zones_data = get_register(address_, REG_SAM_ZONES);
+  if (!sam_enabled()) return;
+  auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
   if (!zones_data || zones_data->size() < REG3B03_SIZE)
     return;
 
@@ -819,7 +849,7 @@ void InfinitESPComponent::set_zone_fan(uint8_t zone, uint8_t fan_mode) {
 
   // Update local cache
   data[REG3B03_CHANGE_FLAGS] = 0;  // clear change flags
-  store_register_(address_, REG_SAM_ZONES, data);
+  store_register_(sam_address_, REG_SAM_ZONES, data);
 
   // Build write payload
   std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, 0x00, 0x00, CHANGE_FAN};
@@ -830,7 +860,8 @@ void InfinitESPComponent::set_zone_fan(uint8_t zone, uint8_t fan_mode) {
 }
 
 void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes) {
-  auto *zones_data = get_register(address_, REG_SAM_ZONES);
+  if (!sam_enabled()) return;
+  auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
   if (!zones_data || zones_data->size() < REG3B03_SIZE)
     return;
 
@@ -851,7 +882,7 @@ void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes)
 
   // Update local cache
   data[REG3B03_CHANGE_FLAGS] = 0;
-  store_register_(address_, REG_SAM_ZONES, data);
+  store_register_(sam_address_, REG_SAM_ZONES, data);
 
   // Use CHANGE_HOLD flag (0x02) + CHANGE_OVERRIDE flag (0x80)
   uint8_t flags = CHANGE_HOLD | CHANGE_OVERRIDE;
@@ -880,7 +911,7 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
            activity_index < 5 ? names[activity_index] : "?", zone, htsp, clsp, fan, hold_duration);
 
   // Update the 3B03 zones data with the activity's setpoints and fan
-  auto *zones_data = get_register(address_, REG_SAM_ZONES);
+  auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
   if (!zones_data || zones_data->size() < REG3B03_SIZE)
     return;
 
@@ -903,7 +934,7 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
 
   // Update local cache
   data[REG3B03_CHANGE_FLAGS] = 0;
-  store_register_(address_, REG_SAM_ZONES, data);
+  store_register_(sam_address_, REG_SAM_ZONES, data);
 
   // Write with all change flags set (fan + hold + heat + cool + override)
   uint8_t flags = CHANGE_FAN | CHANGE_HOLD | CHANGE_HEAT | CHANGE_COOL | CHANGE_OVERRIDE;
@@ -916,7 +947,8 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
 }
 
 void InfinitESPComponent::set_system_mode(uint8_t mode) {
-  auto *state_data = get_register(address_, REG_SAM_STATE);
+  if (!sam_enabled()) return;
+  auto *state_data = get_register(sam_address_, REG_SAM_STATE);
   if (!state_data || state_data->size() < 29) {
     ESP_LOGW("InfinitESP", "Set system mode=%d FAILED: no cached 3B02 data", mode);
     return;
@@ -929,7 +961,7 @@ void InfinitESPComponent::set_system_mode(uint8_t mode) {
   data[22] = (data[22] & 0xF0) | (mode & 0x0F);
 
   // Update local 3B02 cache so we can serve it when thermostat READs us
-  store_register_(address_, REG_SAM_STATE, data);
+  store_register_(sam_address_, REG_SAM_STATE, data);
 
   ESP_LOGI("InfinitESP", "Set system mode=%d (stagmode 0x%02X->0x%02X)", mode, old_stagmode, data[22]);
 
@@ -940,7 +972,7 @@ void InfinitESPComponent::set_system_mode(uint8_t mode) {
   // the mode change, and the 3B02 write delivers the actual data.
 
   // 3B03 notification with system_mode flag
-  auto *zones_data = get_register(address_, REG_SAM_ZONES);
+  auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
   if (zones_data && zones_data->size() >= 11) {
     std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, 0x00, 0x00, CHANGE_MODE};
     payload.insert(payload.end(), zones_data->begin() + 3, zones_data->end());
@@ -958,7 +990,9 @@ void InfinitESPComponent::set_system_mode(uint8_t mode) {
 // --- Default Register Initialization ---
 
 void InfinitESPComponent::initialize_defaults_() {
-  // Register 0104 - Device info (120 bytes)
+  // --- SAM registers ---
+  if (sam_enabled()) {
+    // Register 0104 - Device info (120 bytes)
   {
     auto pad_str = [](std::vector<uint8_t> &buf, const char *str, size_t width) {
       size_t slen = strlen(str);
@@ -973,13 +1007,13 @@ void InfinitESPComponent::initialize_defaults_() {
     pad_str(data, "InfinitESP--SAM", 20);         // model
     pad_str(data, "", 12);                        // reference
     pad_str(data, "ESP32SAM01", 24);              // serial
-    store_register_(address_, REG_DEVICE_INFO, data);
+    store_register_(sam_address_, REG_DEVICE_INFO, data);
   }
 
   // Register 030D - SAM status (7 bytes)
   {
     std::vector<uint8_t> data = {0x3D, 0x3E, 0x3F, 0, 0, 0, 0};
-    store_register_(address_, REG_SAM_STATUS, data);
+    store_register_(sam_address_, REG_SAM_STATUS, data);
   }
 
   // Register 3B02 - System state (29 bytes)
@@ -994,7 +1028,7 @@ void InfinitESPComponent::initialize_defaults_() {
     data[REG3B02_MINUTES] = 0x01;                                // 480 (8:00am) BE high byte
     data[REG3B02_MINUTES + 1] = 0xE0;                            // BE low byte
     data[REG3B02_DISPLAYED_ZONE] = 0x01;
-    store_register_(address_, REG_SAM_STATE, data);
+    store_register_(sam_address_, REG_SAM_STATE, data);
   }
 
   // Register 3B03 - Zone settings (150 bytes)
@@ -1013,7 +1047,7 @@ void InfinitESPComponent::initialize_defaults_() {
       uint16_t name_offset = REG3B03_ZONE_NAMES + (z * 12);
       strncpy(reinterpret_cast<char *>(&data[name_offset]), zone_names[z], 12);
     }
-    store_register_(address_, REG_SAM_ZONES, data);
+    store_register_(sam_address_, REG_SAM_ZONES, data);
   }
 
   // Register 3B04 - Vacation settings (11 bytes)
@@ -1027,7 +1061,7 @@ void InfinitESPComponent::initialize_defaults_() {
     data[5] = 0;    // min_humidity
     data[6] = 100;  // max_humidity: 100%
     data[7] = 0;    // fan_mode: auto
-    store_register_(address_, REG_SAM_VACATION, data);
+    store_register_(sam_address_, REG_SAM_VACATION, data);
   }
 
   // Register 3B05 - Accessories (11 bytes)
@@ -1041,7 +1075,7 @@ void InfinitESPComponent::initialize_defaults_() {
     data[8] = 0;   // uv_reminders: off
     data[9] = 0;   // humidifier_reminders: off
     data[10] = 0;  // ventilator_reminders: off
-    store_register_(address_, REG_SAM_ACCESSORIES, data);
+    store_register_(sam_address_, REG_SAM_ACCESSORIES, data);
   }
 
   // Register 3B06 - Dealer info (52 bytes)
@@ -1060,17 +1094,80 @@ void InfinitESPComponent::initialize_defaults_() {
     // dealer_name at offset 12: 20 bytes
     strncpy(reinterpret_cast<char *>(&data[12]), "InfinitESP", 20);
     // dealer_phone at offset 32: 20 bytes (all zeros)
-    store_register_(address_, REG_SAM_DEALER, data);
+    store_register_(sam_address_, REG_SAM_DEALER, data);
   }
 
   // Register 3B0E - Activity flag (1 byte)
   {
     std::vector<uint8_t> data = {0};
-    store_register_(address_, REG_SAM_ACTIVITY, data);
+    store_register_(sam_address_, REG_SAM_ACTIVITY, data);
   }
 
-  ESP_LOGI("InfinitESP", "Initialized %d SAM registers at address 0x%02X",
-           device_registers_[address_].size(), address_);
+    ESP_LOGI("InfinitESP", "Initialized %d SAM registers at address 0x%02X",
+             device_registers_[sam_address_].size(), sam_address_);
+  } else {
+    ESP_LOGI("InfinitESP", "SAM emulation disabled (sam_address=0)");
+  }
+
+  // --- Zone Controller registers (address 0x60) ---
+  // Only seeded if zone_controller_address is configured (non-zero).
+  // Based on SYSTXCC4ZC01 captures — see docs/feisley-captures/ZONE_CONTROLLER.md
+  if (zc_enabled()) {
+    // Register 0104 - Device info (120 bytes)
+    {
+      auto pad_str_zc = [](std::vector<uint8_t> &buf, const char *str, size_t width) {
+        size_t slen = strlen(str);
+        for (size_t i = 0; i < width; i++)
+          buf.push_back(i < slen ? (uint8_t) str[i] : 0x00);
+      };
+      std::vector<uint8_t> data;
+      data.reserve(120);
+      pad_str_zc(data, "INFINITESP ZONE CTRL", 24);  // device
+      pad_str_zc(data, "", 24);                       // location
+      pad_str_zc(data, __DATE__, 16);                 // software
+      pad_str_zc(data, "SYSTXCC4ZC01", 20);           // model (real model so thermostat recognizes it)
+      pad_str_zc(data, "INFD-ZC-01", 12);              // reference
+      pad_str_zc(data, "ESP32ZC01", 24);               // serial
+      store_register_(zc_address_, REG_DEVICE_INFO, data);
+    }
+
+    // Register 0302 - Zone sensor readings (24 bytes, TLV format)
+    // Layout: 4 zones, zone 1 = no sensor (thermostat direct), zones 2-4 have readings.
+    // System values 0x14 and 0x1C are static across all captures.
+    {
+      std::vector<uint8_t> data = {
+        0x04, 0x01, 0x00, 0x00,   // header: 4 zones, zone 1 present (no sensor)
+        0x01, 0x02, 0x04, 0x4E,   // zone 2: 78°F (0x4E)
+        0x01, 0x03, 0x04, 0x4E,   // zone 3: 78°F
+        0x01, 0x04, 0x04, 0x4E,   // zone 4: 78°F
+        0x04, 0x14, 0x00, 0x00,   // system value 0x14 (20)
+        0x04, 0x1C, 0x00, 0x00,   // system value 0x1C (28)
+      };
+      store_register_(zc_address_, REG_ZC_ZONE_STATUS, data);
+    }
+
+    // Register 0319 - Zone config (8 bytes)
+    {
+      std::vector<uint8_t> data = {0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+      store_register_(zc_address_, REG_ZC_ZONE_CONFIG, data);
+    }
+
+    // Register 030D - Unknown (7 bytes, always zeros)
+    // Shared register number with SAM 030D but different device address
+    {
+      std::vector<uint8_t> data(7, 0);
+      store_register_(zc_address_, REG_SAM_STATUS, data);
+    }
+
+    // Register 3404 - Heartbeat flag (1 byte)
+    {
+      std::vector<uint8_t> data = {0x00};
+      store_register_(zc_address_, REG_ZC_HEARTBEAT, data);
+    }
+
+    ESP_LOGI("InfinitESP", "Initialized %d ZC registers at address 0x%02X",
+             device_registers_[zc_address_].size(), zc_address_);
+  }
 }
 
 void InfinitESPComponent::cache_wifi_credentials_(const std::string &ssid, const std::string &password) {
@@ -1263,6 +1360,99 @@ void InfinitESPComponent::update_status_led_() {
 
   status_led_state_ = new_state;
 #endif  // has at least one status LED mode
+}
+
+// --- Bus Traffic Capture ---
+
+void InfinitESPComponent::log_traffic_(uint8_t src, uint8_t dst, uint8_t func, uint16_t reg_key,
+                                         const std::vector<uint8_t> &payload) {
+  TrafficKey key{src, dst, func, reg_key};
+  auto &entry = traffic_log_[key];
+  entry.count++;
+  entry.last_payload = payload;
+  entry.last_seen_ms = millis();
+}
+
+void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, size_t, void *), void *ctx) {
+  // Stream a JSON diagnostic report via a write callback (UART/TCP socket).
+  // Uses only a 256-byte stack buffer — no heap allocation regardless of report size.
+  // Full register hex dumps, no truncation.
+  auto emit = [&](const char *s) { write_fn((const uint8_t *)s, strlen(s), ctx); };
+  char buf[256];
+  int n;
+
+  // Report metadata
+  n = snprintf(buf, sizeof(buf),
+    "{\"fw\":\"InfinitESP 0.1\",\"up\":%u,\"bus\":\"%s\","
+    "\"sam\":\"%02X\",\"zc\":\"%02X\","
+    "\"rx\":%u,\"tx\":%u,\"crc\":%u,\"exp\":%u,\"got\":%u,\"to\":%u,"
+    "\"hwm\":%u,\"ovf\":%u,\"prg\":%u,\"pp\":%u",
+    (unsigned)(millis()/1000), bus_online_?"on":"off",
+    sam_address_, zc_address_,
+    (unsigned)diag_frames_parsed_, (unsigned)diag_tx_seq_,
+    (unsigned)diag_crc_fail_, (unsigned)diag_reply_expected_,
+    (unsigned)diag_reply_received_, (unsigned)diag_reply_timeout_,
+    (unsigned)diag_uart_hwm_, (unsigned)diag_uart_overflow_events_,
+    (unsigned)diag_poll_purged_, (unsigned)pending_polls_.size());
+  write_fn((const uint8_t *)buf, n, ctx);
+
+  // Devices
+  emit(",\"dev\":[");
+  bool first = true;
+  for (auto &akv : device_registers_) {
+    auto it = akv.second.find(REG_DEVICE_INFO);
+    if (it == akv.second.end()) continue;
+    auto &d = it->second;
+    char name[25] = {}, model[21] = {}, serial[25] = {};
+    memcpy(name, d.data(), std::min((size_t)24, d.size()));
+    if (d.size() > 64) memcpy(model, d.data()+64, std::min((size_t)20, d.size()-64));
+    if (d.size() > 96) memcpy(serial, d.data()+96, std::min((size_t)24, d.size()-96));
+    for (int i=23; i>=0 && name[i]==' '; i--) name[i]=0;
+    for (int i=19; i>=0 && model[i]==' '; i--) model[i]=0;
+    for (int i=23; i>=0 && serial[i]==' '; i--) serial[i]=0;
+    n = snprintf(buf, sizeof(buf), "%s{\"address\":\"%02X\",\"name\":\"%s\",\"model\":\"%s\",\"serial\":\"%s\"}",
+             first?"":",", akv.first, name, model, serial);
+    write_fn((const uint8_t *)buf, n, ctx);
+    first = false;
+  }
+  emit("]");
+
+  // Traffic summary
+  emit(",\"traffic\":[");
+  first = true;
+  for (auto &kv : traffic_log_) {
+    auto &key = kv.first;
+    auto &entry = kv.second;
+    const char *fn = key.func==FUNC_READ?"R":key.func==FUNC_REPLY?"P":key.func==FUNC_WRITE?"W":"E";
+    n = snprintf(buf, sizeof(buf), "%s\"%02X>%02X %s %04X x%u\"",
+             first?"":",", key.src, key.dst, fn, key.reg_key, (unsigned)entry.count);
+    write_fn((const uint8_t *)buf, n, ctx);
+    first = false;
+  }
+  emit("]");
+
+  // Register dump — full hex, no truncation
+  emit(",\"regs\":[");
+  first = true;
+  for (auto &akv : device_registers_) {
+    for (auto &rkv : akv.second) {
+      if (rkv.first == REG_TSTAT_WIFI) continue;  // skip WiFi creds
+      n = snprintf(buf, sizeof(buf),
+               "%s{\"address\":\"%02X\",\"register\":\"%04X\",\"length\":%u,\"data\":\"",
+               first?"":",", akv.first, rkv.first, (unsigned)rkv.second.size());
+      write_fn((const uint8_t *)buf, n, ctx);
+      // Full hex dump
+      for (size_t i = 0; i < rkv.second.size(); i++) {
+        char hex[3];
+        hex[0] = "0123456789ABCDEF"[rkv.second[i] >> 4];
+        hex[1] = "0123456789ABCDEF"[rkv.second[i] & 0x0F];
+        write_fn((const uint8_t *)hex, 2, ctx);
+      }
+      emit("\"}");
+      first = false;
+    }
+  }
+  emit("]}\r\n");
 }
 
 }  // namespace infinitesp
