@@ -17,6 +17,13 @@
 #include <map>
 #include <vector>
 
+// Temperature unit configuration
+enum class TemperatureUnit : uint8_t {
+  AUTO = 0,  // heuristic: zone temp <= 50 → °C
+  FAHRENHEIT,
+  CELSIUS,
+};
+
 namespace esphome {
 namespace infinitesp {
 
@@ -194,6 +201,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zc_address(uint8_t addr) { zc_address_ = addr; }
   uint8_t get_zc_address() const { return zc_address_; }
   bool zc_enabled() const { return zc_address_ != 0; }
+  void set_temperature_unit(TemperatureUnit unit) { temperature_unit_ = unit; }
+  TemperatureUnit get_temperature_unit() const { return temperature_unit_; }
   void register_device(InfinitESPDevice *device) { devices_.push_back(device); }
 
   // Status LED configuration
@@ -223,6 +232,34 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   const std::vector<uint8_t> *get_register(uint8_t addr, uint16_t key) const;
   uint8_t get_zone_count() const;
   bool is_bus_online() const { return bus_online_; }
+
+  // Bus unit detection: returns true if bus values are in °C.
+  // In AUTO mode, uses heuristic (active zone temp <= 50 → °C).
+  // In explicit F/C mode, returns the configured value.
+  bool bus_uses_celsius() const;
+
+  // Convert a bus temperature value to °C for HA display.
+  // Bus is °F or °C depending on detected/configured mode.
+  float bus_temp_to_celsius(float bus_value) const;
+
+  // Convert a HA °C value to bus units (°F or °C depending on mode).
+  float celsius_to_bus_temp(float celsius) const;
+
+  // Convert a comfort profile raw byte to whole-degree °C for comparison/display.
+  // In °F mode, comfort bytes are whole °F.
+  // In °C mode, comfort bytes are half-degrees (byte/2 = °C).
+  float comfort_byte_to_celsius(uint8_t raw) const;
+
+  // Convert a whole-degree °C value to comfort profile raw byte.
+  // Inverse of comfort_byte_to_celsius.
+  uint8_t celsius_to_comfort_byte(float celsius) const;
+
+  // Convert a whole-degree bus setpoint to °C for HA display.
+  // Setpoints (3B03) are always whole degrees in both modes.
+  float setpoint_to_celsius(uint8_t raw) const;
+
+  // Convert a HA °C value to a whole-degree bus setpoint.
+  uint8_t celsius_to_setpoint(float celsius) const;
 
   // Get normalized hold duration for a zone (1-indexed).
   // Carrier protocol uses zones_holding bit + duration<=1 to mean permanent hold;
@@ -394,6 +431,11 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   StatusLedState status_led_state_{StatusLedState::BUS_NOT_READY};
 
   void update_status_led_();
+
+  // Temperature unit configuration and detected state
+  TemperatureUnit temperature_unit_{TemperatureUnit::AUTO};
+  bool bus_celsius_detected_{false};  // cached heuristic result (AUTO mode)
+  bool bus_unit_detected_{false};     // true after first successful detection
 
   // RS485 transmit enable pin (optional)
 #ifdef USE_INFINITESP_FLOW_CONTROL_PIN

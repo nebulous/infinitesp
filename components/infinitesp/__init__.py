@@ -24,6 +24,11 @@ CONF_SAM_ADDRESS = "sam_address"
 CONF_ADDRESS = "address"  # deprecated alias for sam_address
 CONF_FLOW_CONTROL_PIN = "flow_control_pin"
 CONF_ZONE_CONTROLLER_ADDRESS = "zone_controller_address"
+CONF_TEMPERATURE_UNIT = "temperature_unit"
+
+TEMP_UNIT_AUTO = "auto"
+TEMP_UNIT_FAHRENHEIT = "F"
+TEMP_UNIT_CELSIUS = "C"
 
 
 def _validate_addresses(config):
@@ -58,6 +63,8 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_FLOW_CONTROL_PIN): pins.gpio_output_pin_schema,
             # Zone controller emulation: set to 0x60 to emulate a SYSTXCC4ZC01
             cv.Optional(CONF_ZONE_CONTROLLER_ADDRESS, default=0): cv.int_range(min=0, max=255),
+            # Temperature unit: auto (heuristic), F, or C
+            cv.Optional(CONF_TEMPERATURE_UNIT, default=TEMP_UNIT_AUTO): cv.one_of(TEMP_UNIT_AUTO, TEMP_UNIT_FAHRENHEIT, TEMP_UNIT_CELSIUS, lower=True),
         }
     ).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA),
     _validate_addresses,
@@ -83,6 +90,14 @@ async def to_code(config):
 
     if config[CONF_ZONE_CONTROLLER_ADDRESS] != 0:
         cg.add(var.set_zc_address(config[CONF_ZONE_CONTROLLER_ADDRESS]))
+
+    temp_unit = config[CONF_TEMPERATURE_UNIT]
+    if temp_unit == TEMP_UNIT_AUTO:
+        cg.add(var.set_temperature_unit(cg.RawExpression("TemperatureUnit::AUTO")))
+    elif temp_unit == TEMP_UNIT_FAHRENHEIT:
+        cg.add(var.set_temperature_unit(cg.RawExpression("TemperatureUnit::FAHRENHEIT")))
+    elif temp_unit == TEMP_UNIT_CELSIUS:
+        cg.add(var.set_temperature_unit(cg.RawExpression("TemperatureUnit::CELSIUS")))
 
     if CONF_STATUS_LED_PIN in config:
         pin = await cg.gpio_pin_expression(config[CONF_STATUS_LED_PIN])

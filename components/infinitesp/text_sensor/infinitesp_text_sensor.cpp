@@ -176,16 +176,21 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
 
     const char *names[] = {"home", "away", "sleep", "wake", "manual"};
     const char *fan_names[] = {"off", "low", "med", "high"};
+    // Show temperatures in both °C and °F for universal readability
+    // (HA can't auto-convert text sensor strings)
     std::string result;
     for (uint8_t i = 0; i < COMFORT_ACTIVITY_COUNT; i++) {
       uint8_t base = i * COMFORT_ENTRY_SIZE;
+      float ht_c = parent_->comfort_byte_to_celsius((*data)[base + 0]);
+      float cl_c = parent_->comfort_byte_to_celsius((*data)[base + 1]);
+      float ht_f = ht_c * 9.0f / 5.0f + 32.0f;
+      float cl_f = cl_c * 9.0f / 5.0f + 32.0f;
       if (i > 0)
         result += "; ";
-      char buf[64];
-      snprintf(buf, sizeof(buf), "%s: ht=%d cl=%d fan=%s",
+      char buf[80];
+      snprintf(buf, sizeof(buf), "%s: ht=%.0f\xc2\xb0" "F/%.1f\xc2\xb0" "C cl=%.0f\xc2\xb0" "F/%.1f\xc2\xb0" "C fan=%s",
                names[i],
-               (*data)[base + 0],
-               (*data)[base + 1],
+               ht_f, ht_c, cl_f, cl_c,
                (*data)[base + 2] < 4 ? fan_names[(*data)[base + 2]] : "?");
       result += buf;
     }

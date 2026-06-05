@@ -662,6 +662,31 @@ void InfinitESPComponent::handle_reply_() {
         ESP_LOGD("InfinitESP", "3B02 reply: weekday=%u minutes=%u (%02u:%02u)",
                  data[REG3B02_WEEKDAY], minutes, minutes / 60, minutes % 60);
       }
+
+      // Heuristic bus unit detection (AUTO mode only)
+      // On every 3B02 update, check active zone temps.
+      // If any active zone temp byte <= 50, bus is in °C.
+      // No plausible HVAC zone is >50°C (122°F), so this is reliable.
+      if (reg_key == REG_SAM_STATE && temperature_unit_ == TemperatureUnit::AUTO &&
+          data.size() >= REG3B02_TEMPS + 8) {
+        uint8_t active = data[REG3B02_ACTIVE_ZONES];
+        bool prev = bus_celsius_detected_;
+        for (uint8_t i = 0; i < 8; i++) {
+          if (active & (1 << i)) {
+            uint8_t temp = data[REG3B02_TEMPS + i];
+            // 0xFF = no sensor / offline, skip
+            if (temp != 0xFF) {
+              bus_celsius_detected_ = (temp <= 50);
+              bus_unit_detected_ = true;
+              break;
+            }
+          }
+        }
+        if (bus_unit_detected_ && bus_celsius_detected_ != prev) {
+          ESP_LOGI("InfinitESP", "Bus unit detected: %s (heuristic)",
+                   bus_celsius_detected_ ? "°C" : "°F");
+        }
+      }
     }
 
     // Log parsed 0x4xxx register contents
@@ -675,13 +700,17 @@ void InfinitESPComponent::handle_reply_() {
         uint8_t fan = data[base + 2];
         uint8_t rhtg = data[base + 3] >> 4;
         uint8_t rclg = data[base + 3] & 0x0F;
-        ESP_LOGI("InfinitESP", "COMFORT %s: heat=%d°F cool=%d°F fan=%d rclg=%d rhtg=%d hum_vent=0x%02X unk=[%02X %02X]",
-                 names[i], htsp, clsp, fan, rclg, rhtg, data[base + 4], data[base + 5], data[base + 6]);
+        const char *unit = bus_uses_celsius() ? "\xc2\xb0" "C" : "\xc2\xb0" "F";
+        float ht_disp = comfort_byte_to_celsius(htsp);
+        float cl_disp = comfort_byte_to_celsius(clsp);
+        ESP_LOGI("InfinitESP", "COMFORT %s: heat=%.1f%s cool=%.1f%s fan=%d rclg=%d rhtg=%d hum_vent=0x%02X unk=[%02X %02X]",
+                 names[i], ht_disp, unit, cl_disp, unit, fan, rclg, rhtg, data[base + 4], data[base + 5], data[base + 6]);
       }
     }
 
     if (reg_key == REG_TSTAT_VACATION && data.size() >= 7) {
-      ESP_LOGI("InfinitESP", "VACATION: min_temp=%d°F max_temp=%d°F fan=%d", data[0], data[1], data[2]);
+      ESP_LOGI("InfinitESP", "VACATION: min_temp=%d max_temp=%d fan=%d (%s)", data[0], data[1], data[2],
+               bus_uses_celsius() ? "°C" : "°F");
     }
 
     if (reg_key == REG_TSTAT_WIFI && data.size() >= 71) {
@@ -902,13 +931,30 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
   }
 
   uint8_t base = activity_index * COMFORT_ENTRY_SIZE;
-  uint8_t htsp = (*comfort)[base + 0];
-  uint8_t clsp = (*comfort)[base + 1];
+  uint8_t htsp_raw = (*comfort)[base + 0];
+  uint8_t clsp_raw = (*comfort)[base + 1];
   uint8_t fan = (*comfort)[base + 2];
 
+  // Comfort profiles use different encoding than 3B03 setpoints:
+  //   °F mode: comfort bytes = whole °F (same as setpoints, no conversion needed)
+  //   °C mode: comfort bytes = half-degrees (byte/2=°C), setpoints = whole °C
+  // So in °C mode we must convert: comfort_half_degrees → °C → setpoint_whole_°C
+  uint8_t htsp_bus, clsp_bus;
+  if (bus_uses_celsius()) {
+    float ht_c = (float) htsp_raw / 2.0f;
+    float cl_c = (float) clsp_raw / 2.0f;
+    htsp_bus = (uint8_t) roundf(ht_c);
+    clsp_bus = (uint8_t) roundf(cl_c);
+  } else {
+    htsp_bus = htsp_raw;
+    clsp_bus = clsp_raw;
+  }
+
   const char *names[] = {"home", "away", "sleep", "wake", "manual"};
-  ESP_LOGI("InfinitESP", "Apply activity %s to zone %d: heat=%d°F cool=%d°F fan=%d hold=%d min",
-           activity_index < 5 ? names[activity_index] : "?", zone, htsp, clsp, fan, hold_duration);
+  ESP_LOGI("InfinitESP", "Apply activity %s to zone %d: heat=%d->%d cool=%d->%d fan=%d hold=%d min (%s)",
+           activity_index < 5 ? names[activity_index] : "?", zone,
+           htsp_raw, htsp_bus, clsp_raw, clsp_bus, fan, hold_duration,
+           bus_uses_celsius() ? "°C" : "°F");
 
   // Update the 3B03 zones data with the activity's setpoints and fan
   auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
@@ -919,8 +965,8 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
   uint8_t idx = zone - 1;
 
   data[REG3B03_FAN_MODES + idx] = fan;
-  data[REG3B03_HEAT_SETPOINTS + idx] = htsp;
-  data[REG3B03_COOL_SETPOINTS + idx] = clsp;
+  data[REG3B03_HEAT_SETPOINTS + idx] = htsp_bus;
+  data[REG3B03_COOL_SETPOINTS + idx] = clsp_bus;
 
   // Set hold duration
   uint8_t hold_offset = REG3B03_HOLD_DURATIONS + (idx * 2);
@@ -1170,6 +1216,52 @@ void InfinitESPComponent::initialize_defaults_() {
   }
 }
 
+bool InfinitESPComponent::bus_uses_celsius() const {
+  switch (temperature_unit_) {
+    case TemperatureUnit::CELSIUS:   return true;
+    case TemperatureUnit::FAHRENHEIT: return false;
+    case TemperatureUnit::AUTO:       return bus_celsius_detected_;
+  }
+  return false;  // unreachable
+}
+
+float InfinitESPComponent::bus_temp_to_celsius(float bus_value) const {
+  if (bus_uses_celsius())
+    return bus_value;  // already °C
+  return (bus_value - 32.0f) * (5.0f / 9.0f);  // °F → °C
+}
+
+float InfinitESPComponent::celsius_to_bus_temp(float celsius) const {
+  if (bus_uses_celsius())
+    return celsius;  // bus wants °C
+  return celsius * (9.0f / 5.0f) + 32.0f;  // °C → °F
+}
+
+float InfinitESPComponent::comfort_byte_to_celsius(uint8_t raw) const {
+  if (bus_uses_celsius())
+    return (float) raw / 2.0f;  // half-degree °C
+  // °F mode: raw is whole °F, convert to °C
+  return ((float) raw - 32.0f) * (5.0f / 9.0f);
+}
+
+uint8_t InfinitESPComponent::celsius_to_comfort_byte(float celsius) const {
+  if (bus_uses_celsius())
+    return (uint8_t) roundf(celsius * 2.0f);  // °C → half-degree
+  return (uint8_t) roundf(celsius * (9.0f / 5.0f) + 32.0f);  // °C → °F
+}
+
+float InfinitESPComponent::setpoint_to_celsius(uint8_t raw) const {
+  if (bus_uses_celsius())
+    return (float) raw;  // whole °C
+  return ((float) raw - 32.0f) * (5.0f / 9.0f);  // °F → °C
+}
+
+uint8_t InfinitESPComponent::celsius_to_setpoint(float celsius) const {
+  if (bus_uses_celsius())
+    return (uint8_t) roundf(celsius);  // whole °C
+  return (uint8_t) roundf(celsius * (9.0f / 5.0f) + 32.0f);  // °C → °F
+}
+
 void InfinitESPComponent::cache_wifi_credentials_(const std::string &ssid, const std::string &password) {
   if (ssid.empty())
     return;
@@ -1385,10 +1477,13 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
   n = snprintf(buf, sizeof(buf),
     "{\"fw\":\"InfinitESP 0.1\",\"up\":%u,\"bus\":\"%s\","
     "\"sam\":\"%02X\",\"zc\":\"%02X\","
+    "\"temp_unit\":\"%s\",\"temp_cfg\":\"%s\","
     "\"rx\":%u,\"tx\":%u,\"crc\":%u,\"exp\":%u,\"got\":%u,\"to\":%u,"
     "\"hwm\":%u,\"ovf\":%u,\"prg\":%u,\"pp\":%u",
     (unsigned)(millis()/1000), bus_online_?"on":"off",
     sam_address_, zc_address_,
+    bus_uses_celsius() ? "C" : "F",
+    temperature_unit_ == TemperatureUnit::AUTO ? "auto" : temperature_unit_ == TemperatureUnit::CELSIUS ? "C" : "F",
     (unsigned)diag_frames_parsed_, (unsigned)diag_tx_seq_,
     (unsigned)diag_crc_fail_, (unsigned)diag_reply_expected_,
     (unsigned)diag_reply_received_, (unsigned)diag_reply_timeout_,

@@ -103,21 +103,17 @@ void SamAsciiComponent::loop() {
   }
 }
 
-// Format a temperature value (stored as °F uint8) with unit suffix.
-// If dealer register says Celsius, convert: °C = (°F-32)*5/9.
-std::string SamAsciiComponent::format_temp_(uint8_t temp_f) {
+// Format a temperature value (stored in bus units, °F or °C) with unit suffix.
+// Uses parent's detected/configured unit setting, not the SAM 3B06 register.
+std::string SamAsciiComponent::format_temp_(uint8_t temp_bus) {
   using namespace infinitesp;
-  auto *dealer = parent_->get_register(parent_->get_sam_address(), REG_SAM_DEALER);
-  char unit = 'F';
-  if (dealer && dealer->size() > 7)
-    unit = (char) (*dealer)[7];
-
   char buf[16];
-  if (unit == 'C' || unit == 'c') {
-    float temp_c = ((float) temp_f - 32.0f) * 5.0f / 9.0f;
-    snprintf(buf, sizeof(buf), "%.1f%sC", temp_c, DEGREE_UTF8);
+  if (parent_->bus_uses_celsius()) {
+    // Bus value is already °C
+    snprintf(buf, sizeof(buf), "%d%sC", temp_bus, DEGREE_UTF8);
   } else {
-    snprintf(buf, sizeof(buf), "%d%sF", temp_f, DEGREE_UTF8);
+    // Bus value is °F
+    snprintf(buf, sizeof(buf), "%d%sF", temp_bus, DEGREE_UTF8);
   }
   return std::string(buf);
 }

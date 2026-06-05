@@ -203,10 +203,28 @@ infinitesp:
   sam_address: 0x92  # SAM address. 0x93 = FakeSAM test mode, 0 = disabled (passive monitor)
   # Optional: emulate a zone controller (SYSTXCC4ZC01)
   # zone_controller_address: 0x60
+  # Optional: temperature unit detection (default: auto)
+  # temperature_unit: auto     # auto-detect from bus data, or force F / C
   # Optional status LED (mutually exclusive):
   status_light_id: rgb_led    # Reference an existing ESPHome light (RGB supported)
   # status_led_pin: GPIO2      # Or just a GPIO pin for a simple LED
 ```
+
+#### Temperature Unit Detection
+
+The Carrier ABCD bus encodes temperatures differently depending on the thermostat's display unit setting (°F or °C). No register reports which unit is active — InfinitESP detects it automatically.
+
+The `temperature_unit` option controls how InfinitESP interprets bus temperatures:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Detects from bus data: any active zone temperature ≤ 50 means °C. No plausible HVAC zone exceeds 50°C (122°F). Re-evaluates on every poll cycle. |
+| `F` | Force Fahrenheit — treat all bus values as °F regardless of detected state. |
+| `C` | Force Celsius — treat all bus values as °C regardless of detected state. |
+
+Most users never need to change this from `auto`. The explicit `F`/`C` options are for edge cases or debugging.
+
+All temperature sensors publish in °C with `device_class: temperature`, so Home Assistant automatically converts to the user's preferred display unit.
 
 The status LED indicates system health:
 

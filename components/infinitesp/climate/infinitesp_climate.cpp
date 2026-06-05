@@ -73,27 +73,27 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
   // target_temperature_low/high in heat_cool mode.
   if (call.get_target_temperature().has_value()) {
     float target_c = call.get_target_temperature().value();
-    uint8_t target_f = (uint8_t) roundf(target_c * (9.0f / 5.0f) + 32.0f);
+    uint8_t target_bus = parent_->celsius_to_setpoint(target_c);
     if (this->mode == climate::CLIMATE_MODE_HEAT) {
-      heat_sp_ = target_f;
+      heat_sp_ = target_bus;
     } else if (this->mode == climate::CLIMATE_MODE_COOL) {
-      cool_sp_ = target_f;
+      cool_sp_ = target_bus;
     }
     parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
     this->target_temperature = target_c;
   }
   if (call.get_target_temperature_low().has_value()) {
     float target_c = call.get_target_temperature_low().value();
-    uint8_t target_f = (uint8_t) roundf(target_c * (9.0f / 5.0f) + 32.0f);
-    heat_sp_ = target_f;
+    uint8_t target_bus = parent_->celsius_to_setpoint(target_c);
+    heat_sp_ = target_bus;
     parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
     this->target_temperature_low = target_c;
   }
 
   if (call.get_target_temperature_high().has_value()) {
     float target_c = call.get_target_temperature_high().value();
-    uint8_t target_f = (uint8_t) roundf(target_c * (9.0f / 5.0f) + 32.0f);
-    cool_sp_ = target_f;
+    uint8_t target_bus = parent_->celsius_to_setpoint(target_c);
+    cool_sp_ = target_bus;
     parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
     this->target_temperature_high = target_c;
   }
@@ -175,8 +175,8 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       if (!(active & (1 << idx)))
         return;
 
-      float temp_f = (float)data->at(REG3B02_TEMPS + idx);
-      float temp = (temp_f - 32.0f) * (5.0f / 9.0f);
+      float temp_bus = (float)data->at(REG3B02_TEMPS + idx);
+      float temp = parent_->bus_temp_to_celsius(temp_bus);
       if (temp != current_temp_) {
         current_temp_ = temp;
         this->current_temperature = temp;
@@ -210,12 +210,23 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
         changed = true;
       }
 
-      // Only update climate mode when stage=0. When stage>0, the mode nibble
-      // changes to active direction (heat/cool) instead of requested mode (auto).
-      // We wait for an idle reading to get the true requested mode.
-      // On first boot, HA may restore a stale mode via control() — the first
-      // stage=0 reading from the bus will correct it.
-      bool can_update_mode = (stage == 0);
+      // Mode update logic:
+      // - When stage==0 (idle): mode nibble is the true requested mode. Always trust it.
+      // - When stage>0 (active): mode nibble shows active direction (heat/cool) even if
+      //   the requested mode is AUTO. So only trust it for non-AUTO modes.
+      //   On first boot (sys_mode_==0xFF), accept any reading to avoid staying stuck
+      //   at CLIMATE_MODE_OFF.
+      bool can_update_mode = false;
+      if (stage == 0) {
+        can_update_mode = true;
+      } else if (mode != SYSMODE_AUTO && mode != SYSMODE_EHEAT) {
+        // Actively heating or cooling — mode nibble is correct for heat/cool/off.
+        // Don't update from AUTO (stage>0 can't be AUTO on the bus anyway).
+        can_update_mode = true;
+      }
+      // On first boot, accept any mode reading to unstick from OFF
+      if (!can_update_mode && sys_mode_ == 0xFF)
+        can_update_mode = true;
 
       if (can_update_mode && mode != sys_mode_) {
         sys_mode_ = mode;
@@ -228,8 +239,8 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
           default: this->mode = climate::CLIMATE_MODE_OFF; break;
         }
         // Update setpoints based on mode: single target for heat/cool, dual for heat_cool
-        float heat_c = ((float) heat_sp_ - 32.0f) * (5.0f / 9.0f);
-        float cool_c = ((float) cool_sp_ - 32.0f) * (5.0f / 9.0f);
+        float heat_c = parent_->setpoint_to_celsius(heat_sp_);
+        float cool_c = parent_->setpoint_to_celsius(cool_sp_);
         this->target_temperature_low = heat_c;
         this->target_temperature_high = cool_c;
         if (this->mode == climate::CLIMATE_MODE_HEAT)
@@ -266,9 +277,9 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
 
       // Always update target temperatures from bus data.
       // On first boot, target_temperature_low/high are NaN even though the bus
-      // values may match our defaults (68/76°F). We must set them unconditionally.
-      float heat_c = ((float) new_heat - 32.0f) * (5.0f / 9.0f);
-      float cool_c = ((float) new_cool - 32.0f) * (5.0f / 9.0f);
+      // values may match our defaults (68/76). We must set them unconditionally.
+      float heat_c = parent_->setpoint_to_celsius(new_heat);
+      float cool_c = parent_->setpoint_to_celsius(new_cool);
       if (std::isnan(this->target_temperature_low) || std::isnan(this->target_temperature_high))
         sp_changed = true;  // force publish to initialize HA state
       this->target_temperature_low = heat_c;
@@ -347,8 +358,18 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
         if (comfort && comfort->size() >= COMFORT_ACTIVITY_COUNT * COMFORT_ENTRY_SIZE) {
           for (uint8_t a = 0; a < COMFORT_ACTIVITY_COUNT; a++) {
             uint8_t base = a * COMFORT_ENTRY_SIZE;
-            if ((*comfort)[base + 0] == new_heat && (*comfort)[base + 1] == new_cool &&
-                (*comfort)[base + 2] == new_fan) {
+            // Comfort profiles use different encoding than 3B03 setpoints:
+            // °F mode: both are whole °F — direct comparison
+            // °C mode: comfort = half-degrees, setpoints = whole °C
+            //   Convert both to °C for comparison
+            float ht_c = parent_->comfort_byte_to_celsius((*comfort)[base + 0]);
+            float cl_c = parent_->comfort_byte_to_celsius((*comfort)[base + 1]);
+            float sp_ht_c = parent_->setpoint_to_celsius(new_heat);
+            float sp_cl_c = parent_->setpoint_to_celsius(new_cool);
+            // Compare as °C with tolerance for half-degree rounding
+            bool ht_match = (fabsf(ht_c - sp_ht_c) < 0.3f);
+            bool cl_match = (fabsf(cl_c - sp_cl_c) < 0.3f);
+            if (ht_match && cl_match && (*comfort)[base + 2] == new_fan) {
               last_activity_ = a;
               switch (a) {
                 case COMFORT_HOME:  this->set_preset_(climate::CLIMATE_PRESET_HOME); break;
