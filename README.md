@@ -32,7 +32,7 @@ Generic ESP32 dev boards with a separate RS485 transceiver module should also wo
 > **Note:** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an insufficiently-biased bus, the line voltage collapses and the receiver reads garbage. **However**, on a live Carrier ABCD bus, the existing equipment provides strong biasing (pull-up on A, pull-down on B) that holds the bus in a logic `1` state when the driver cuts out, masking the flaw. If you see TX corruption in testing or on an unusual bus configuration, add external biasing resistors, bypass the onboard transceiver entirely with a [pico-HAT-compatible RS485 module](https://amzn.to/4eMssT1) which plugs right into the header, or (if you're brave, desperate, or foolish) modify the SMD components on the board.
 
 ### 📣 Calling all NIM and zone board owners:
-If you have a Carrier NIM (SYSTXCCNIM01), Damper Control Module (SYSTXCC4ZC01), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be incredibly valuable. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
+If you have a Carrier NIM (SYSTXCCNIM01), Damper Control Module (SYSTXCC4ZC01), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be incredibly valuable — see [Reporting Issues](#reporting-issues) for how to collect them. A `REPORT?` snapshot helps too, but full protocol logs are best for emulation work since they show the timing and framing that static register dumps miss. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
 
 
 ## Wiring
@@ -445,6 +445,35 @@ Tested with Carrier Infinity / Bryant Evolution / ICP systems using the ABCD RS4
 - `crc_fail > 0` → bus noise or bad wiring
 - `overflow_evts > 0` → main loop not keeping up (reduce logging verbosity)
 - `stale > 0` → bytes arriving with gaps > 100ms (transport issue)
+
+## Reporting Issues
+
+To help diagnose the problem, it's useful to include any of the following that you can gather:
+
+**ESPHome logs** are the most useful for protocol issues:
+
+```bash
+esphome logs infinitesp.yaml --device infinitesp.local
+```
+
+30 seconds of output is usually plenty. The `STATS` line printed every 5 seconds contains bus health diagnostics (`crc_fail`, `reply_exp`, `reply_got`, etc.).
+
+**The REPORT? command** provides a quick bus snapshot and often eliminates the need for full logs. If you can reach the device over the network, connect to the SAM ASCII interface on TCP port 23 and run `REPORT?`. For example:
+
+```bash
+nc infinitesp.local 23
+REPORT?
+```
+
+This produces a JSON dump of all observed bus traffic, device info, cached registers, and diagnostic counters — a self-contained snapshot of the bus state.
+
+**Hardware details** help narrow down firmware-specific issues:
+
+- Thermostat model and firmware version (shown in REPORT? under the `device` line for address `20`)
+- Indoor unit model (furnace/air handler)
+- Outdoor unit model (condenser/heat pump)
+- Whether you have a zone controller installed
+- RS485 transport (direct UART or TCP serial bridge)
 
 ## Project Structure
 

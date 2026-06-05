@@ -403,12 +403,7 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     respond_(prefix, (*dealer)[0] ? "ON" : "OFF");
 
   } else if (body == "CFGEM") {
-    if (!dealer || dealer->size() <= 7) {
-      respond_nak_(prefix, "");
-      return;
-    }
-    char unit = (char) (*dealer)[7];
-    respond_(prefix, std::string(1, unit));
+    respond_(prefix, parent_->bus_uses_celsius() ? "C" : "F");
 
   } else {
     // Unknown command
