@@ -2,11 +2,11 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import text_sensor
 from esphome.const import CONF_ID, CONF_TYPE
-from .. import InfinitESPDevice, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_device
+from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
 CONF_ZONE = "zone"
 
-InfinitESPTextSensor = infinitesp_ns.class_("InfinitESPTextSensor", text_sensor.TextSensor, InfinitESPDevice)
+InfinitESPTextSensor = infinitesp_ns.class_("InfinitESPTextSensor", text_sensor.TextSensor, InfinitESPEntity)
 
 TEXT_SENSOR_TYPES = {
     "zone_name": "zone_name",
@@ -21,6 +21,7 @@ TEXT_SENSOR_TYPES = {
     "tstat_dealer_url": "tstat_dealer_url",
     "comfort_profile": "comfort_profile",
     "fault_history": "fault_history",
+    "manufacture_date": "manufacture_date",
 }
 
 CONFIG_SCHEMA = text_sensor.text_sensor_schema(InfinitESPTextSensor).extend(
@@ -36,4 +37,4 @@ async def to_code(config):
     await text_sensor.register_text_sensor(var, config)
     cg.add(var.set_zone(config[CONF_ZONE]))
     cg.add(var.set_sensor_type(TEXT_SENSOR_TYPES[config[CONF_TYPE]]))
-    await register_infinitesp_device(var, config)
+    await register_infinitesp_entity(var, config)

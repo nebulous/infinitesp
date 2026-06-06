@@ -2,11 +2,11 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import select
 from esphome.const import CONF_ID, CONF_TYPE
-from .. import InfinitESPDevice, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_device
+from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
 CONF_ZONE = "zone"
 
-InfinitESPSelect = infinitesp_ns.class_("InfinitESPSelect", select.Select, InfinitESPDevice)
+InfinitESPSelect = infinitesp_ns.class_("InfinitESPSelect", select.Select, InfinitESPEntity)
 
 SELECT_TYPES = {
     "system_mode": {
@@ -34,4 +34,4 @@ async def to_code(config):
     await select.register_select(var, config, options=info["options"])
     cg.add(var.set_zone(config[CONF_ZONE]))
     cg.add(var.set_select_type(info["key"]))
-    await register_infinitesp_device(var, config)
+    await register_infinitesp_entity(var, config)

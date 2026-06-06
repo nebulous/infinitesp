@@ -179,16 +179,19 @@ static inline std::string extract_cstr(const std::vector<uint8_t> &data, size_t 
 
 class InfinitESPComponent;
 
-class InfinitESPDevice {
+class InfinitESPEntity {
  public:
   virtual void on_register_update(uint8_t device_addr, uint16_t register_key) = 0;
   void set_parent(InfinitESPComponent *parent) { parent_ = parent; }
   void set_zone(uint8_t zone) { zone_ = zone; }
   uint8_t get_zone() const { return zone_; }
+  void set_device_class(uint8_t cls) { device_class_ = cls; }
+  uint8_t get_device_class() const { return device_class_; }
 
  protected:
   InfinitESPComponent *parent_{nullptr};
   uint8_t zone_{0};
+  uint8_t device_class_{0};  // upper nibble of bus address: 0=any, 2=tstat, 4=IDU, 5=ODU, 9=SAM
 };
 
 class InfinitESPComponent : public Component, public uart::UARTDevice {
@@ -207,7 +210,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   bool zc_enabled() const { return zc_address_ != 0; }
   void set_temperature_unit(TemperatureUnit unit) { temperature_unit_ = unit; }
   TemperatureUnit get_temperature_unit() const { return temperature_unit_; }
-  void register_device(InfinitESPDevice *device) { devices_.push_back(device); }
+  void register_entity(InfinitESPEntity *entity) { entities_.push_back(entity); }
 
   // Status LED configuration
 #ifdef USE_INFINITESP_STATUS_LED_PIN
@@ -277,7 +280,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void stream_bus_report_(void (*write_fn)(const uint8_t *, size_t, void *), void *ctx);
   // Direct register manipulation (used by button platform for virtual registers)
   void store_register_(uint8_t addr, uint16_t key, const std::vector<uint8_t> &data);
-  void notify_devices_(uint8_t device_addr, uint16_t register_key);
+  void notify_entities_(uint8_t device_addr, uint16_t register_key);
 
   // Decode big-endian IEEE754 float32 from byte vector
   static float decode_f32_be_(const std::vector<uint8_t> &data, size_t offset) {
@@ -350,7 +353,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   std::vector<uint8_t> rx_buffer_;
   std::vector<uint8_t> rx_hex_log_;
   InfinitESPFrame current_frame_;
-  std::vector<InfinitESPDevice *> devices_;
+  std::vector<InfinitESPEntity *> entities_;
   uint8_t sam_address_{ADDR_FAKESAM};
   uint8_t zc_address_{0};  // 0 = zone controller emulation disabled
   uint32_t last_rx_time_{0};

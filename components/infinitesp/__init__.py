@@ -18,7 +18,7 @@ CONF_STATUS_LED_PIN = "status_led_pin"
 
 infinitesp_ns = cg.esphome_ns.namespace("infinitesp")
 InfinitESPComponent = infinitesp_ns.class_("InfinitESPComponent", cg.Component, uart.UARTDevice)
-InfinitESPDevice = infinitesp_ns.class_("InfinitESPDevice")
+InfinitESPEntity = infinitesp_ns.class_("InfinitESPEntity")
 
 CONF_SAM_ADDRESS = "sam_address"
 CONF_ADDRESS = "address"  # deprecated alias for sam_address
@@ -78,9 +78,9 @@ INFINITESP_DEVICE_SCHEMA = cv.Schema(
 )
 
 
-async def register_infinitesp_device(var, config):
+async def register_infinitesp_entity(var, config):
     parent = await cg.get_variable(config[CONF_INFINITESP_ID])
-    cg.add(parent.register_device(var))
+    cg.add(parent.register_entity(var))
     cg.add(var.set_parent(parent))
 
 

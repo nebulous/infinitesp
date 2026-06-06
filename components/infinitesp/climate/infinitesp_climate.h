@@ -18,7 +18,7 @@ static const char *const PRESET_SCHEDULE = "Per Schedule";
 //   0 → NONE,  0xFFFF → HOME,  other → keep current
 static const uint8_t NO_ACTIVITY = 0xFF;
 
-class InfinitESPClimate : public climate::Climate, public InfinitESPDevice {
+class InfinitESPClimate : public climate::Climate, public InfinitESPEntity {
  public:
   void control(const climate::ClimateCall &call) override;
   climate::ClimateTraits traits() override;

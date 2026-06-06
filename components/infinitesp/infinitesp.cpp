@@ -48,7 +48,7 @@ void InfinitESPComponent::setup() {
   // so they don't sit in "unknown" until the first bus reply
   if (sam_enabled()) {
     for (auto &kv : device_registers_[sam_address_]) {
-      notify_devices_(sam_address_, kv.first);
+      notify_entities_(sam_address_, kv.first);
     }
   }
 
@@ -166,7 +166,7 @@ void InfinitESPComponent::loop() {
   if (bus_online_ && (now - last_reply_time_ > 30000)) {
     bus_online_ = false;
     ESP_LOGW("InfinitESP", "Bus offline - no replies for 30s");
-    notify_devices_(0, 0);
+    notify_entities_(0, 0);
   }
 
   // One-shot: inject cached WiFi credentials ~15s after boot if WiFi isn't connected yet.
@@ -451,7 +451,7 @@ void InfinitESPComponent::handle_passive_frame_() {
                  decode_int16_f_(data, 18), decode_int16_f_(data, 22));
       }
 
-      notify_devices_(current_frame_.src, reg_key);
+      notify_entities_(current_frame_.src, reg_key);
     }
   }
 
@@ -465,7 +465,7 @@ void InfinitESPComponent::handle_passive_frame_() {
       if (current_frame_.payload.size() > 3) {
         std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
         store_register_(current_frame_.src, reg_key, data);
-        notify_devices_(current_frame_.src, reg_key);
+        notify_entities_(current_frame_.src, reg_key);
       }
     }
 
@@ -479,7 +479,7 @@ void InfinitESPComponent::handle_passive_frame_() {
         ESP_LOGD("InfinitESP", "Broadcast 3B02 state update (%u bytes)", data.size());
         store_register_(sam_address_, reg_key, data);
         sam_state_received_ = true;
-        notify_devices_(sam_address_, reg_key);
+        notify_entities_(sam_address_, reg_key);
       }
     }
   }
@@ -629,7 +629,7 @@ void InfinitESPComponent::handle_write_request_() {
   send_reply_(current_frame_.src, current_frame_.src_bus, dest, current_frame_.dst_bus, current_frame_.payload);
 
   // Notify sub-platforms
-  notify_devices_(dest, reg_key);
+  notify_entities_(dest, reg_key);
 }
 
 void InfinitESPComponent::handle_reply_() {
@@ -731,12 +731,12 @@ void InfinitESPComponent::handle_reply_() {
       ESP_LOGI("InfinitESP", "DEALER: name=%s brand=%s url=%s", name.c_str(), brand.c_str(), url.c_str());
     }
 
-    notify_devices_(current_frame_.src, reg_key);
+    notify_entities_(current_frame_.src, reg_key);
   }
 
   // If bus just came online, explicitly notify bus status sensors
   if (was_offline) {
-    notify_devices_(0, 0);
+    notify_entities_(0, 0);
   }
 }
 
@@ -770,9 +770,13 @@ void InfinitESPComponent::store_register_(uint8_t addr, uint16_t key, const std:
   device_registers_[addr][key] = data;
 }
 
-void InfinitESPComponent::notify_devices_(uint8_t device_addr, uint16_t register_key) {
-  for (auto *device : devices_) {
-    device->on_register_update(device_addr, register_key);
+void InfinitESPComponent::notify_entities_(uint8_t device_addr, uint16_t register_key) {
+  uint8_t src_class = device_addr >> 4;
+  for (auto *entity : entities_) {
+    uint8_t dc = entity->get_device_class();
+    if (dc != 0 && src_class != 0 && dc != src_class)
+      continue;
+    entity->on_register_update(device_addr, register_key);
   }
 }
 
@@ -1054,7 +1058,7 @@ void InfinitESPComponent::initialize_defaults_() {
     pad_str(data, __DATE__, 16);                  // software (auto build date)
     pad_str(data, "InfinitESP--SAM", 20);         // model
     pad_str(data, "", 12);                        // reference
-    pad_str(data, "ESP32SAM01", 24);              // serial
+    pad_str(data, "1726ESP32SAM01", 24);              // serial (week 17, 2026 = InfinitESP first working climate)
     store_register_(sam_address_, REG_DEVICE_INFO, data);
   }
 
@@ -1175,7 +1179,7 @@ void InfinitESPComponent::initialize_defaults_() {
       pad_str_zc(data, __DATE__, 16);                 // software
       pad_str_zc(data, "SYSTXCC4ZC01", 20);           // model (real model so thermostat recognizes it)
       pad_str_zc(data, "INFD-ZC-01", 12);              // reference
-      pad_str_zc(data, "ESP32ZC01", 24);               // serial
+      pad_str_zc(data, "1726ESP32ZC01", 24);               // serial (week 17, 2026)
       store_register_(zc_address_, REG_DEVICE_INFO, data);
     }
 

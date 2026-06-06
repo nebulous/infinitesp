@@ -266,7 +266,7 @@ sensor:
   #   blower_rpm, airflow_cfm, compressor_rpm
   #   odu_demand, odu_stage, odu_modulation, odu_setpoint, odu_mode
   #   odu_outdoor_temp, odu_coil_temp, odu_suction_temp,
-  #   odu_liquid_temp, odu_indoor_coil_temp, odu_discharge_temp
+  #   odu_subcooling_degf_int, odu_indoor_coil_temp, odu_discharge_temp
   #   odu_float_1 (superheat target), odu_float_2 (superheat actual),
   #   odu_float_3 (subcooling target), odu_float_4 (subcooling actual),
   #   odu_float_5, odu_float_6

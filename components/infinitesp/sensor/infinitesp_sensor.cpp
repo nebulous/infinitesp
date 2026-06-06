@@ -143,10 +143,10 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     if (data && data->size() >= 12)
       value = (parent_->decode_int16_f_(*data, 10) - 32.0f) * (5.0f / 9.0f);
   }
-  if (register_key == REG_ODU_STATUS1 && sensor_type_ == "odu_liquid_temp") {
+  if (register_key == REG_ODU_STATUS1 && sensor_type_ == "odu_subcooling_degf_int") {
     auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);
     if (data && data->size() >= 16)
-      value = (parent_->decode_int16_f_(*data, 14) - 32.0f) * (5.0f / 9.0f);
+      value = (parent_->decode_int16_f_(*data, 14)) * (5.0f / 9.0f);  // delta °F → delta °C
   }
   if (register_key == REG_ODU_STATUS1 && sensor_type_ == "odu_indoor_coil_temp") {
     auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);

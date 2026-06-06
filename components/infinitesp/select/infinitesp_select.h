@@ -5,7 +5,7 @@
 namespace esphome {
 namespace infinitesp {
 
-class InfinitESPSelect : public select::Select, public InfinitESPDevice {
+class InfinitESPSelect : public select::Select, public InfinitESPEntity {
  public:
   void control(const std::string &value) override;
   void on_register_update(uint8_t device_addr, uint16_t register_key) override;

@@ -2,11 +2,11 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import climate
 from esphome.const import CONF_ID
-from .. import InfinitESPDevice, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_device
+from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
 CONF_ZONE = "zone"
 
-InfinitESPClimate = infinitesp_ns.class_("InfinitESPClimate", climate.Climate, InfinitESPDevice)
+InfinitESPClimate = infinitesp_ns.class_("InfinitESPClimate", climate.Climate, InfinitESPEntity)
 
 CONFIG_SCHEMA = climate.climate_schema(InfinitESPClimate).extend(
     {
@@ -19,4 +19,4 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await climate.register_climate(var, config)
     cg.add(var.set_zone(config[CONF_ZONE]))
-    await register_infinitesp_device(var, config)
+    await register_infinitesp_entity(var, config)
