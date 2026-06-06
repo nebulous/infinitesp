@@ -5,6 +5,7 @@ from esphome.const import CONF_ID, CONF_TYPE
 from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
 CONF_ZONE = "zone"
+CONF_DEVICE_ADDRESS = "device_address"
 
 InfinitESPTextSensor = infinitesp_ns.class_("InfinitESPTextSensor", text_sensor.TextSensor, InfinitESPEntity)
 
@@ -29,6 +30,7 @@ CONFIG_SCHEMA = text_sensor.text_sensor_schema(InfinitESPTextSensor).extend(
         cv.GenerateID(CONF_INFINITESP_ID): cv.use_id(CONF_INFINITESP_ID),
         cv.Required(CONF_TYPE): cv.one_of(*TEXT_SENSOR_TYPES, lower=True),
         cv.Optional(CONF_ZONE, default=1): cv.int_range(min=1, max=8),
+        cv.Optional(CONF_DEVICE_ADDRESS): cv.hex_uint8_t,
     }
 )
 
@@ -37,4 +39,6 @@ async def to_code(config):
     await text_sensor.register_text_sensor(var, config)
     cg.add(var.set_zone(config[CONF_ZONE]))
     cg.add(var.set_sensor_type(TEXT_SENSOR_TYPES[config[CONF_TYPE]]))
+    if CONF_DEVICE_ADDRESS in config:
+        cg.add(var.set_device_address(config[CONF_DEVICE_ADDRESS]))
     await register_infinitesp_entity(var, config)

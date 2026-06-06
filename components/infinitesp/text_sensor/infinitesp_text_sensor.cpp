@@ -283,8 +283,11 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
 
   // Manufacture date derived from 0104 serial number
   // Carrier serial format: first 2 digits = week (01-52), next 2 digits = year (00-99)
+  // Requires device_address to be set — each physical device needs its own sensor
   if (sensor_type_ == "manufacture_date") {
     if (register_key != REG_DEVICE_INFO)
+      return;
+    if (target_device_addr_ != 0 && device_addr != target_device_addr_)
       return;
     auto *data = parent_->get_register(device_addr, REG_DEVICE_INFO);
     if (!data || data->size() < 100)
@@ -304,24 +307,22 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
     // Carrier used 2-digit years. 00-39 → 2000-2039, 40-99 → 1940-1999
     uint16_t year = (year_short < 40) ? (2000 + year_short) : (1900 + year_short);
 
-    // Approximate week → month/day for display
-    static const uint8_t mdays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    uint8_t month = 1;
+    // Week → approximate month (midpoint of week)
+    static const uint16_t month_cumulative[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
     uint16_t day_of_year = (week - 1) * 7 + 3;  // midpoint of the week
     bool leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
-    while (month < 12) {
-      uint8_t dim = mdays[month - 1];
-      if (month == 2 && leap)
-        dim = 29;
-      if (day_of_year < dim)
+    if (leap && day_of_year > 59) day_of_year++;  // shift past Feb 29
+    const char *month_names[] = {"January", "February", "March", "April", "May", "June",
+                                 "July", "August", "September", "October", "November", "December"};
+    uint8_t month = 0;
+    for (uint8_t m = 1; m < 12; m++) {
+      if (day_of_year < month_cumulative[m])
         break;
-      day_of_year -= dim;
-      month++;
+      month = m;
     }
-    uint8_t day = (uint8_t) day_of_year + 1;
 
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%04u-%02u-%02u", year, month, day);
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%s %04u", month_names[month], year);
     publish_state(buf);
     return;
   }
