@@ -159,6 +159,61 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
       value = (parent_->decode_int16_f_(*data, 22) - 32.0f) * (5.0f / 9.0f);
   }
 
+  // --- Cycle counters and runtime hours (registers 0310/0311) ---
+  // Format: sequence of 4-byte entries: [key, b1, b2, b3]
+  // where value = (b1 << 16) | (b2 << 8) | b3 (24-bit unsigned)
+  //
+  // IDU keys: 0x23=low_heat, 0x24=high_heat, 0x48=med_heat,
+  //           0x2B=poweron, 0x2D=blower
+  // ODU keys: 0x23=heat, 0x28=cool, 0x3C=defrost, 0x2B=poweron
+  // _cycles = register 0310, _hours = register 0311
+  if (register_key == REG_IDU_CYCLES || register_key == REG_IDU_RUNTIME ||
+      register_key == REG_ODU_CYCLES || register_key == REG_ODU_RUNTIME) {
+    struct KVMap { const char *suffix; uint16_t reg; uint8_t key; };
+    static const KVMap kv_map[] = {
+      // IDU cycles (0310)
+      {"idu_low_heat_cycles",  REG_IDU_CYCLES,  0x23},
+      {"idu_high_heat_cycles", REG_IDU_CYCLES,  0x24},
+      {"idu_med_heat_cycles",  REG_IDU_CYCLES,  0x48},
+      {"idu_poweron_cycles",   REG_IDU_CYCLES,  0x2B},
+      {"idu_blower_cycles",    REG_IDU_CYCLES,  0x2D},
+      // IDU hours (0311)
+      {"idu_low_heat_hours",   REG_IDU_RUNTIME, 0x25},
+      {"idu_high_heat_hours",  REG_IDU_RUNTIME, 0x26},
+      {"idu_med_heat_hours",   REG_IDU_RUNTIME, 0x49},
+      {"idu_poweron_hours",    REG_IDU_RUNTIME, 0x2C},
+      {"idu_blower_hours",     REG_IDU_RUNTIME, 0x2E},
+      // ODU cycles (0310)
+      {"odu_heat_cycles",      REG_ODU_CYCLES,  0x23},
+      {"odu_cool_cycles",      REG_ODU_CYCLES,  0x28},
+      {"odu_defrost_cycles",   REG_ODU_CYCLES,  0x3C},
+      {"odu_poweron_cycles",   REG_ODU_CYCLES,  0x2B},
+      // ODU hours (0311)
+      {"odu_heat_hours",       REG_ODU_RUNTIME, 0x25},
+      {"odu_cool_hours",       REG_ODU_RUNTIME, 0x2A},
+      {"odu_defrost_hours",    REG_ODU_RUNTIME, 0x3D},
+      {"odu_poweron_hours",    REG_ODU_RUNTIME, 0x2C},
+    };
+
+    for (const auto &km : kv_map) {
+      if (sensor_type_ == km.suffix) {
+        auto *data = parent_->get_register(device_addr, km.reg);
+        if (data && data->size() >= 4) {
+          for (size_t i = 0; i + 3 < data->size(); i += 4) {
+            if ((*data)[i] == km.key) {
+              uint32_t val = ((uint32_t)(*data)[i+1] << 16) |
+                             ((uint32_t)(*data)[i+2] << 8) |
+                             (uint32_t)(*data)[i+3];
+              value = (float) val;
+              break;
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
   if (!std::isnan(value)) {
     publish_state(value);
   }

@@ -36,6 +36,28 @@ SENSOR_TYPES = {
     "odu_liquid_temp": {"key": "odu_liquid_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE},
     "odu_indoor_coil_temp": {"key": "odu_indoor_coil_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE},
     "odu_discharge_temp": {"key": "odu_discharge_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE},
+    # IDU cycle counters (register 0310, 4-byte key-value entries)
+    "idu_low_heat_cycles": {"key": "idu_low_heat_cycles", "unit": "cycles"},
+    "idu_high_heat_cycles": {"key": "idu_high_heat_cycles", "unit": "cycles"},
+    "idu_med_heat_cycles": {"key": "idu_med_heat_cycles", "unit": "cycles"},
+    "idu_blower_cycles": {"key": "idu_blower_cycles", "unit": "cycles"},
+    "idu_poweron_cycles": {"key": "idu_poweron_cycles", "unit": "cycles"},
+    # IDU runtime hours (register 0311, 4-byte key-value entries)
+    "idu_low_heat_hours": {"key": "idu_low_heat_hours", "unit": "h"},
+    "idu_high_heat_hours": {"key": "idu_high_heat_hours", "unit": "h"},
+    "idu_med_heat_hours": {"key": "idu_med_heat_hours", "unit": "h"},
+    "idu_blower_hours": {"key": "idu_blower_hours", "unit": "h"},
+    "idu_poweron_hours": {"key": "idu_poweron_hours", "unit": "h"},
+    # ODU cycle counters (register 0310, 4-byte key-value entries)
+    "odu_heat_cycles": {"key": "odu_heat_cycles", "unit": "cycles"},
+    "odu_cool_cycles": {"key": "odu_cool_cycles", "unit": "cycles"},
+    "odu_defrost_cycles": {"key": "odu_defrost_cycles", "unit": "cycles"},
+    "odu_poweron_cycles": {"key": "odu_poweron_cycles", "unit": "cycles"},
+    # ODU runtime hours (register 0311, 4-byte key-value entries)
+    "odu_heat_hours": {"key": "odu_heat_hours", "unit": "h"},
+    "odu_cool_hours": {"key": "odu_cool_hours", "unit": "h"},
+    "odu_defrost_hours": {"key": "odu_defrost_hours", "unit": "h"},
+    "odu_poweron_hours": {"key": "odu_poweron_hours", "unit": "h"},
 }
 
 CONFIG_SCHEMA = cv.All(

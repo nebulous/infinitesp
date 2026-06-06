@@ -271,6 +271,14 @@ sensor:
   #   odu_float_3 (subcooling target), odu_float_4 (subcooling actual),
   #   odu_float_5, odu_float_6
   #   vacation_min_temp, vacation_max_temp
+  #
+  # Cycle counters and runtime hours (may not be available on all systems):
+  #   idu_low_heat_cycles, idu_high_heat_cycles, idu_med_heat_cycles,
+  #   idu_blower_cycles, idu_poweron_cycles
+  #   idu_low_heat_hours, idu_high_heat_hours, idu_med_heat_hours,
+  #   idu_blower_hours, idu_poweron_hours
+  #   odu_heat_cycles, odu_cool_cycles, odu_defrost_cycles, odu_poweron_cycles
+  #   odu_heat_hours, odu_cool_hours, odu_defrost_hours, odu_poweron_hours
 ```
 
 ### Binary Sensors

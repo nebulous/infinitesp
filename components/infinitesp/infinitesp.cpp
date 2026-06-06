@@ -478,6 +478,7 @@ void InfinitESPComponent::handle_passive_frame_() {
         std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
         ESP_LOGD("InfinitESP", "Broadcast 3B02 state update (%u bytes)", data.size());
         store_register_(sam_address_, reg_key, data);
+        sam_state_received_ = true;
         notify_devices_(sam_address_, reg_key);
       }
     }
@@ -639,8 +640,8 @@ void InfinitESPComponent::handle_reply_() {
   uint8_t row = current_frame_.payload[2];
   uint16_t reg_key = (table << 8) | row;
 
-  ESP_LOGD("InfinitESP", "REPLY register %04X from thermostat (%d bytes)", reg_key,
-           current_frame_.payload.size() - 3);
+  ESP_LOGD("InfinitESP", "REPLY register %04X from %02X (%d bytes)", reg_key,
+           current_frame_.src, current_frame_.payload.size() - 3);
 
   // Mark bus online before notifying so binary sensors read correct state
   bool was_offline = !bus_online_;
@@ -656,6 +657,7 @@ void InfinitESPComponent::handle_reply_() {
     // to the SAM serve current values instead of stale defaults
     if (reg_key == REG_SAM_STATE || reg_key == REG_SAM_ZONES) {
       store_register_(sam_address_, reg_key, data);
+      sam_state_received_ = true;
       // Log time fields from 3B02 for debugging
       if (reg_key == REG_SAM_STATE && data.size() >= REG3B02_MINUTES + 2) {
         uint16_t minutes = ((uint16_t) data[REG3B02_MINUTES] << 8) | (uint16_t) data[REG3B02_MINUTES + 1];

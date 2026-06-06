@@ -15,7 +15,11 @@ static const uint8_t MODE_COUNT = 5;
 static const char *const FAN_NAMES[] = {"AUTO", "LOW", "MED", "HIGH"};
 static const uint8_t FAN_COUNT = 4;
 
-// Weekday names indexed by day value (0=SUNDAY .. 6=SATURDAY)
+// Weekday names indexed by bus day value.
+// Confirmed mapping: 0=SUNDAY, 1=MONDAY, 2=TUESDAY, 3=WEDNESDAY,
+// 4=THURSDAY, 5=FRIDAY. Saturday observed as 5 (same as Friday) in one
+// capture session (2026-05-30) but Infinitude maps Saturday=6.
+// TODO: verify Saturday value — if 5, need rollover-based detection.
 static const char *const DAY_NAMES[] = {"SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY",
                                         "THURSDAY", "FRIDAY", "SATURDAY"};
 
@@ -286,6 +290,10 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     respond_(prefix, format_temp_((*state)[REG3B02_OUTDOOR_TEMP]));
 
   } else if (body == "DAY") {
+    if (!parent_->has_real_state()) {
+      respond_(prefix, "SYNC");
+      return;
+    }
     if (!state || state->size() <= REG3B02_WEEKDAY) {
       respond_nak_(prefix, "");
       return;
@@ -294,11 +302,15 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     respond_(prefix, (day < 7) ? DAY_NAMES[day] : "UNKNOWN");
 
   } else if (body == "TIME") {
+    if (!parent_->has_real_state()) {
+      respond_(prefix, "SYNC");
+      return;
+    }
     if (!state || state->size() < REG3B02_MINUTES + 2) {
       respond_nak_(prefix, "");
       return;
     }
-    // uint16 LE: minutes since midnight
+    // uint16 BE: minutes since midnight
     uint16_t minutes = ((uint16_t) (*state)[REG3B02_MINUTES] << 8) |
                        (uint16_t) (*state)[REG3B02_MINUTES + 1];
     respond_(prefix, format_time_(minutes));

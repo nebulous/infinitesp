@@ -133,6 +133,8 @@ static const uint8_t REG3B03_SIZE = 150;
 // These are passively snooped from thermostat↔IDU traffic.
 static const uint16_t REG_IDU_STATUS = 0x0306;     // Blower RPM, operating info (10 bytes)
 static const uint16_t REG_IDU_CONFIG = 0x0316;      // Airflow CFM, electric heat (14 bytes)
+static const uint16_t REG_IDU_CYCLES = 0x0310;     // Cycle counters (4-byte key-value entries)
+static const uint16_t REG_IDU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-value entries)
 
 // ODU (Outdoor Unit / Heat Pump) register keys
 // Passively snooped from thermostat↔ODU traffic.
@@ -143,6 +145,8 @@ static const uint16_t REG_ODU_COMP_SPEED = 0x0604;  // Compressor speed (uint16 
 static const uint16_t REG_ODU_DEMAND = 0x0608;     // Demand/stage indicator
 static const uint16_t REG_ODU_SETPOINT = 0x060B;   // Target temperature setpoint (°F)
 static const uint16_t REG_ODU_FLOATS = 0x061F;     // IEEE754 float32 array (superheat, subcooling, etc.)
+static const uint16_t REG_ODU_CYCLES = 0x0310;     // Cycle counters (4-byte key-value entries)
+static const uint16_t REG_ODU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-value entries)
 
 // Frame constants
 static const uint8_t FRAME_HEADER_SIZE = 8;
@@ -232,6 +236,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   const std::vector<uint8_t> *get_register(uint8_t addr, uint16_t key) const;
   uint8_t get_zone_count() const;
   bool is_bus_online() const { return bus_online_; }
+  bool has_real_state() const { return sam_state_received_; }
 
   // Bus unit detection: returns true if bus values are in °C.
   // In AUTO mode, uses heuristic (active zone temp <= 50 → °C).
@@ -354,6 +359,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint8_t slow_poll_index_{0};
   uint32_t last_slow_poll_time_{0};
   bool bus_online_{false};
+  bool sam_state_received_{false};
   uint32_t last_reply_time_{0};
 
   // Diagnostics
