@@ -1,4 +1,5 @@
 #include "infinitesp.h"
+#include "esphome/components/sensor/sensor.h"
 
 namespace esphome {
 namespace infinitesp {
@@ -215,6 +216,12 @@ void InfinitESPComponent::loop() {
 
     slow_poll_index_++;
     last_slow_poll_time_ = now;
+  }
+
+  // ZC sensor staleness fallback: check every 10s
+  if (zc_enabled() && (now - last_zc_sensor_check_ > 10000)) {
+    last_zc_sensor_check_ = now;
+    check_zc_sensor_fallback_();
   }
 
   // Track loop duration
@@ -605,18 +612,58 @@ void InfinitESPComponent::handle_write_request_() {
   uint8_t row = current_frame_.payload[2];
   uint16_t reg_key = (table << 8) | row;
   uint8_t dest = current_frame_.dst;  // who they're writing to (SAM or ZC)
-  bool is_zc = (dest == zc_address_);
+  bool is_zc = zc_enabled() && (dest == zc_address_);
 
-  // Log ZC writes at INFO level for protocol discovery
+  // ZC-specific write handling
   if (is_zc) {
     ESP_LOGI("InfinitESP", "ZC WRITE %04X from %02X (%d bytes)",
              reg_key, current_frame_.src, current_frame_.payload.size() - 3);
+
+    // 0308: damper position command — mirror immediately to 0319
+    if (reg_key == REG_ZC_DAMPER_CMD) {
+      if (current_frame_.payload.size() >= 7) {
+        std::vector<uint8_t> damper(current_frame_.payload.begin() + 3,
+                                     current_frame_.payload.begin() + 7);
+        store_register_(dest, REG_ZC_DAMPER_CMD, damper);
+
+        // Mirror damper positions to 0319 (no delay)
+        std::vector<uint8_t> state_0319(8);
+        for (uint8_t i = 0; i < 4 && i < damper.size(); i++)
+          state_0319[i] = damper[i];
+        for (uint8_t i = 4; i < 8; i++)
+          state_0319[i] = 0xFF;
+        store_register_(dest, REG_ZC_ZONE_CONFIG, state_0319);
+
+        ESP_LOGD("InfinitESP", "ZC damper: %02X %02X %02X %02X -> 0319 mirrored",
+                 damper.size() > 0 ? damper[0] : 0, damper.size() > 1 ? damper[1] : 0,
+                 damper.size() > 2 ? damper[2] : 0, damper.size() > 3 ? damper[3] : 0);
+
+        notify_entities_(dest, REG_ZC_DAMPER_CMD);
+        notify_entities_(dest, REG_ZC_ZONE_CONFIG);
+      }
+      // 1-byte ACK (matches real ZC behavior)
+      send_reply_(current_frame_.src, current_frame_.src_bus, dest, current_frame_.dst_bus, {0x00});
+      return;
+    }
+
+    // 3404: heartbeat — 1-byte ACK
+    if (reg_key == REG_ZC_HEARTBEAT) {
+      if (current_frame_.payload.size() > 3) {
+        std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
+        store_register_(dest, reg_key, data);
+      }
+      send_reply_(current_frame_.src, current_frame_.src_bus, dest, current_frame_.dst_bus, {0x00});
+      notify_entities_(dest, reg_key);
+      return;
+    }
+
+    // Other ZC writes: fall through to generic handling below
   } else {
     ESP_LOGD("InfinitESP", "WRITE to register %04X from %02X (%d bytes)", reg_key, current_frame_.src,
              current_frame_.payload.size() - 3);
   }
 
-  // Store register data (skip the 3-byte header) under the target address
+  // Generic write handling (SAM writes and unhandled ZC writes)
   if (current_frame_.payload.size() > 3) {
     std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
     // Protect device identity from being overwritten
@@ -863,12 +910,19 @@ void InfinitESPComponent::set_zone_setpoint(uint8_t zone, uint8_t heat_sp, uint8
   data[REG3B03_CHANGE_FLAGS] = 0;  // clear change flags in cache
   store_register_(sam_address_, REG_SAM_ZONES, data);
 
-  // Build write payload: [0x00, 0x3B, 0x03] + [0x00, 0x00, flags] + data[3:]
-  std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, 0x00, 0x00, flags};
+  // Build write payload: [0x00, 0x3B, 0x03] + [zone_idx, 0x00, flags] + data[3:]
+  std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, idx, 0x00, flags};
   payload.insert(payload.end(), write_data.begin() + 3, write_data.end());
 
   send_frame_(ADDR_THERMOSTAT, 0x01, FUNC_WRITE, payload);
-  ESP_LOGI("InfinitESP", "Set zone %d: heat=%d cool=%d flags=0x%02X", zone, heat_sp, cool_sp, flags);
+  ESP_LOGI("InfinitESP", "Set zone %d: heat=%d cool=%d flags=0x%02X az=0x00", zone, heat_sp, cool_sp, flags);
+  // Log first 10 bytes of payload for debugging
+  ESP_LOGI("InfinitESP", "  payload: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+           payload.size() > 0 ? payload[0] : 0, payload.size() > 1 ? payload[1] : 0,
+           payload.size() > 2 ? payload[2] : 0, payload.size() > 3 ? payload[3] : 0,
+           payload.size() > 4 ? payload[4] : 0, payload.size() > 5 ? payload[5] : 0,
+           payload.size() > 6 ? payload[6] : 0, payload.size() > 7 ? payload[7] : 0,
+           payload.size() > 8 ? payload[8] : 0, payload.size() > 9 ? payload[9] : 0);
 }
 
 void InfinitESPComponent::set_zone_fan(uint8_t zone, uint8_t fan_mode) {
@@ -886,8 +940,8 @@ void InfinitESPComponent::set_zone_fan(uint8_t zone, uint8_t fan_mode) {
   data[REG3B03_CHANGE_FLAGS] = 0;  // clear change flags
   store_register_(sam_address_, REG_SAM_ZONES, data);
 
-  // Build write payload
-  std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, 0x00, 0x00, CHANGE_FAN};
+  // Build write payload — target specific zone
+  std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, idx, 0x00, CHANGE_FAN};
   payload.insert(payload.end(), data.begin() + 3, data.end());
 
   send_frame_(ADDR_THERMOSTAT, 0x01, FUNC_WRITE, payload);
@@ -921,7 +975,7 @@ void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes)
 
   // Use CHANGE_HOLD flag (0x02) + CHANGE_OVERRIDE flag (0x80)
   uint8_t flags = CHANGE_HOLD | CHANGE_OVERRIDE;
-  std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, 0x00, 0x00, flags};
+  std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, idx, 0x00, flags};
   payload.insert(payload.end(), data.begin() + 3, data.end());
 
   send_frame_(ADDR_THERMOSTAT, 0x01, FUNC_WRITE, payload);
@@ -990,7 +1044,7 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
 
   // Write with all change flags set (fan + hold + heat + cool + override)
   uint8_t flags = CHANGE_FAN | CHANGE_HOLD | CHANGE_HEAT | CHANGE_COOL | CHANGE_OVERRIDE;
-  std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, 0x00, 0x00, flags};
+  std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, idx, 0x00, flags};
   payload.insert(payload.end(), data.begin() + 3, data.end());
 
   send_frame_(ADDR_THERMOSTAT, 0x01, FUNC_WRITE, payload);
@@ -1186,21 +1240,24 @@ void InfinitESPComponent::initialize_defaults_() {
     // Register 0302 - Zone sensor readings (24 bytes, TLV format)
     // Layout: 4 zones, zone 1 = no sensor (thermostat direct), zones 2-4 have readings.
     // System values 0x14 and 0x1C are static across all captures.
+    // Per-zone: [tag=0x01, zone_id, value_hi, value_lo] where °F = uint16_BE / 16
     {
+      // 73°F → 73×16 = 1168 = 0x0490
       std::vector<uint8_t> data = {
-        0x04, 0x01, 0x00, 0x00,   // header: 4 zones, zone 1 present (no sensor)
-        0x01, 0x02, 0x04, 0x4E,   // zone 2: 78°F (0x4E)
-        0x01, 0x03, 0x04, 0x4E,   // zone 3: 78°F
-        0x01, 0x04, 0x04, 0x4E,   // zone 4: 78°F
-        0x04, 0x14, 0x00, 0x00,   // system value 0x14 (20)
-        0x04, 0x1C, 0x00, 0x00,   // system value 0x1C (28)
+        0x04, 0x01, 0x00, 0x00,               // header: 4 zones, zone 1 present (no sensor)
+        0x01, 0x02, 0x04, 0x90,               // zone 2: 73°F
+        0x01, 0x03, 0x04, 0x90,               // zone 3: 73°F
+        0x01, 0x04, 0x04, 0x90,               // zone 4: 73°F
+        0x04, 0x14, 0x00, 0x00,               // system value 0x14 (20)
+        0x04, 0x1C, 0x00, 0x00,               // system value 0x1C (28)
       };
       store_register_(zc_address_, REG_ZC_ZONE_STATUS, data);
     }
 
-    // Register 0319 - Zone config (8 bytes)
+    // Register 0319 - Damper state feedback (8 bytes)
+    // Start with all zones detected; mirrors 0308 writes at runtime.
     {
-      std::vector<uint8_t> data = {0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+      std::vector<uint8_t> data = {0x0F, 0x0F, 0x0F, 0x0F, 0xFF, 0xFF, 0xFF, 0xFF};
       store_register_(zc_address_, REG_ZC_ZONE_CONFIG, data);
     }
 
@@ -1215,6 +1272,34 @@ void InfinitESPComponent::initialize_defaults_() {
     {
       std::vector<uint8_t> data = {0x00};
       store_register_(zc_address_, REG_ZC_HEARTBEAT, data);
+    }
+
+    // Register 3405 - Presence probe (discovery register, 3 bytes)
+    {
+      std::vector<uint8_t> data = {0x00, 0x00, 0x00};
+      store_register_(zc_address_, REG_ZC_PRESENCE, data);
+    }
+
+    // Register 0310 - Cycle counters (12 bytes, 3 key-value entries)
+    // Values from real SYSTXCC4ZC01 capture
+    {
+      std::vector<uint8_t> data = {
+        0x38, 0x00, 0x00, 0x01,
+        0x39, 0x00, 0x00, 0x01,
+        0x2B, 0x00, 0x00, 0x7E,
+      };
+      store_register_(zc_address_, REG_ZC_CYCLES, data);
+    }
+
+    // Register 0311 - Runtime hours (12 bytes, 3 key-value entries)
+    // Values from real SYSTXCC4ZC01 capture
+    {
+      std::vector<uint8_t> data = {
+        0x3A, 0x00, 0x00, 0x00,
+        0x3B, 0x00, 0x00, 0x00,
+        0x2C, 0x00, 0x7E, 0xED,
+      };
+      store_register_(zc_address_, REG_ZC_RUNTIME, data);
     }
 
     ESP_LOGI("InfinitESP", "Initialized %d ZC registers at address 0x%02X",
@@ -1469,6 +1554,13 @@ void InfinitESPComponent::log_traffic_(uint8_t src, uint8_t dst, uint8_t func, u
   entry.count++;
   entry.last_payload = payload;
   entry.last_seen_ms = millis();
+
+  // Capture write frames for protocol analysis
+  if (func == FUNC_WRITE) {
+    write_captures_.push_back({src, dst, reg_key, payload});
+    if (write_captures_.size() > WRITE_CAPTURE_MAX)
+      write_captures_.pop_front();
+  }
 }
 
 void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, size_t, void *), void *ctx) {
@@ -1532,6 +1624,22 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
   }
   emit("]");
 
+  // Recent write frame captures (full hex payload)
+  emit(",\"writes\":[");
+  first = true;
+  for (auto &wc : write_captures_) {
+    n = snprintf(buf, sizeof(buf), "%s{\"src\":\"%02X\",\"dst\":\"%02X\",\"reg\":\"%04X\",\"hex\":\"",
+             first?"":",", wc.src, wc.dst, wc.reg_key);
+    write_fn((const uint8_t *)buf, n, ctx);
+    for (auto b : wc.payload) {
+      n = snprintf(buf, sizeof(buf), "%02X", b);
+      write_fn((const uint8_t *)buf, n, ctx);
+    }
+    emit("\"}");
+    first = false;
+  }
+  emit("]");
+
   // Register dump — full hex, no truncation
   emit(",\"regs\":[");
   first = true;
@@ -1554,6 +1662,94 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
     }
   }
   emit("]}\r\n");
+}
+
+// --- ZC Zone Temperature Management ---
+
+void InfinitESPComponent::set_zc_temperature_sensor(uint8_t zone, sensor::Sensor *s) {
+  if (zone < 2 || zone > 4) return;
+  zc_zones_[zone].temp_sensor = s;
+  s->add_on_state_callback([this, zone](float value) {
+    this->on_zc_sensor_update_(zone, value);
+  });
+}
+
+void InfinitESPComponent::set_zc_staleness_timeout(uint8_t zone, uint32_t timeout_ms) {
+  if (zone < 2 || zone > 4) return;
+  zc_zones_[zone].staleness_timeout_ms = timeout_ms;
+}
+
+void InfinitESPComponent::on_zc_sensor_update_(uint8_t zone, float value) {
+  if (std::isnan(value) || zone < 2 || zone > 4) return;
+  auto &zc = zc_zones_[zone];
+  zc.last_sensor_value = value;
+  zc.last_sensor_update_ms = millis();
+
+  // Convert to °F: respect sensor_unit setting, default inherits from bus
+  bool is_f = zc_sensor_is_fahrenheit_(zone);
+  float temp_f = is_f ? value : (value * 9.0f / 5.0f + 32.0f);
+  ESP_LOGD("InfinitESP", "ZC zone %u sensor: %.2f°%s → %.2f°F → 0x%04X",
+           zone, value, is_f ? "F" : "C", temp_f,
+           (uint16_t)(temp_f * ZC_TEMP_SCALE + 0.5f));
+  update_zc_zone_temp_(zone, temp_f);
+}
+
+void InfinitESPComponent::update_zc_zone_temp_(uint8_t zone, float temp_f) {
+  if (!zc_enabled() || zone < 2 || zone > 4) return;
+
+  auto *data = get_register(zc_address_, REG_ZC_ZONE_STATUS);
+  if (!data || data->size() != 24) return;
+
+  // uint16 BE: °F × 16
+  uint16_t raw = (uint16_t) (temp_f * ZC_TEMP_SCALE + 0.5f);
+
+  // Zone N value bytes: offset 4 + (N-2)*4 + 2 (hi) and + 3 (lo)
+  // Zone 2 → bytes 6,7 | Zone 3 → bytes 10,11 | Zone 4 → bytes 14,15
+  uint8_t off_hi = 4 + (zone - 2) * 4 + 2;
+  uint8_t off_lo = off_hi + 1;
+  uint8_t hi = (raw >> 8) & 0xFF;
+  uint8_t lo = raw & 0xFF;
+  if ((*data)[off_hi] == hi && (*data)[off_lo] == lo) return;  // no change
+
+  std::vector<uint8_t> new_data = *data;
+  new_data[off_hi] = hi;
+  new_data[off_lo] = lo;
+  store_register_(zc_address_, REG_ZC_ZONE_STATUS, new_data);
+  notify_entities_(zc_address_, REG_ZC_ZONE_STATUS);
+}
+
+void InfinitESPComponent::check_zc_sensor_fallback_() {
+  if (!zc_enabled()) return;
+
+  // Need zone 1 temp for fallback — only available when SAM registers are populated
+  auto *state = get_register(sam_address_, REG_SAM_STATE);
+  if (!state || state->size() <= REG3B02_TEMPS) return;
+
+  // Zone 1 temp in bus units (°F or °C depending on setting)
+  float z1_bus = (float) (*state)[REG3B02_TEMPS];
+  float z1_f = bus_uses_celsius() ? (z1_bus * 9.0f / 5.0f + 32.0f) : z1_bus;
+
+  uint32_t now = millis();
+
+  for (uint8_t zone = 2; zone <= 4; zone++) {
+    auto &zc = zc_zones_[zone];
+
+    bool has_fresh_sensor = (zc.temp_sensor != nullptr) &&
+                            !std::isnan(zc.last_sensor_value) &&
+                            ((now - zc.last_sensor_update_ms) < zc.staleness_timeout_ms);
+
+    float temp_f;
+    if (has_fresh_sensor) {
+      // Use external sensor: convert to °F
+      bool is_f = zc_sensor_is_fahrenheit_(zone);
+      temp_f = is_f ? zc.last_sensor_value : (zc.last_sensor_value * 9.0f / 5.0f + 32.0f);
+    } else {
+      // Fallback: use zone 1 current temperature
+      temp_f = z1_f;
+    }
+
+    update_zc_zone_temp_(zone, temp_f);
+  }
 }
 
 }  // namespace infinitesp

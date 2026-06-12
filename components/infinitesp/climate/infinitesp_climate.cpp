@@ -81,6 +81,7 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     }
     parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
     this->target_temperature = target_c;
+    set_pending_setpoint_(heat_sp_, cool_sp_);
   }
   if (call.get_target_temperature_low().has_value()) {
     float target_c = call.get_target_temperature_low().value();
@@ -88,6 +89,7 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     heat_sp_ = target_bus;
     parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
     this->target_temperature_low = target_c;
+    set_pending_setpoint_(heat_sp_, cool_sp_);
   }
 
   if (call.get_target_temperature_high().has_value()) {
@@ -96,6 +98,7 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     cool_sp_ = target_bus;
     parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
     this->target_temperature_high = target_c;
+    set_pending_setpoint_(heat_sp_, cool_sp_);
   }
 
   if (call.get_fan_mode().has_value()) {
@@ -162,6 +165,15 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
   }
 
   publish_state();
+}
+
+void InfinitESPClimate::set_pending_setpoint_(uint8_t heat, uint8_t cool) {
+  pending_heat_ = heat;
+  pending_cool_ = cool;
+  pending_active_ = true;
+  pending_until_ms_ = millis() + PENDING_SETPOINT_WINDOW_MS;
+  ESP_LOGD("InfinitESP", "Zone %d: pending setpoint overlay ht=%d cl=%d for %dms",
+           zone_, heat, cool, PENDING_SETPOINT_WINDOW_MS);
 }
 
 void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t register_key) {
@@ -263,6 +275,20 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       uint8_t new_heat = data->at(REG3B03_HEAT_SETPOINTS + idx);
       uint8_t new_cool = data->at(REG3B03_COOL_SETPOINTS + idx);
       uint8_t new_fan = data->at(REG3B03_FAN_MODES + idx);
+
+      // Pending setpoint overlay: after a write, suppress stale poll data
+      // for a window to prevent HA snapback while the thermostat processes the change.
+      if (pending_active_ && millis() < pending_until_ms_) {
+        if (new_heat != pending_heat_)
+          new_heat = pending_heat_;
+        if (new_cool != pending_cool_)
+          new_cool = pending_cool_;
+      } else {
+        pending_active_ = false;  // window expired or thermostat confirmed
+        // If thermostat adopted our values, clear pending naturally
+        if (pending_active_ && new_heat == pending_heat_ && new_cool == pending_cool_)
+          pending_active_ = false;
+      }
 
       // Track whether cached setpoints changed (for publish gating)
       bool sp_changed = false;

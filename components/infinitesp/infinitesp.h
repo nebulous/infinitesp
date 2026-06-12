@@ -13,6 +13,7 @@
 #endif
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <map>
 #include <vector>
@@ -25,6 +26,9 @@ enum class TemperatureUnit : uint8_t {
 };
 
 namespace esphome {
+namespace sensor {
+class Sensor;
+}  // namespace sensor
 namespace infinitesp {
 
 // Address constants
@@ -102,8 +106,16 @@ static const uint8_t FAN_HIGH = 3;
 
 // Zone Controller registers (device address 0x60)
 static const uint16_t REG_ZC_ZONE_STATUS = 0x0302;  // Zone sensor readings (24 bytes, TLV)
-static const uint16_t REG_ZC_ZONE_CONFIG = 0x0319;  // Zone config (8 bytes)
+static const uint16_t REG_ZC_DAMPER_CMD = 0x0308;   // Damper positions (write from tstat)
+static const uint16_t REG_ZC_ZONE_CONFIG = 0x0319;  // Damper state feedback (8 bytes)
+static const uint16_t REG_ZC_PRESENCE = 0x3405;      // Presence probe (discovery)
 static const uint16_t REG_ZC_HEARTBEAT = 0x3404;     // Write/heartbeat flag (1 byte)
+static const uint16_t REG_ZC_CYCLES = 0x0310;       // Cycle counters (12 bytes, 3 KV entries)
+static const uint16_t REG_ZC_RUNTIME = 0x0311;      // Runtime hours (12 bytes, 3 KV entries)
+
+// ZC zone sensor encoding: uint16 BE, °F = value / 16
+// e.g. 0x047E = 1150 → 71.875°F. Range limited only by uint16 (4095°F).
+static const float ZC_TEMP_SCALE = 16.0f;
 
 // Register 3B02 layout offsets (see AGENTS.md for full layout)
 static const uint8_t REG3B02_ACTIVE_ZONES = 0;
@@ -177,6 +189,15 @@ static inline std::string extract_cstr(const std::vector<uint8_t> &data, size_t 
   return std::string(data.begin() + offset, data.begin() + end);
 }
 
+// Per-zone configuration for external temperature sensor references
+struct ZCZoneConfig {
+  sensor::Sensor *temp_sensor{nullptr};
+  uint8_t sensor_unit{0};  // 0=inherit from bus, 1=°C, 2=°F
+  uint32_t staleness_timeout_ms{120000};  // 2 minutes default
+  uint32_t last_sensor_update_ms{0};
+  float last_sensor_value{NAN};
+};
+
 class InfinitESPComponent;
 
 class InfinitESPEntity {
@@ -235,6 +256,23 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 
   // One-shot poll of a specific thermostat register (for discovery / debugging)
   void poll_register(uint8_t table, uint8_t row);
+
+  // ZC zone temperature sensor references
+  void set_zc_temperature_sensor(uint8_t zone, sensor::Sensor *s);
+  void set_zc_sensor_is_fahrenheit(uint8_t zone, bool is_f) {
+    if (zone >= 2 && zone <= 4) zc_zones_[zone].sensor_unit = is_f ? 2 : 1;
+  }
+
+  // Resolve sensor unit: explicit setting, or inherit from bus
+  bool zc_sensor_is_fahrenheit_(uint8_t zone) const {
+    if (zone < 2 || zone > 4) return false;
+    switch (zc_zones_[zone].sensor_unit) {
+      case 1: return false;  // explicit °C
+      case 2: return true;   // explicit °F
+      default: return !bus_uses_celsius();  // inherit from bus
+    }
+  }
+  void set_zc_staleness_timeout(uint8_t zone, uint32_t timeout_ms);
 
   const std::vector<uint8_t> *get_register(uint8_t addr, uint16_t key) const;
   uint8_t get_zone_count() const;
@@ -319,6 +357,9 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 
   void poll_thermostat_();
   void initialize_defaults_();
+  void update_zc_zone_temp_(uint8_t zone, float temp_f);
+  void check_zc_sensor_fallback_();
+  void on_zc_sensor_update_(uint8_t zone, float value);
 
   // Bus traffic capture for diagnostics / protocol reverse engineering
   struct TrafficEntry {
@@ -345,6 +386,16 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void log_traffic_(uint8_t src, uint8_t dst, uint8_t func, uint16_t reg_key,
                      const std::vector<uint8_t> &payload);
 
+  // Recent write frame capture (for protocol reverse engineering via REPORT)
+  static const size_t WRITE_CAPTURE_MAX = 32;
+  struct WriteCapture {
+    uint8_t src;
+    uint8_t dst;
+    uint16_t reg_key;
+    std::vector<uint8_t> payload;
+  };
+  std::deque<WriteCapture> write_captures_;
+
   uint16_t compute_crc_(const uint8_t *data, uint16_t len) const;
 
   // Per-device register storage: address → (register_key → data)
@@ -356,6 +407,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   std::vector<InfinitESPEntity *> entities_;
   uint8_t sam_address_{ADDR_FAKESAM};
   uint8_t zc_address_{0};  // 0 = zone controller emulation disabled
+  ZCZoneConfig zc_zones_[5];  // index 0=unused, 1-4=zones (only 2-4 have sensors)
+  uint32_t last_zc_sensor_check_{0};
   uint32_t last_rx_time_{0};
   uint32_t last_poll_time_{0};
   uint8_t poll_index_{0};

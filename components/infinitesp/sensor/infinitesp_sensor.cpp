@@ -159,6 +159,19 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
       value = (parent_->decode_int16_f_(*data, 22) - 32.0f) * (5.0f / 9.0f);
   }
 
+  // --- ZC zone temperatures (register 0302, ZC device address 0x60) ---
+  // Per-zone: [tag, id, value_hi, value_lo] where °F = uint16_BE / 16
+  if (register_key == REG_ZC_ZONE_STATUS && sensor_type_ == "zc_zone_temperature") {
+    auto *data = parent_->get_register(device_addr, REG_ZC_ZONE_STATUS);
+    if (data && data->size() == 24 && zone_ >= 2 && zone_ <= 4) {
+      uint8_t off_hi = 4 + (zone_ - 2) * 4 + 2;
+      uint8_t off_lo = off_hi + 1;
+      uint16_t raw = ((uint16_t) data->at(off_hi) << 8) | data->at(off_lo);
+      float temp_f = (float) raw / ZC_TEMP_SCALE;
+      value = (temp_f - 32.0f) * (5.0f / 9.0f);  // °F → °C for HA
+    }
+  }
+
   // --- Cycle counters and runtime hours (registers 0310/0311) ---
   // Format: sequence of 4-byte entries: [key, b1, b2, b3]
   // where value = (b1 << 16) | (b2 << 8) | b3 (24-bit unsigned)

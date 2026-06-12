@@ -18,11 +18,16 @@ static const char *const PRESET_SCHEDULE = "Per Schedule";
 //   0 → NONE,  0xFFFF → HOME,  other → keep current
 static const uint8_t NO_ACTIVITY = 0xFF;
 
+// How long to suppress stale poll data after a setpoint write (ms)
+static const uint32_t PENDING_SETPOINT_WINDOW_MS = 8000;
+
 class InfinitESPClimate : public climate::Climate, public InfinitESPEntity {
  public:
   void control(const climate::ClimateCall &call) override;
   climate::ClimateTraits traits() override;
   virtual void on_register_update(uint8_t device_addr, uint16_t register_key) override;
+
+  void set_pending_setpoint_(uint8_t heat, uint8_t cool);
 
   // Hold state readback (for text_sensor display)
   uint16_t get_hold_duration() const { return hold_duration_; }
@@ -38,6 +43,12 @@ class InfinitESPClimate : public climate::Climate, public InfinitESPEntity {
   uint16_t hold_duration_{0};  // last known hold_duration for this zone
   uint8_t last_activity_{NO_ACTIVITY};  // last activity we applied (for readback)
   std::string hold_end_time_;  // "HH:MM AP" or "Permanent" for text_sensor
+
+  // Pending setpoint overlay — suppresses stale poll data after a write
+  uint32_t pending_until_ms_{0};   // millis() deadline: ignore bus setpoints until this time
+  uint8_t pending_heat_{0};        // the setpoint we just wrote
+  uint8_t pending_cool_{0};        // the setpoint we just wrote
+  bool pending_active_{false};     // whether we have a pending overlay
 };
 
 } // namespace infinitesp

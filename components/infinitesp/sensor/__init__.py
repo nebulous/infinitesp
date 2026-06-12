@@ -39,6 +39,9 @@ SENSOR_TYPES = {
     "odu_subcooling_degf_int": {"key": "odu_subcooling_degf_int", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_indoor_coil_temp": {"key": "odu_indoor_coil_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_discharge_temp": {"key": "odu_discharge_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
+    # ZC zone temperatures (register 0302, device class 6 = 0x60>>4)
+    # Value encoding: raw = (°F - 64) × 16, converted to °C for HA
+    "zc_zone_temperature": {"key": "zc_zone_temperature", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 6},
     # IDU cycle counters (register 0310, 4-byte key-value entries) — device class 4
     "idu_low_heat_cycles": {"key": "idu_low_heat_cycles", "unit": "cycles", "bus_class": 4},
     "idu_high_heat_cycles": {"key": "idu_high_heat_cycles", "unit": "cycles", "bus_class": 4},

@@ -16,10 +16,7 @@ static const char *const FAN_NAMES[] = {"AUTO", "LOW", "MED", "HIGH"};
 static const uint8_t FAN_COUNT = 4;
 
 // Weekday names indexed by bus day value.
-// Confirmed mapping: 0=SUNDAY, 1=MONDAY, 2=TUESDAY, 3=WEDNESDAY,
-// 4=THURSDAY, 5=FRIDAY. Saturday observed as 5 (same as Friday) in one
-// capture session (2026-05-30) but Infinitude maps Saturday=6.
-// TODO: verify Saturday value — if 5, need rollover-based detection.
+// 0=SUNDAY through 6=SATURDAY. Confirmed 2026-06-06: Saturday=6.
 static const char *const DAY_NAMES[] = {"SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY",
                                         "THURSDAY", "FRIDAY", "SATURDAY"};
 

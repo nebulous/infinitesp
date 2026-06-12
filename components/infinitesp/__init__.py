@@ -26,9 +26,31 @@ CONF_FLOW_CONTROL_PIN = "flow_control_pin"
 CONF_ZONE_CONTROLLER_ADDRESS = "zone_controller_address"
 CONF_TEMPERATURE_UNIT = "temperature_unit"
 
+# ZC zone sensor reference configuration
+CONF_ZC_ZONE_2 = "zc_zone_2"
+CONF_ZC_ZONE_3 = "zc_zone_3"
+CONF_ZC_ZONE_4 = "zc_zone_4"
+CONF_TEMPERATURE_SENSOR = "temperature_sensor"
+CONF_STALENESS_TIMEOUT = "staleness_timeout"
+CONF_SENSOR_UNIT = "sensor_unit"
+
+ZC_ZONE_SCHEMA = cv.Schema({
+    cv.Optional(CONF_TEMPERATURE_SENSOR): cv.use_id("sensor"),
+    cv.Optional(CONF_STALENESS_TIMEOUT, default=120): cv.positive_int,
+    cv.Optional(CONF_SENSOR_UNIT): cv.one_of("C", "F"),
+})
+
 TEMP_UNIT_AUTO = "auto"
 TEMP_UNIT_FAHRENHEIT = "F"
 TEMP_UNIT_CELSIUS = "C"
+
+
+def _validate_zc_config(config):
+    """Warn if ZC zone sensor config is present but zone_controller_address is 0."""
+    for zone_key in [CONF_ZC_ZONE_2, CONF_ZC_ZONE_3, CONF_ZC_ZONE_4]:
+        if zone_key in config and config.get(CONF_ZONE_CONTROLLER_ADDRESS, 0) == 0:
+            _LOGGER.warning("'%s' configured but zone_controller_address is 0 — ZC emulation disabled", zone_key)
+    return config
 
 
 def _validate_addresses(config):
@@ -65,10 +87,15 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_ZONE_CONTROLLER_ADDRESS, default=0): cv.int_range(min=0, max=255),
             # Temperature unit: auto (heuristic), F, or C
             cv.Optional(CONF_TEMPERATURE_UNIT, default=TEMP_UNIT_AUTO): cv.one_of(TEMP_UNIT_AUTO, TEMP_UNIT_FAHRENHEIT, TEMP_UNIT_CELSIUS, lower=True),
+            # ZC zone temperature sensor references (requires zone_controller_address)
+            cv.Optional(CONF_ZC_ZONE_2): ZC_ZONE_SCHEMA,
+            cv.Optional(CONF_ZC_ZONE_3): ZC_ZONE_SCHEMA,
+            cv.Optional(CONF_ZC_ZONE_4): ZC_ZONE_SCHEMA,
         }
     ).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA),
     _validate_addresses,
     _validate_status_led,
+    _validate_zc_config,
 )
 
 INFINITESP_DEVICE_SCHEMA = cv.Schema(
@@ -90,6 +117,20 @@ async def to_code(config):
 
     if config[CONF_ZONE_CONTROLLER_ADDRESS] != 0:
         cg.add(var.set_zc_address(config[CONF_ZONE_CONTROLLER_ADDRESS]))
+
+    # Wire up ZC zone temperature sensor references
+    for zone_num, zone_key in [(2, CONF_ZC_ZONE_2), (3, CONF_ZC_ZONE_3), (4, CONF_ZC_ZONE_4)]:
+        if zone_key in config:
+            zone_cfg = config[zone_key]
+            if CONF_TEMPERATURE_SENSOR in zone_cfg:
+                sens = await cg.get_variable(zone_cfg[CONF_TEMPERATURE_SENSOR])
+                cg.add(var.set_zc_temperature_sensor(zone_num, sens))
+                # Explicit sensor_unit overrides the default (inherit from bus)
+                if CONF_SENSOR_UNIT in zone_cfg:
+                    is_f = zone_cfg[CONF_SENSOR_UNIT] == "F"
+                    cg.add(var.set_zc_sensor_is_fahrenheit(zone_num, is_f))
+            timeout = zone_cfg.get(CONF_STALENESS_TIMEOUT, 120)
+            cg.add(var.set_zc_staleness_timeout(zone_num, timeout * 1000))
 
     temp_unit = config[CONF_TEMPERATURE_UNIT]
     if temp_unit == TEMP_UNIT_AUTO:
