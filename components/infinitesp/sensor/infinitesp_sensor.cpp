@@ -69,11 +69,12 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
-  // ODU demand % from register 0608
-  if (register_key == REG_ODU_DEMAND && sensor_type_ == "odu_demand") {
+  // ODU demand % / stage / modulation from register 0608
+  if (register_key == REG_ODU_DEMAND &&
+      (sensor_type_ == "odu_demand" || sensor_type_ == "odu_stage" || sensor_type_ == "odu_modulation")) {
     auto *data = parent_->get_register(device_addr, REG_ODU_DEMAND);
     if (data && data->size() >= 7) {
-      // data[3] = demand (0 or 100 observed)
+      // data[3] = demand (0 or 100 observed), data[5] = stage, data[6] = modulation
       if (sensor_type_ == "odu_demand") {
         value = (float) data->at(3);
       } else if (sensor_type_ == "odu_stage") {
