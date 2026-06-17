@@ -13,7 +13,7 @@ InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address 
 | Entity Type | What You Get |
 |---|---|
 | **Climate** | Per-zone thermostat with heat/cool/auto/off modes, dual heat+cool setpoints, fan control, and preset support (per schedule, home, away, sleep, wake, hold timer, hold indefinitely) |
-| **Covers** | Per-zone damper position (0–100%) from the zone controller — works with either an emulated or a real physical zone controller |
+| **Covers** | Per-zone damper position (0–100%) from the zone controller(either an emulated or a real physical zone controller) |
 | **Sensors** | Zone temperature, zone humidity, outdoor air temp, blower RPM, airflow CFM, compressor RPM, ODU demand/stage/modulation, superheat/subcooling targets & actuals, ODU temperatures (outdoor/coil/suction/subcooling/discharge), vacation min/max temps |
 | **Binary Sensors** | Bus online/offline status, compressor running, electric heat active |
 | **Selects** | System mode (heat/cool/auto/off/emergency heat), per-zone fan speed (auto/low/med/high) |
@@ -27,13 +27,13 @@ The author's setup uses the **[Waveshare ESP32-S3-Relay-6CH](https://amzn.to/4mX
 
 [<img src="https://www.waveshare.com/w/upload/thumb/e/ee/ESP32-S3-Relay-6CH.jpg/1200px-ESP32-S3-Relay-6CH.jpg" width="400" />](https://amzn.to/4mX6tLp)
 
-The Waveshare board was chosen as a reference design for its nice case, onboard RS485 interface, and its 6 relay outputs. The relays open the door to emulating other devices beyond the SAM, notably the NIM (Network Interface Module, SYSTXCCNIM01) or a Damper Control Module (SYSTXCC4ZC01). Damper Controller *monitoring* is implemented today (damper positions and per-zone conditioning state, via either emulation or passive snooping of a real controller); *actuation* — driving the dampers directly through those relays — is the remaining work (see [Zone Controller](#zone-controller-optional)). The relay GPIOs are exposed in the example YAML config but are not part of the core SAM emulation. The firmware is hardware-agnostic. It just needs a `uart::UARTComponent`. The RS485 transceiver, ESP32 variant, and relay hardware are all irrelevant to the protocol engine.
+The Waveshare board was chosen as a reference design for its case, onboard RS485 interface, and 6 relay outputs. The relays open the door to emulating other devices beyond the SAM, notably the NIM (Network Interface Module, SYSTXCCNIM01) or a Damper Control Module (SYSTXCC4ZC01). Damper actuation works through a trigger callback: each zone's cover fires `on_change` whenever the thermostat commands a new damper position, handing the new position to whatever relay or motor driver your hardware uses (see the [Covers](#covers) examples). When emulating the zone controller, each zone also takes a temperature sensor so the thermostat sees a room reading, falling back to the zone 1 temperature when no sensor is configured (see [Zone Controller](#zone-controller-optional)). The relay GPIOs are exposed in the example YAML config but are not part of the core SAM emulation. The firmware is hardware-agnostic. It just needs a `uart::UARTComponent`. The RS485 transceiver, ESP32 variant, and relay hardware are all irrelevant to the protocol engine.
 Generic ESP32 dev boards with a separate RS485 transceiver module should also work.
 
 > **Note:** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an insufficiently-biased bus, the line voltage collapses and the receiver reads garbage. **However**, on a live Carrier ABCD bus, the existing equipment provides strong biasing (pull-up on A, pull-down on B) that holds the bus in a logic `1` state when the driver cuts out, masking the flaw. If you see TX corruption in testing or on an unusual bus configuration, add external biasing resistors, bypass the onboard transceiver entirely with a [pico-HAT-compatible RS485 module](https://amzn.to/4eMssT1) which plugs right into the header, or (if you're brave, desperate, or foolish) modify the SMD components on the board.
 
 ### 📣 Calling all NIM and zone board owners:
-If you have a Carrier NIM (SYSTXCCNIM01), Damper Control Module (SYSTXCC4ZC01), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be incredibly valuable — see [Reporting Issues](#reporting-issues) for how to collect them. A `REPORT?` snapshot helps too, but full protocol logs are best for emulation work since they show the timing and framing that static register dumps miss. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
+If you have a Carrier NIM (SYSTXCCNIM01), Damper Control Module (SYSTXCC4ZC01), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be valuable. See [Reporting Issues](#reporting-issues) for how to collect them. A `REPORT?` snapshot helps too, but full protocol logs are best for emulation work since they show the timing and framing that static register dumps miss. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
 
 
 ## Wiring
@@ -60,7 +60,7 @@ Carrier ABCD bus (RS485, 38400 baud, 8N1)
     └── 0x92  InfinitESP (SAM emulator)
 ```
 
-InfinitESP registers as address `0x92`, the same address used by physical SAM modules and other SAM emulators. **Only one device can be at this address on the bus.** If you have a physical SAM installed, disconnect or remove it. Likewise, do not run InfinitESP alongside infinitude (if its SAM emulation is enabled) or infinitive, which also occupy `0x92`. The same single-occupant rule applies to the zone-controller address `0x60`: if you already have a physical Damper Control Module on the bus, do **not** also enable `zone_controller_address: 0x60` — either let InfinitESP passively monitor the real one, or emulate it after removing the hardware.
+InfinitESP registers as address `0x92`, the same address used by physical SAM modules and other SAM emulators. **Only one device can be at this address on the bus.** If you have a physical SAM installed, disconnect or remove it. Likewise, do not run InfinitESP alongside infinitude (if its SAM emulation is enabled) or infinitive, which also occupy `0x92`. The same single-occupant rule applies to the zone-controller address `0x60`: if you already have a physical Damper Control Module on the bus, do **not** also enable `zone_controller_address: 0x60`. Either let InfinitESP passively monitor the real one, or emulate it after removing the hardware.
 
 ## Quick Start
 
@@ -215,13 +215,13 @@ infinitesp:
 
 Carrier zoned systems put a Damper Control Module (SYSTXCC4ZC01) on the bus at address `0x60`. InfinitESP can either **emulate** one or **passively monitor** a real one:
 
-- **`zone_controller_address: 0x60`** — InfinitESP emulates the zone controller. The thermostat talks to InfinitESP as if it were the hardware. This lets you inject temperatures from external sensors (below) and, eventually, actuate dampers via relays. Do **not** enable this if a physical zone controller is already on the bus — the two would collide at `0x60`.
-- **`zone_controller_address: 0`** (default) — no emulation. InfinitESP passively snoops the thermostat↔zone-controller traffic and still reports damper positions and per-zone conditioning state from the real hardware. This is the mode to use if you already have a physical Damper Control Module installed.
+- **`zone_controller_address: 0x60`**: InfinitESP emulates the zone controller. The thermostat talks to InfinitESP as if it were the hardware. This lets you inject temperatures from external sensors (below). Do **not** enable this if a physical zone controller is already on the bus; the two would collide at `0x60`.
+- **`zone_controller_address: 0`** (default): no emulation. InfinitESP passively snoops the thermostat↔zone-controller traffic and still reports damper positions and per-zone conditioning state from the real hardware. This is the mode to use if you already have a physical Damper Control Module installed.
 
 In either case the damper `cover` entities (see [Covers](#covers)) and per-zone climate heating/cooling action reflect the real damper state.
 
 **Injecting external zone temperature sensors (emulation only).**
-When emulating the zone controller, the thermostat expects each zone to report a temperature. InfinitESP can source these from any ESPHome sensor — a local Dallas 1-Wire or DHT/BME wired to the ESP32, or a Home Assistant entity via the `homeassistant` platform — instead of letting the thermostat read its own remote sensors. Configure one block per zone (zones 2–4; zone 1 is reported by the thermostat itself):
+When emulating the zone controller, the thermostat expects each zone to report a temperature. InfinitESP can source these from any ESPHome sensor (a local Dallas 1-Wire or DHT/BME wired to the ESP32, or a Home Assistant entity via the `homeassistant` platform) instead of letting the thermostat read its own remote sensors. Configure one block per zone (zones 2–4; zone 1 is reported by the thermostat itself):
 
 ```yaml
 # Option A: local Dallas 1-Wire sensor wired to the ESP32
@@ -252,21 +252,21 @@ infinitesp:
     temperature_sensor: ...
 ```
 
-Only one `sensor:` block is needed per zone — wire whichever `id` you want InfinitESP to read. `internal: true` keeps the raw sensor out of Home Assistant since its value surfaces through the zone controller emulation. If `temperature_sensor` is omitted, InfinitESP reports whatever the bus last reported for that zone. `staleness_timeout` (default 120s) controls how long to keep using the external value before falling back. `sensor_unit` defaults to the bus-detected unit; set it explicitly only if your sensor reports a different unit than the bus.
+Only one `sensor:` block is needed per zone. InfinitESP reads whichever `id` you wire in. `internal: true` keeps the raw sensor out of Home Assistant since its value surfaces through the zone controller emulation. If `temperature_sensor` is omitted, InfinitESP reports whatever the bus last reported for that zone. `staleness_timeout` (default 120s) controls how long to keep using the external value before falling back. `sensor_unit` defaults to the bus-detected unit; set it explicitly only if your sensor reports a different unit than the bus.
 
-Note: this sensor-injection feature requires emulation. With a passive (physical) zone controller, the real hardware owns temperature reporting and these blocks have no effect.
+This sensor-injection feature requires emulation. With a passive (physical) zone controller, the real hardware owns temperature reporting and these blocks have no effect.
 
 #### Temperature Unit Detection
 
-The Carrier ABCD bus encodes temperatures differently depending on the thermostat's display unit setting (°F or °C). No register reports which unit is active — InfinitESP detects it automatically.
+The Carrier ABCD bus encodes temperatures differently depending on the thermostat's display unit setting (°F or °C). No register reports which unit is active. InfinitESP detects it automatically.
 
 The `temperature_unit` option controls how InfinitESP interprets bus temperatures:
 
 | Value | Behavior |
 |-------|----------|
 | `auto` (default) | Detects from bus data: any active zone temperature ≤ 50 means °C. No plausible HVAC zone exceeds 50°C (122°F). Re-evaluates on every poll cycle. |
-| `F` | Force Fahrenheit — treat all bus values as °F regardless of detected state. |
-| `C` | Force Celsius — treat all bus values as °C regardless of detected state. |
+| `F` | Force Fahrenheit: treat all bus values as °F regardless of detected state. |
+| `C` | Force Celsius: treat all bus values as °C regardless of detected state. |
 
 Most users never need to change this from `auto`. The explicit `F`/`C` options are for edge cases or debugging.
 
@@ -311,7 +311,7 @@ The cover is a position reporter, not a bus actuator: **it never writes the ABCD
 
 #### on_change (trigger on commanded moves)
 
-Add an `on_change` trigger to run automations whenever the cover's reported position doesn't match the commanded position — whether the command came from the thermostat (bus) or from Home Assistant. It fires once per real step change (periodic bus re-asserts and the `0308`/`0319` mirror are de-duped, comparisons are in the protocol's 16-step space so re-commanding the current step is a no-op) and passes the new position as `pos` (a float `0.0`–`1.0`):
+Add an `on_change` trigger to run automations whenever the cover's reported position doesn't match the commanded position (from the thermostat bus or from Home Assistant). It fires once per real step change (periodic bus re-asserts and the `0308`/`0319` mirror are de-duped, comparisons are in the protocol's 16-step space so re-commanding the current step is a no-op) and passes the new position as `pos` (a float `0.0`–`1.0`):
 
 ```yaml
 cover:
@@ -327,7 +327,7 @@ cover:
             args: [ 'pos * 100.0' ]
 ```
 
-Because the cover never writes the bus, what the trigger's actions do with `pos` is entirely up to you. `on_change` is a standard ESPHome trigger, so it takes any standard ESPHome action — `logger.log`, `switch.turn_on`, `homeassistant.event`, etc. For example, to drive a binary damper relay (ON when the damper is commanded open at any step, OFF when closed), use `switch.control` with a templated boolean:
+Because the cover never writes the bus, what the trigger's actions do with `pos` is entirely up to you. `on_change` is a standard ESPHome trigger, so it takes any standard ESPHome action (`logger.log`, `switch.turn_on`, `homeassistant.event`, etc.). For example, to drive a binary damper relay (ON when the damper is commanded open at any step, OFF when closed), use `switch.control` with a templated boolean:
 
 ```yaml
 cover:
@@ -343,7 +343,7 @@ cover:
             state: !lambda 'return pos > 0.0f;'
 ```
 
-`pos * 15.0` gives the protocol's 16 damper steps if you need proportional control; you handle any relay timing in the lambda. Note that Home Assistant-set positions are transient: the cover acknowledges the command immediately, but the next bus-commanded change overwrites the reported position with what the thermostat actually commands. InfinitESP does not ship a built-in damper/relay driver — any real-world actuation lives in your `on_change` actions.
+`pos * 15.0` gives the protocol's 16 damper steps if you need proportional control; you handle any relay timing in the lambda. Home Assistant-set positions are transient: the cover acknowledges the command immediately, but the next bus-commanded change overwrites the reported position with what the thermostat actually commands. InfinitESP does not ship a built-in damper/relay driver. Any real-world actuation lives in your `on_change` actions.
 
 ### Sensors
 
@@ -515,7 +515,7 @@ This feature is not available with the TCP serial bridge transport (circular dep
 
 ## Targeted Systems
 
-InfinitESP targets Carrier Infinity / Bryant Evolution / ICP systems that communicate over the ABCD RS485 bus. The protocol is shared across this family; only the author's own system has been confirmed working. The model numbers below identify the kinds of devices found on that bus — they are not a verified compatibility list, and behavior can vary across firmware revisions:
+InfinitESP targets Carrier Infinity / Bryant Evolution / ICP systems that communicate over the ABCD RS485 bus. The protocol is shared across this family; only the author's own system has been confirmed working. The model numbers below identify the kinds of devices found on that bus. They are not a verified compatibility list, and behavior can vary across firmware revisions:
 
 - **SAM modules** (the device InfinitESP emulates): SYSTXCCSAM01, SYSTXCCSAMC01
 - **Thermostats**: Infinity Touch (SYSTXCCITC01), Evolution Connex (SYSTXBBECC01), legacy UID/UIZ controls with firmware 14+
@@ -575,14 +575,14 @@ nc infinitesp.local 23
 REPORT?
 ```
 
-This produces a JSON dump of all observed bus traffic, device info, cached registers, and diagnostic counters — a self-contained snapshot of the bus state.
+This produces a JSON dump of all observed bus traffic, device info, cached registers, and diagnostic counters: a self-contained snapshot of the bus state.
 
 **Hardware details** help narrow down firmware-specific issues:
 
 - Thermostat model and firmware version (shown in REPORT? under the `device` line for address `20`)
 - Indoor unit model (furnace/air handler)
 - Outdoor unit model (condenser/heat pump)
-- Whether you have a zone controller installed
+- Zone controller (installed or not)
 - RS485 transport (direct UART or TCP serial bridge)
 
 ## Project Structure

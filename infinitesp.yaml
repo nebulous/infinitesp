@@ -1,8 +1,7 @@
 # InfinitESP - Carrier Infinity / Bryant Evolution ABCD bus SAM emulator
 #
 # This is a reference configuration. Copy it, modify it for your hardware,
-# and flash to your ESP32. See infinitesp-dev.yaml for a real-world example
-# with all transports enabled.
+# and flash to your ESP32.
 #
 # Requirements:
 #   - An ESP32 (recommended) or ESP8266 with an RS485 transceiver
@@ -13,7 +12,7 @@
 #
 # The Waveshare ESP32-S3-Relay-6CH is used as the example board because it
 # has an onboard RS485 transceiver. Any ESP32-S3 works - just change the
-# UART pins. For ESP8266, see infinitesp-dev-esp8266.yaml.
+# UART pins.
 
 substitutions:
   name: infinitesp
@@ -167,7 +166,7 @@ uart:
 # controller at 0x60 (lets you inject external zone temp sensors and actuate
 # dampers). Leave either at 0 to only snoop the bus without emulating that
 # device: with zone_controller_address at 0, InfinitESP still passively
-# monitors a real physical ZC already on the bus — damper covers and per-zone
+# monitors a real physical ZC already on the bus. Damper covers and per-zone
 # climate heating/cooling action then reflect the real damper state.
 infinitesp:
   id: infinitesp_hub
@@ -220,8 +219,8 @@ cover:
   #   device_class: damper
 
 # Optional on_change: fires whenever the cover's reported position doesn't
-# match the commanded position — whether the command came from the thermostat
-# (bus) or from Home Assistant — passing the new 0.0–1.0 position as `pos`.
+# match the commanded position (from the thermostat bus or from Home
+# Assistant), passing the new 0.0–1.0 position as `pos`.
 # The cover never writes the bus, so what the action does (log, drive relays,
 # toggle GPIO) is up to you. This example just logs it.
 #
