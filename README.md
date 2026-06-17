@@ -1,8 +1,8 @@
 # InfinitESP
 
-ESPHome firmware for ESP32 that emulates a Carrier/Bryant/ICP System Access Module (SAM) on the ABCD RS485 bus, giving Home Assistant native control of Infinity/Evolution HVAC systems.
+ESPHome firmware for ESP32 that emulates Carrier/Bryant/ICP devices on the "ABCD" RS485 bus. System Access Module(SAM) emulation gives Home Assistant native control HVAC systems and Damper Control Module emulation gives the thermostat access to any physical hardware that esphome can actuate.
 
-No cloud or Carrier API. Just a serial bus and a microcontroller.
+No cloud or Carrier API required, just a serial bus and a microcontroller.
 
 > **Disclaimer:** This firmware was developed by reverse-engineering a proprietary protocol. Everything described below has been confirmed working in the author's system. Your mileage may vary with different equipment, firmware versions, or bus configurations.
 
