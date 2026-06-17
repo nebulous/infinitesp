@@ -28,6 +28,9 @@ class InfinitESPClimate : public climate::Climate, public InfinitESPEntity {
   virtual void on_register_update(uint8_t device_addr, uint16_t register_key) override;
 
   void set_pending_setpoint_(uint8_t heat, uint8_t cool);
+  // Recompute climate action from cached stage/mode + current damper state.
+  // Returns true if this->action changed.
+  bool compute_action_();
 
   // Hold state readback (for text_sensor display)
   uint16_t get_hold_duration() const { return hold_duration_; }
@@ -36,6 +39,8 @@ class InfinitESPClimate : public climate::Climate, public InfinitESPEntity {
  protected:
   float current_temp_{NAN};
   uint8_t current_action_{0};
+  uint8_t last_stage_{0};   // last stage nibble from 3B02 stagmode
+  uint8_t last_mode_{0};    // last mode nibble from 3B02 stagmode (direction when stage>0)
   uint8_t heat_sp_{68};
   uint8_t cool_sp_{76};
   uint8_t fan_mode_{0};

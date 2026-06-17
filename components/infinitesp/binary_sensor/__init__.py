@@ -22,6 +22,6 @@ CONFIG_SCHEMA = binary_sensor.binary_sensor_schema(InfinitESPBinarySensor).exten
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     cg.add(var.set_sensor_type(config[CONF_TYPE]))
-    cg.add(var.set_device_class(BINARY_SENSOR_TYPES[config[CONF_TYPE]]))
+    cg.add(var.set_bus_class(BINARY_SENSOR_TYPES[config[CONF_TYPE]]))
     await binary_sensor.register_binary_sensor(var, config)
     await register_infinitesp_entity(var, config)

@@ -161,10 +161,19 @@ uart:
 # InfinitESP hub
 # ──────────────────────────────────────────────
 
+# SAM and zone-controller emulation are independent and each gated on its
+# address being nonzero. Set sam_address to enable SAM emulation (climate,
+# selects, holds, system mode). Set zone_controller_address to EMULATE a zone
+# controller at 0x60 (lets you inject external zone temp sensors and actuate
+# dampers). Leave either at 0 to only snoop the bus without emulating that
+# device: with zone_controller_address at 0, InfinitESP still passively
+# monitors a real physical ZC already on the bus — damper covers and per-zone
+# climate heating/cooling action then reflect the real damper state.
 infinitesp:
   id: infinitesp_hub
   uart_id: bus_uart           # Change to bus_cdcuart or bus_tcpuart if using those
-  sam_address: 0x92               # 0x92 = SAM, 0x93 = FakeSAM (test mode), 0 = disabled
+  sam_address: 0x92               # Nonzero = SAM emulation active. 0x92 = SAM, 0x93 = FakeSAM (test), 0 = passive
+  zone_controller_address: 0x60   # Nonzero = emulate ZC at 0x60. 0 = no emulation (still passively monitors a real ZC if present)
   # flow_control_pin: GPIO13   # RS485 DE/RE control (needed for some transceivers)
   # status_light_id: rgb_led  # Status LED reference (see light: section below)
 
@@ -184,6 +193,49 @@ climate:
   #   infinitesp_id: infinitesp_hub
   #   name: "Zone 2 Climate"
   #   zone: 2
+
+# ──────────────────────────────────────────────
+# Damper covers (zone-controller emulation OR physical ZC)
+# ──────────────────────────────────────────────
+# Reports each zone's commanded damper position (0–100%) from the bus. Works
+# two ways: set zone_controller_address above to EMULATE a ZC (0x60), OR leave
+# it at 0 and InfinitESP will passively SNOOP the thermostat's damper writes to
+# a real physical zone controller already on the bus. Either way the cover and
+# the per-zone climate heating/cooling action reflect real damper state. With
+# no ZC of any kind these covers never publish (unknown).
+# Add one entry per active zone (1–4). Without an on_change trigger the cover
+# is read-only.
+# ──────────────────────────────────────────────
+
+cover:
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Zone 1 Damper"
+    zone: 1
+    device_class: damper
+  # - platform: infinitesp
+  #   infinitesp_id: infinitesp_hub
+  #   name: "Zone 2 Damper"
+  #   zone: 2
+  #   device_class: damper
+
+# Optional on_change: fires whenever the cover's reported position doesn't
+# match the commanded position — whether the command came from the thermostat
+# (bus) or from Home Assistant — passing the new 0.0–1.0 position as `pos`.
+# The cover never writes the bus, so what the action does (log, drive relays,
+# toggle GPIO) is up to you. This example just logs it.
+#
+# cover:
+#   - platform: infinitesp
+#     infinitesp_id: infinitesp_hub
+#     name: "Zone 1 Damper"
+#     zone: 1
+#     device_class: damper
+#     on_change:
+#       then:
+#         - logger.log:
+#             format: "Damper: %.0f%%"
+#             args: [ 'pos * 100.0' ]
 
 # ──────────────────────────────────────────────
 # Sensors
@@ -328,17 +380,10 @@ sensor:
     entity_category: diagnostic
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
-    name: "ODU Liquid Temp"
-    type: odu_liquid_temp
+    name: "ODU Subcooling"
+    type: odu_subcooling_degf_int
     accuracy_decimals: 1
-    icon: "mdi:thermometer"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Indoor Coil Temp"
-    type: odu_indoor_coil_temp
-    accuracy_decimals: 1
-    icon: "mdi:thermometer"
+    icon: "mdi:thermometer-chevron-down"
     entity_category: diagnostic
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
@@ -391,6 +436,17 @@ binary_sensor:
     entity_category: diagnostic
   - platform: status
     name: "Status"
+
+  # Boot button (available on most ESP32 dev boards)
+  - platform: gpio
+    pin:
+      number: GPIO0
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    name: "Boot Button"
+    entity_category: diagnostic
 
 # ──────────────────────────────────────────────
 # Selects
@@ -551,18 +607,6 @@ text_sensor:
 #   output: buzzer
 #   id: rtttl_buzzer
 #   gain: 30%
-
-# Boot button (available on most ESP32 dev boards)
-binary_sensor:
-  - platform: gpio
-    pin:
-      number: GPIO0
-      mode:
-        input: true
-        pullup: true
-      inverted: true
-    name: "Boot Button"
-    entity_category: diagnostic
 
 button:
   - platform: restart

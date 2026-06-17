@@ -206,13 +206,13 @@ class InfinitESPEntity {
   void set_parent(InfinitESPComponent *parent) { parent_ = parent; }
   void set_zone(uint8_t zone) { zone_ = zone; }
   uint8_t get_zone() const { return zone_; }
-  void set_device_class(uint8_t cls) { device_class_ = cls; }
-  uint8_t get_device_class() const { return device_class_; }
+  void set_bus_class(uint8_t cls) { bus_class_ = cls; }
+  uint8_t get_bus_class() const { return bus_class_; }
 
  protected:
   InfinitESPComponent *parent_{nullptr};
   uint8_t zone_{0};
-  uint8_t device_class_{0};  // upper nibble of bus address: 0=any, 2=tstat, 4=IDU, 5=ODU, 9=SAM
+  uint8_t bus_class_{0};  // upper nibble of bus address: 0=any, 2=tstat, 4=IDU, 5=ODU, 9=SAM
 };
 
 class InfinitESPComponent : public Component, public uart::UARTDevice {
@@ -229,6 +229,20 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zc_address(uint8_t addr) { zc_address_ = addr; }
   uint8_t get_zc_address() const { return zc_address_; }
   bool zc_enabled() const { return zc_address_ != 0; }
+// True if this zone's damper is open (zone is receiving conditioned air).
+  // Consults register 0308 under the ZC address: our emulated ZC (zc_address_)
+  // when emulating, or the standard 0x60 when passively snooping a real
+  // physical ZC. No damper data yet (no ZC on the bus, or not yet seen), or
+  // zone index beyond the 4-byte register (zones 5-8): true — nothing to
+  // suppress on, and single-zone systems track the system 1:1. Otherwise the
+  // zone's damper byte (0x00-0x0F) is nonzero.
+  bool zone_damper_open(uint8_t zone) const {
+    uint8_t zc = zc_enabled() ? zc_address_ : ADDR_ZONE_CTRL;
+    auto *data = get_register(zc, REG_ZC_DAMPER_CMD);
+    if (!data || zone < 1 || zone > data->size())
+      return true;
+    return (*data)[zone - 1] != 0;
+  }
   void set_temperature_unit(TemperatureUnit unit) { temperature_unit_ = unit; }
   TemperatureUnit get_temperature_unit() const { return temperature_unit_; }
   void register_entity(InfinitESPEntity *entity) { entities_.push_back(entity); }
@@ -314,11 +328,18 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   static constexpr uint16_t HOLD_PERMANENT = 0xFFFF;
   uint16_t get_zone_hold_duration(uint8_t zone) const;
 
+  // Format a hold's end time as "HH:MM AP" from the current bus clock (3B02)
+  // plus hold_minutes. Returns empty string if the bus clock isn't available yet.
+  std::string format_hold_end(uint16_t hold_minutes) const;
+
   // Bus diagnostic report — streams directly via callback (no heap allocation)
   void stream_bus_report_(void (*write_fn)(const uint8_t *, size_t, void *), void *ctx);
   // Direct register manipulation (used by button platform for virtual registers)
   void store_register_(uint8_t addr, uint16_t key, const std::vector<uint8_t> &data);
   void notify_entities_(uint8_t device_addr, uint16_t register_key);
+  // Mirror a register into the SAM's own address space (so SAM-served READs return
+  // current values). Marks bus state received for REG_SAM_STATE / REG_SAM_ZONES.
+  void mirror_to_sam_(uint16_t reg_key, const std::vector<uint8_t> &data);
 
   // Decode big-endian IEEE754 float32 from byte vector
   static float decode_f32_be_(const std::vector<uint8_t> &data, size_t offset) {
@@ -339,6 +360,62 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     return (float) raw / 16.0f;
   }
 
+  // --- IDU/ODU field accessors: single source of truth for register offsets ---
+  // Pure decoders of a register's byte vector. Native units (°F for ODU temps,
+  // raw counts for RPM/CFM, native float for 061F). Return NAN if the field
+  // isn't fully present; callers apply unit conversion (°F→°C) and publish.
+  // Both the dispatch logger and the sensor/binary_sensor platforms call these
+  // so the offset table lives in exactly one place.
+
+  // IDU register 0306 (REG_IDU_STATUS): blower RPM, u16 BE at [1..2]
+  static float idu_blower_rpm_(const std::vector<uint8_t> &data) {
+    if (data.size() < 3) return NAN;
+    return (float) (((uint16_t) data[1] << 8) | data[2]);
+  }
+  // IDU register 0316 (REG_IDU_CONFIG): airflow CFM u16 BE at [4..5]
+  static float idu_airflow_cfm_(const std::vector<uint8_t> &data) {
+    if (data.size() < 6) return NAN;
+    return (float) (((uint16_t) data[4] << 8) | data[5]);
+  }
+  // IDU register 0316: electric heat present, data[0] & 0x03
+  static bool idu_electric_heat_(const std::vector<uint8_t> &data) {
+    return !data.empty() && (data[0] & 0x03) != 0;
+  }
+  // ODU register 0604 (REG_ODU_COMP_SPEED): current compressor RPM, u16 BE at [0..1]
+  static float odu_compressor_rpm_(const std::vector<uint8_t> &data) {
+    if (data.size() < 2) return NAN;
+    return (float) (((uint16_t) data[0] << 8) | data[1]);
+  }
+  // ODU register 0608 (REG_ODU_DEMAND): demand / stage / modulation
+  static float odu_demand_(const std::vector<uint8_t> &data) {
+    return data.size() >= 7 ? (float) data[3] : NAN;
+  }
+  static float odu_stage_(const std::vector<uint8_t> &data) {
+    return data.size() >= 7 ? (float) data[5] : NAN;
+  }
+  static float odu_modulation_(const std::vector<uint8_t> &data) {
+    return data.size() >= 7 ? (float) data[6] : NAN;
+  }
+  // ODU register 060B (REG_ODU_SETPOINT): target temp at data[4], native °F whole degrees
+  static float odu_setpoint_f_(const std::vector<uint8_t> &data) {
+    return data.size() >= 5 ? (float) data[4] : NAN;
+  }
+  // ODU register 0304 (REG_ODU_STATUS3): operating mode at data[10]
+  static float odu_operating_mode_(const std::vector<uint8_t> &data) {
+    return data.size() >= 11 ? (float) data[10] : NAN;
+  }
+  // ODU register 061F (REG_ODU_FLOATS): float idx 1..6 at offset 1 + (idx-1)*4.
+  // idx 1..5 are °F deltas, idx 6 is dimensionless — caller applies conversion.
+  static float odu_float_(const std::vector<uint8_t> &data, uint8_t idx) {
+    return decode_f32_be_(data, 1 + (idx - 1) * 4);
+  }
+  // ODU register 0302 (REG_ODU_STATUS1): measurement slot idx 0..5 at offset 2+idx*4.
+  //   idx 0=outdoor 1=coil 2=suction 3=subcooling(ΔT) 4=indoor_amb 5=discharge
+  // Native °F via decode_int16_f_. idx 3 is a delta (caller skips the -32).
+  static float odu_status1_meas_f_(const std::vector<uint8_t> &data, uint8_t idx) {
+    return decode_int16_f_(data, 2 + idx * 4);
+  }
+
  protected:
   void parse_byte_(uint8_t byte);
   bool validate_frame_();
@@ -348,6 +425,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t func,
                        const std::vector<uint8_t> &payload);
   void send_frame_(uint8_t dst, uint8_t dst_bus, uint8_t func, const std::vector<uint8_t> &payload);
+  // Send a WRITE frame now and queue one retransmit RETRANSMIT_DELAY_MS later.
+  // Rides through sporadic bus drops without readback verification. All callers
+  // write idempotent values (setpoints/fan/mode/permanent holds); timed holds
+  // see a sub-minute countdown reset, below the field's minute resolution.
+  // Coupling: RETRANSMIT_DELAY_MS must stay <= PENDING_SETPOINT_WINDOW_MS/2
+  // (InfinitESPClimate) so a retransmit always lands inside the newest
+  // change's overlay window and cannot cause UI snapback.
+  void send_write_frame_(uint8_t dst, uint8_t dst_bus, const std::vector<uint8_t> &payload);
   void send_reply_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, const std::vector<uint8_t> &payload);
   void send_exception_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t table, uint8_t row, uint8_t code);
 
@@ -451,6 +536,18 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     uint16_t reg_key;
   };
   std::vector<PendingPoll> pending_polls_;
+
+  // Queued write retransmits. Each entry fires once from loop() at fire_ms.
+  // Drained FIFO; with RETRANSMIT_DELAY_MS <= overlay/2, the last-sent value
+  // for a zone always wins on the bus regardless of rapid change ordering.
+  struct PendingRetransmit {
+    uint8_t dst;
+    uint8_t dst_bus;
+    uint8_t func;   // FUNC_WRITE
+    std::vector<uint8_t> payload;
+    uint32_t fire_ms;
+  };
+  std::deque<PendingRetransmit> pending_retransmits_;
   // Cached WiFi credentials discovered from thermostat register 4608
   // Stored in NVS, injected into WiFi component on boot if WiFi hasn't connected yet
   struct CachedWifi {

@@ -24,25 +24,11 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
     } else if (hold_dur >= InfinitESPComponent::HOLD_PERMANENT) {
       publish_state("Hold - Permanent");
     } else {
-      // Compute end time from bus clock + hold duration
-      auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
-      if (state && state->size() >= REG3B02_MINUTES + 2) {
-        uint16_t now_min = ((uint16_t) state->at(REG3B02_MINUTES) << 8) |
-                           state->at(REG3B02_MINUTES + 1);
-        uint16_t end_min = now_min + hold_dur;
-        if (end_min >= 1440) end_min -= 1440;
-        uint8_t hr24 = end_min / 60;
-        uint8_t mn = end_min % 60;
-        uint8_t hr12 = hr24 % 12;
-        if (hr12 == 0) hr12 = 12;
-        char buf[24];
-        snprintf(buf, sizeof(buf), "Hold until %02d:%02d %s", hr12, mn, hr24 < 12 ? "AM" : "PM");
-        publish_state(buf);
-      } else {
-        char buf[24];
-        snprintf(buf, sizeof(buf), "Hold %d min", hold_dur);
-        publish_state(buf);
-      }
+      std::string end = parent_->format_hold_end(hold_dur);
+      if (!end.empty())
+        publish_state("Hold until " + end);
+      else
+        publish_state("Hold " + std::to_string(hold_dur) + " min");
     }
     return;
   }

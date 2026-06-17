@@ -176,6 +176,29 @@ void InfinitESPClimate::set_pending_setpoint_(uint8_t heat, uint8_t cool) {
            zone_, heat, cool, PENDING_SETPOINT_WINDOW_MS);
 }
 
+bool InfinitESPClimate::compute_action_() {
+  // stage>0 means the ODU has demand for a mode (Carrier SAM spec). The mode
+  // nibble carries direction during stage>0. Gate per-zone on the damper: a
+  // closed damper means this zone isn't receiving conditioned air even while
+  // the system runs. With no zone controller, zone_damper_open() is always
+  // true (single-zone system, action tracks the system 1:1).
+  climate::ClimateAction action = climate::CLIMATE_ACTION_IDLE;
+  if (last_stage_ > 0 && parent_->zone_damper_open(zone_)) {
+    switch (last_mode_) {
+      case SYSMODE_HEAT:  action = climate::CLIMATE_ACTION_HEATING; break;
+      case SYSMODE_COOL:  action = climate::CLIMATE_ACTION_COOLING; break;
+      case SYSMODE_EHEAT: action = climate::CLIMATE_ACTION_HEATING; break;
+      default: break;  // AUTO during stage>0: direction unknown (issue #7)
+    }
+  }
+  if (action != current_action_) {
+    current_action_ = action;
+    this->action = action;
+    return true;
+  }
+  return false;
+}
+
 void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t register_key) {
   bool changed = false;
 
@@ -199,28 +222,23 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       uint8_t mode = stagmode & 0x0F;
       uint8_t stage = (stagmode >> 4) & 0x0F;
 
-      climate::ClimateAction action = climate::CLIMATE_ACTION_IDLE;
-      if (stage > 0) {
-        // The bus stagmode encodes active direction in the mode nibble:
-        // When AUTO mode is actively heating, mode=heat(0); when cooling, mode=cool(1).
-        // When idle, mode=auto(2). So we can read direction directly.
-        switch (mode) {
-          case SYSMODE_HEAT: action = climate::CLIMATE_ACTION_HEATING; break;
-          case SYSMODE_COOL: action = climate::CLIMATE_ACTION_COOLING; break;
-          case SYSMODE_AUTO:
-            // Should not happen: when actively running in AUTO, the bus
-            // changes mode nibble to heat(0) or cool(1). Log if seen.
-            ESP_LOGW("infinitesp", "Unexpected: stage=%d but mode=AUTO", stage);
-            break;
-          case SYSMODE_EHEAT: action = climate::CLIMATE_ACTION_HEATING; break;
-          default: break;
-        }
+      // Cache the raw stage/mode nibbles so action can be recomputed when a
+      // ZC damper update arrives without a new 3B02 frame. During stage>0 the
+      // mode nibble reflects direction (heat/cool); at stage==0 it holds the
+      // requested mode and action is IDLE regardless.
+      last_stage_ = stage;
+      last_mode_ = mode;
+      // On conventional 2-stage equipment (stage 1-2), the thermostat rewrites
+      // the mode nibble to heat/cool during active operation, so AUTO while
+      // stage>0 is genuinely unexpected - log it. On variable-speed equipment
+      // (stage 3+), the mode nibble can stay AUTO during active operation
+      // (issue #7), so suppress the warning there. compute_action_() handles
+      // the AUTO case independently (falls through to IDLE).
+      if (mode == SYSMODE_AUTO && stage > 0 && stage <= 2) {
+        ESP_LOGW("infinitesp", "Unexpected: stage=%d but mode=AUTO", stage);
       }
-      if (action != current_action_) {
-        current_action_ = action;
-        this->action = action;
+      if (compute_action_())
         changed = true;
-      }
 
       // Mode update logic:
       // - When stage==0 (idle): mode nibble is the true requested mode. Always trust it.
@@ -354,23 +372,9 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
           hold_end_time_ = "Permanent";
         } else {
           this->set_custom_preset_(PRESET_HOLD_TIMED);
-          // Compute end time from current bus time + hold duration
-          auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
-          if (state && state->size() >= REG3B02_MINUTES + 2) {
-            uint16_t now_min = ((uint16_t) state->at(REG3B02_MINUTES) << 8) |
-                               state->at(REG3B02_MINUTES + 1);
-            uint16_t end_min = now_min + hold_duration_;
-            if (end_min >= 1440)
-              end_min -= 1440;
-            uint8_t end_hr24 = end_min / 60;
-            uint8_t end_mn = end_min % 60;
-            uint8_t end_hr12 = end_hr24 % 12;
-            if (end_hr12 == 0) end_hr12 = 12;
-            const char *ampm = (end_hr24 < 12) ? "AM" : "PM";
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%02d:%02d %s", end_hr12, end_mn, ampm);
-            hold_end_time_ = buf;
-          }
+          std::string end = parent_->format_hold_end(hold_duration_);
+          if (!end.empty())
+            hold_end_time_ = end;
         }
       } else {
         hold_end_time_.clear();
@@ -424,6 +428,14 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
         changed = true;
       }
     }
+  }
+
+  // ZC damper changes can flip this zone's action without a new 3B02 frame
+  // (e.g. the thermostat closes this zone's damper while the ODU keeps running
+  // for another zone). Recompute from cached stage/mode + fresh damper state.
+  if (register_key == REG_ZC_DAMPER_CMD || register_key == REG_ZC_ZONE_CONFIG) {
+    if (compute_action_())
+      changed = true;
   }
 
   if (changed) {

@@ -37,7 +37,7 @@ SENSOR_TYPES = {
     "odu_coil_temp": {"key": "odu_coil_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_suction_temp": {"key": "odu_suction_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_subcooling_degf_int": {"key": "odu_subcooling_degf_int", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
-    "odu_indoor_coil_temp": {"key": "odu_indoor_coil_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
+    "odu_indoor_ambient": {"key": "odu_indoor_ambient", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_discharge_temp": {"key": "odu_discharge_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     # ZC zone temperatures (register 0302, device class 6 = 0x60>>4)
     # Value encoding: raw = (°F - 64) × 16, converted to °C for HA
@@ -91,5 +91,5 @@ async def to_code(config):
     await sensor.register_sensor(var, config)
     cg.add(var.set_zone(config[CONF_ZONE]))
     cg.add(var.set_sensor_type(info["key"]))
-    cg.add(var.set_device_class(info.get("bus_class", 0)))
+    cg.add(var.set_bus_class(info.get("bus_class", 0)))
     await register_infinitesp_entity(var, config)

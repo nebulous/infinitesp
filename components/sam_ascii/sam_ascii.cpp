@@ -369,25 +369,11 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     } else if (hold_dur >= InfinitESPComponent::HOLD_PERMANENT) {
       respond_(prefix, "PERMANENT");
     } else {
-      // Show hold with end time
-      auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
-      if (state && state->size() >= REG3B02_MINUTES + 2) {
-        uint16_t now_min = ((uint16_t) state->at(REG3B02_MINUTES) << 8) |
-                           state->at(REG3B02_MINUTES + 1);
-        uint16_t end_min = now_min + hold_dur;
-        if (end_min >= 1440) end_min -= 1440;
-        uint8_t hr24 = end_min / 60;
-        uint8_t mn = end_min % 60;
-        uint8_t hr12 = hr24 % 12;
-        if (hr12 == 0) hr12 = 12;
-        char buf[32];
-        snprintf(buf, sizeof(buf), "ON until %02d:%02d %s", hr12, mn, hr24 < 12 ? "AM" : "PM");
-        respond_(prefix, buf);
-      } else {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "ON (%d min)", hold_dur);
-        respond_(prefix, buf);
-      }
+      std::string end = parent_->format_hold_end(hold_dur);
+      if (!end.empty())
+        respond_(prefix, "ON until " + end);
+      else
+        respond_(prefix, "ON (" + std::to_string(hold_dur) + " min)");
     }
 
   } else if (body == "NAME") {

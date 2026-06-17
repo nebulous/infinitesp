@@ -9,7 +9,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CODEOWNERS = ["@nebulous"]
 DEPENDENCIES = ["uart"]
-AUTO_LOAD = ["climate", "sensor", "select", "text_sensor", "binary_sensor"]
+AUTO_LOAD = ["climate", "sensor", "select", "text_sensor", "binary_sensor", "cover"]
 MULTI_CONF = True
 
 CONF_INFINITESP_ID = "infinitesp_id"
