@@ -405,7 +405,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     return data.size() >= 11 ? (float) data[10] : NAN;
   }
   // ODU register 061F (REG_ODU_FLOATS): float idx 1..6 at offset 1 + (idx-1)*4.
-  // idx 1..5 are °F deltas, idx 6 is dimensionless — caller applies conversion.
+  // idx 1..5 are °F deltas, idx 6 is dimensionless. Caller applies conversion.
   static float odu_float_(const std::vector<uint8_t> &data, uint8_t idx) {
     return decode_f32_be_(data, 1 + (idx - 1) * 4);
   }

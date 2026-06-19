@@ -433,7 +433,7 @@ void InfinitESPComponent::handle_passive_frame_() {
       std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
       store_register_(current_frame_.src, reg_key, data);
 
-      // Log decoded IDU data (offsets via accessors — single source of truth)
+      // Log decoded IDU data via accessors (single source of truth for offsets)
       if (src_class == 4 && reg_key == REG_IDU_STATUS) {
         float blower_rpm = idu_blower_rpm_(data);
         if (!std::isnan(blower_rpm))
@@ -1781,12 +1781,27 @@ void InfinitESPComponent::set_zc_staleness_timeout(uint8_t zone, uint32_t timeou
 void InfinitESPComponent::on_zc_sensor_update_(uint8_t zone, float value) {
   if (std::isnan(value) || zone < 2 || zone > 4) return;
   auto &zc = zc_zones_[zone];
-  zc.last_sensor_value = value;
-  zc.last_sensor_update_ms = millis();
 
   // Convert to °F: respect sensor_unit setting, default inherits from bus
   bool is_f = zc_sensor_is_fahrenheit_(zone);
   float temp_f = is_f ? value : (value * 9.0f / 5.0f + 32.0f);
+
+  // Range check (40-99°F indoor band). A value outside this band almost always
+  // means a sensor_unit misconfiguration (e.g. a °F sensor treated as °C lands
+  // at 104°F+; a °C sensor treated as °F lands below 40°F). Reject the value,
+  // mark the sensor unavailable, and let the staleness path fall back to
+  // zone-1 ambient until a plausible reading arrives. Self-heals on the next
+  // in-range reading.
+  if (temp_f < 40.0f || temp_f > 99.0f) {
+    ESP_LOGE("InfinitESP", "ZC zone %u out of range: %.1f°F (from %.2f%s). Rejecting and falling "
+             "back to zone-1 ambient. Check sensor_unit config.",
+             zone, temp_f, value, is_f ? "F" : "C");
+    zc.last_sensor_value = NAN;
+    return;
+  }
+
+  zc.last_sensor_value = value;
+  zc.last_sensor_update_ms = millis();
   ESP_LOGD("InfinitESP", "ZC zone %u sensor: %.2f°%s → %.2f°F → 0x%04X",
            zone, value, is_f ? "F" : "C", temp_f,
            (uint16_t)(temp_f * ZC_TEMP_SCALE + 0.5f));

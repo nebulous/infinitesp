@@ -33,7 +33,7 @@ Generic ESP32 dev boards with a separate RS485 transceiver module should also wo
 > **Note:** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an insufficiently-biased bus, the line voltage collapses and the receiver reads garbage. **However**, on a live Carrier ABCD bus, the existing equipment provides strong biasing (pull-up on A, pull-down on B) that holds the bus in a logic `1` state when the driver cuts out, masking the flaw. If you see TX corruption in testing or on an unusual bus configuration, add external biasing resistors, bypass the onboard transceiver entirely with a [pico-HAT-compatible RS485 module](https://amzn.to/4eMssT1) which plugs right into the header, or (if you're brave, desperate, or foolish) modify the SMD components on the board.
 
 ### 📣 Calling all NIM and zone board owners:
-If you have a Carrier NIM (SYSTXCCNIM01), Damper Control Module (SYSTXCC4ZC01), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be valuable. See [Reporting Issues](#reporting-issues) for how to collect them. A `REPORT?` snapshot helps too, but full protocol logs are best for emulation work since they show the timing and framing that static register dumps miss. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
+If you have a Carrier NIM (SYSTXCCNIM01), ~Damper Control Module (SYSTXCC4ZC01)~(implemented, but new logs are always good validation), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be valuable. See [Reporting Issues](#reporting-issues) for how to collect them. A `REPORT?` snapshot helps too, but full protocol logs are best for emulation work since they show the timing and framing that static register dumps miss. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
 
 
 ## Wiring
@@ -245,14 +245,18 @@ infinitesp:
   zc_zone_2:
     temperature_sensor: upstairs_temp
     staleness_timeout: 120   # seconds; fall back to bus/thermostat value if no update
-    sensor_unit: F           # optional: "C" or "F"; default inherits from the bus
+    sensor_unit: F           # REQUIRED. "C" or "F": the unit your sensor publishes in
   zc_zone_3:
     temperature_sensor: ...
   zc_zone_4:
     temperature_sensor: ...
 ```
 
-Only one `sensor:` block is needed per zone. InfinitESP reads whichever `id` you wire in. `internal: true` keeps the raw sensor out of Home Assistant since its value surfaces through the zone controller emulation. If `temperature_sensor` is omitted, InfinitESP reports whatever the bus last reported for that zone. `staleness_timeout` (default 120s) controls how long to keep using the external value before falling back. `sensor_unit` defaults to the bus-detected unit; set it explicitly only if your sensor reports a different unit than the bus.
+Only one `sensor:` block is needed per zone. InfinitESP reads whichever `id` you wire in. `internal: true` keeps the raw sensor out of Home Assistant since its value surfaces through the zone controller emulation. If `temperature_sensor` is omitted, InfinitESP reports whatever the bus last reported for that zone. `staleness_timeout` (default 120s) controls how long to keep using the external value before falling back.
+
+**Set `sensor_unit` explicitly for every zone.** It declares the unit your sensor *publishes*, not the thermostat's display setting. For example, `F` for a sensor that emits °F, `C` for one that emits °C. The two are unrelated: flipping the thermostat between °F/°C display does not change what your sensor publishes. ESPHome emits a config warning for any zone where `sensor_unit` is missing. The default is the system unit; a wrong guess causes silent mis-conversion (see below).
+
+**Why it matters / sanity check.** InfinitESP rejects any injected reading that converts to values outside of the **40-99 °F** band (the indoor range the thermostat itself uses for setpoints) and falls back to the primary zone-1 ambient value until a plausible reading returns. A wrong `sensor_unit` always lands outside this band. For example, a °F sensor treated as °C reports a 70 °F room as ~160 °F, so the zone reads zone-1 ambient instead of garbage. The range check is a safety net, not a correctness test: **after configuring, check the zone temperatures on your thermostat and confirm they match the room.** A reading that silently fell back to zone-1 because of a mis-set unit looks "fine" (a real temperature, just not *that* zone's), so visual confirmation is the only reliable validation.
 
 This sensor-injection feature requires emulation. With a passive (physical) zone controller, the real hardware owns temperature reporting and these blocks have no effect.
 

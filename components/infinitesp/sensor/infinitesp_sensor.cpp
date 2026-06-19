@@ -107,7 +107,7 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
-  // ODU IEEE754 float32 values from register 061f — always native °F, convert to °C
+  // ODU IEEE754 float32 values from register 061f, always native °F. Convert to °C.
   // Layout via accessor odu_float_(idx): idx 1..6 at offset 1+(idx-1)*4.
   //   1: superheat target  2: superheat actual  3: subcooling target
   //   4: subcooling actual 5: discharge superheat (all °F deltas)
@@ -128,7 +128,7 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
-  // ODU register 0302: int16 BE / 16, always native °F — convert to °C
+  // ODU register 0302: int16 BE / 16, always native °F. Convert to °C.
   // Field idx via accessor odu_status1_meas_f_(idx): 0=outdoor 1=coil 2=suction
   // 3=subcooling(ΔT) 4=indoor_amb 5=discharge. idx 3 is a delta (no -32).
   if (register_key == REG_ODU_STATUS1 && sensor_type_ == "odu_outdoor_temp") {

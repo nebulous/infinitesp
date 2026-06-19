@@ -46,10 +46,23 @@ TEMP_UNIT_CELSIUS = "C"
 
 
 def _validate_zc_config(config):
-    """Warn if ZC zone sensor config is present but zone_controller_address is 0."""
+    """Warn on ZC zone sensor misconfiguration."""
     for zone_key in [CONF_ZC_ZONE_2, CONF_ZC_ZONE_3, CONF_ZC_ZONE_4]:
-        if zone_key in config and config.get(CONF_ZONE_CONTROLLER_ADDRESS, 0) == 0:
-            _LOGGER.warning("'%s' configured but zone_controller_address is 0 — ZC emulation disabled", zone_key)
+        if zone_key not in config:
+            continue
+        if config.get(CONF_ZONE_CONTROLLER_ADDRESS, 0) == 0:
+            _LOGGER.warning("'%s' configured but zone_controller_address is 0; ZC emulation disabled", zone_key)
+        # A sensor's native unit is independent of the bus; defaulting to the
+        # system unit is a guess. It's caught at runtime by the 40-99°F band
+        # check (rejected → falls back to zone-1 ambient), but warn so users
+        # set sensor_unit explicitly and avoid mis-conversion in the first place.
+        if CONF_TEMPERATURE_SENSOR in config[zone_key] and CONF_SENSOR_UNIT not in config[zone_key]:
+            _LOGGER.warning(
+                "'%s.temperature_sensor' has no 'sensor_unit'; defaulting to the system "
+                "unit. A wrong guess is rejected at runtime (40-99°F band) and falls back "
+                "to zone-1 ambient, but set 'sensor_unit: F' or 'sensor_unit: C' explicitly "
+                "to avoid mis-conversion. Check the sensor's published value to pick correctly.",
+                zone_key)
     return config
 
 
