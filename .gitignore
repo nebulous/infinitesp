@@ -12,5 +12,5 @@ __pycache__/
 AGENTS.md
 DEVLOG.md
 .claude/
-docs/
+private/
 infinitesp-*.yaml

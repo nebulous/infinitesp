@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InfinitESP: Local control for Carrier Infinity & Bryant Evolution HVAC</title>
+  <meta name="description" content="Free, open-source firmware that links your Carrier Infinity, Bryant Evolution, or ICP HVAC system to Home Assistant and ESPHome for local control." />
+  <meta property="og:title" content="InfinitESP: Own your HVAC" />
+  <meta property="og:description" content="Free, open-source firmware that links your Carrier HVAC system to Home Assistant for local control." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M5 12C5 6 11 6 12 12C13 18 19 18 19 12C19 6 13 6 12 12C11 18 5 18 5 12Z' fill='none' stroke='%230e7c8a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='2.6' cy='12' r='1.5' fill='%230e7c8a'/%3E%3Ccircle cx='21.4' cy='12' r='1.5' fill='%230e7c8a'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+  <style>
+    /* ---------- Reset & base ---------- */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --ink: #0b1220;
+      --ink-soft: #475569;
+      --ink-faint: #64748b;
+      --bg: #ffffff;
+      --bg-soft: #f5f8fc;
+      --bg-soft-2: #eef3f9;
+      --line: #e4eaf2;
+      --line-soft: #eef2f7;
+
+      --cool: #0e7c8a;
+      --cool-600: #0b6975;
+      --cool-50: #e6f6f8;
+      --warm: #e8814a;
+      --warm-soft: #fbeee3;
+
+      --rose: #b4453a;
+      --rose-soft: #fbeceb;
+
+      --dark: #0a1018;
+      --dark-2: #0f1726;
+
+      --radius: 16px;
+      --radius-sm: 10px;
+      --maxw: 1140px;
+      --shadow: 0 1px 2px rgba(11,18,32,.04), 0 8px 30px rgba(11,18,32,.06);
+      --shadow-lg: 0 20px 60px rgba(11,18,32,.12);
+      font-synthesis-weight: none;
+    }
+    html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+    a { color: var(--cool); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    img { max-width: 100%; display: block; }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+    /* ---------- Layout ---------- */
+    .wrap { width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+    section { position: relative; }
+    .section { padding: 96px 0; }
+    .section.tight { padding: 72px 0; }
+
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: .8rem; font-weight: 600; letter-spacing: .08em;
+      text-transform: uppercase; color: var(--cool);
+      background: var(--cool-50);
+      padding: 6px 14px; border-radius: 999px;
+      border: 1px solid #cdeaee;
+    }
+    .eyebrow.warm { color: var(--warm); background: var(--warm-soft); border-color: #f3dcc6; }
+
+    h1, h2, h3 { line-height: 1.12; letter-spacing: -.02em; font-weight: 800; }
+    .section h2 {
+      font-size: clamp(1.75rem, 3.4vw, 2.6rem);
+      margin-bottom: 16px;
+    }
+    .lead { font-size: 1.12rem; color: var(--ink-soft); max-width: 60ch; }
+    .section-head { max-width: 640px; margin-bottom: 56px; }
+    .section-head.center { margin-left: auto; margin-right: auto; text-align: center; }
+    .section-head .lead { margin-top: 14px; }
+
+    /* ---------- Buttons ---------- */
+    .btn {
+      display: inline-flex; align-items: center; gap: 9px;
+      font-weight: 600; font-size: 1rem;
+      padding: 13px 22px; border-radius: 11px;
+      border: 1px solid transparent;
+      transition: transform .15s ease, box-shadow .15s ease, background .15s ease, border-color .15s ease;
+      cursor: pointer; white-space: nowrap;
+    }
+    .btn svg { width: 18px; height: 18px; }
+    .btn-primary { background: var(--cool); color: #fff; box-shadow: 0 8px 20px rgba(14,124,138,.28); }
+    .btn-primary:hover { background: var(--cool-600); text-decoration: none; transform: translateY(-2px); }
+    .btn-ghost { background: rgba(255,255,255,.06); color: #fff; border-color: rgba(255,255,255,.22); backdrop-filter: blur(4px); }
+    .btn-ghost:hover { background: rgba(255,255,255,.12); text-decoration: none; transform: translateY(-2px); }
+    .btn-outline { background: #fff; color: var(--ink); border-color: var(--line); }
+    .btn-outline:hover { border-color: var(--cool); color: var(--cool); text-decoration: none; transform: translateY(-2px); }
+
+    /* ---------- Nav ---------- */
+    header.nav {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: saturate(180%) blur(12px);
+      background: rgba(10,16,24,.72);
+      border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+    .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 66px; }
+    .brand { display: inline-flex; align-items: center; gap: 10px; color: #fff; font-weight: 800; font-size: 1.15rem; letter-spacing: -.02em; }
+    .brand:hover { text-decoration: none; }
+    .brand .mark {
+      width: 30px; height: 30px; border-radius: 9px;
+      background: linear-gradient(135deg, var(--cool) 0%, #14a3b8 55%, var(--warm) 130%);
+      display: grid; place-items: center; color: #fff;
+      box-shadow: 0 4px 12px rgba(14,124,138,.4);
+    }
+    .brand .mark svg { width: 17px; height: 17px; }
+    .brand .esptag { color: #94a3b8; font-weight: 600; font-size: .78rem; letter-spacing: .02em; }
+    .nav-links { display: flex; align-items: center; gap: 30px; }
+    .nav-links a { color: #cbd5e1; font-size: .95rem; font-weight: 500; }
+    .nav-links a:hover { color: #fff; text-decoration: none; }
+    .nav-cta { display: inline-flex; align-items: center; gap: 8px; color: #0b1220; background: #fff; font-weight: 600; font-size: .92rem; padding: 9px 16px; border-radius: 9px; }
+    .nav-cta:hover { text-decoration: none; transform: translateY(-1px); }
+    .nav-cta svg { width: 16px; height: 16px; }
+    .nav-toggle { display: none; background: none; border: 0; cursor: pointer; color: #e2e8f0; padding: 6px; }
+    .nav-toggle svg { width: 26px; height: 26px; }
+
+    /* ---------- Hero ---------- */
+    .hero {
+      position: relative; overflow: hidden;
+      background: radial-gradient(120% 90% at 85% 8%, #15324a 0%, transparent 55%),
+                  radial-gradient(90% 70% at 12% 0%, #3a2410 0%, transparent 48%),
+                  linear-gradient(180deg, var(--dark) 0%, var(--dark-2) 100%);
+      color: #fff;
+      padding: 90px 0 110px;
+    }
+    .hero::before {
+      content: ""; position: absolute; inset: 0;
+      background-image: radial-gradient(rgba(255,255,255,.05) 1px, transparent 1px);
+      background-size: 26px 26px;
+      mask-image: radial-gradient(80% 60% at 50% 30%, #000 0%, transparent 75%);
+      pointer-events: none;
+    }
+    .hero-glow {
+      position: absolute; border-radius: 50%; filter: blur(70px); opacity: .5; pointer-events: none;
+    }
+    .hero-glow.cool { width: 420px; height: 420px; right: -60px; top: -40px; background: #14a3b8; }
+    .hero-glow.warm { width: 380px; height: 380px; left: -80px; bottom: -80px; background: #e8814a; opacity: .35; }
+    .hero-inner { position: relative; z-index: 2; max-width: 760px; }
+    .hero h1 { font-size: clamp(2.4rem, 6vw, 4.1rem); font-weight: 800; letter-spacing: -.035em; }
+    .hero h1 .grad {
+      background: linear-gradient(100deg, #2dd4d4 0%, #67e8f3 40%, #fcd9b6 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .hero-sub { font-size: clamp(1.08rem, 1.7vw, 1.28rem); color: #b9c6d6; margin-top: 22px; max-width: 56ch; line-height: 1.6; }
+    .hero-cta { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 34px; }
+
+    /* hero stat strip */
+    .hero-strip {
+      position: relative; z-index: 2; margin-top: 64px;
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+      background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.1);
+      border-radius: var(--radius); overflow: hidden;
+    }
+    .hero-strip .cell { background: rgba(10,16,24,.6); padding: 22px 20px; backdrop-filter: blur(4px); }
+    .hero-strip .num { font-size: 1.7rem; font-weight: 800; letter-spacing: -.02em; }
+    .hero-strip .lbl { font-size: .82rem; color: #94a3b8; margin-top: 4px; }
+    .hero-strip .num .grad { background: linear-gradient(100deg,#2dd4d4,#fcd9b6); -webkit-background-clip:text; background-clip:text; color:transparent; }
+
+    /* ---------- Contrast section ---------- */
+    .contrast { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+    .card-contrast {
+      border-radius: var(--radius); padding: 34px 30px; border: 1px solid var(--line);
+      background: #fff;
+    }
+    .card-contrast.bad { background: linear-gradient(180deg, var(--rose-soft) 0%, #fff 60%); border-color: #f0d6d2; }
+    .card-contrast.good { background: linear-gradient(180deg, var(--cool-50) 0%, #fff 60%); border-color: #cdeaee; box-shadow: var(--shadow); }
+    .card-contrast h3 { font-size: 1.25rem; display: flex; align-items: center; gap: 11px; margin-bottom: 8px; }
+    .card-contrast .tag { font-size: .78rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 18px; }
+    .card-contrast.bad .tag { color: var(--rose); }
+    .card-contrast.good .tag { color: var(--cool); }
+    .card-contrast ul { list-style: none; display: grid; gap: 13px; }
+    .card-contrast li { display: flex; gap: 12px; align-items: flex-start; color: var(--ink-soft); font-size: 1rem; }
+    .card-contrast li svg { width: 19px; height: 19px; flex-shrink: 0; margin-top: 2px; }
+    .card-contrast.bad li svg { color: var(--rose); }
+    .card-contrast.good li svg { color: var(--cool); }
+    .ic-circle { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex-shrink: 0; }
+    .ic-circle.bad { background: #f6dcd8; color: var(--rose); }
+    .ic-circle.good { background: var(--cool); color: #fff; }
+
+    /* ---------- Feature grid ---------- */
+    .features-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+    .feature {
+      background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 30px 26px; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    }
+    .feature:hover { transform: translateY(-4px); box-shadow: var(--shadow); border-color: #cdeaee; }
+    .feature .fic {
+      width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center;
+      background: var(--cool-50); color: var(--cool); margin-bottom: 18px;
+    }
+    .feature .fic.warm { background: var(--warm-soft); color: var(--warm); }
+    .feature .fic svg { width: 24px; height: 24px; }
+    .feature h3 { font-size: 1.18rem; margin-bottom: 8px; }
+    .feature p { color: var(--ink-soft); font-size: .98rem; }
+
+    /* ---------- Q&A reassurance ---------- */
+    .qa-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; }
+    .qa {
+      background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 28px 26px; display: flex; gap: 16px; align-items: flex-start;
+      box-shadow: var(--shadow);
+    }
+    .qa .qic { width: 42px; height: 42px; border-radius: 11px; flex-shrink: 0; display: grid; place-items: center; background: var(--cool-50); color: var(--cool); }
+    .qa .qic svg { width: 22px; height: 22px; }
+    .qa .q { font-weight: 700; font-size: 1.06rem; letter-spacing: -.01em; margin-bottom: 5px; color: var(--ink); }
+    .qa .a { color: var(--ink-soft); font-size: .98rem; }
+
+    /* ---------- Steps ---------- */
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; counter-reset: step; }
+    .step { position: relative; padding: 34px 28px; background: var(--bg-soft); border-radius: var(--radius); border: 1px solid var(--line-soft); }
+    .step .num {
+      counter-increment: step;
+      width: 40px; height: 40px; border-radius: 11px;
+      background: var(--ink); color: #fff; display: grid; place-items: center;
+      font-weight: 800; font-size: 1.1rem; margin-bottom: 18px;
+    }
+    .step .num::before { content: counter(step); }
+    .step h3 { font-size: 1.15rem; margin-bottom: 8px; }
+    .step p { color: var(--ink-soft); font-size: .98rem; }
+    .step .code {
+      margin-top: 14px; font-family: 'JetBrains Mono', monospace; font-size: .82rem;
+      background: #0b1220; color: #7dd3d8; padding: 8px 12px; border-radius: 8px; display: inline-block;
+    }
+
+    /* ---------- Entities ---------- */
+    .bg-soft-band { background: var(--bg-soft); border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+    .entity-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    .entity {
+      background: #fff; border: 1px solid var(--line); border-radius: var(--radius-sm);
+      padding: 22px 22px; display: flex; gap: 15px; align-items: flex-start;
+    }
+    .entity .eic { width: 38px; height: 38px; border-radius: 9px; background: var(--cool-50); color: var(--cool); display: grid; place-items: center; flex-shrink: 0; }
+    .entity .eic svg { width: 20px; height: 20px; }
+    .entity h3 { font-size: 1.02rem; margin-bottom: 3px; letter-spacing: -.01em; }
+    .entity p { font-size: .9rem; color: var(--ink-soft); line-height: 1.5; }
+
+    /* ---------- Hardware ---------- */
+    .hw-grid { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 48px; align-items: center; }
+    .hw-img {
+      border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line);
+      box-shadow: var(--shadow-lg); background: var(--bg-soft);
+    }
+    .hw-img img { width: 100%; height: auto; }
+    .hw-img .cap { padding: 14px 18px; font-size: .9rem; color: var(--ink-soft); border-top: 1px solid var(--line); background: #fff; }
+    .hw-list { list-style: none; display: grid; gap: 18px; margin-top: 24px; }
+    .hw-list li { display: flex; gap: 14px; }
+    .hw-list .hic { width: 40px; height: 40px; border-radius: 10px; background: var(--cool-50); color: var(--cool); display: grid; place-items: center; flex-shrink: 0; }
+    .hw-list .hic svg { width: 21px; height: 21px; }
+    .hw-list h4 { font-size: 1.02rem; margin-bottom: 2px; }
+    .hw-list p { font-size: .94rem; color: var(--ink-soft); }
+
+    /* ---------- Compat ---------- */
+    .compat-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; }
+    .compat-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 24px; }
+    .compat-card h3 { font-size: 1.05rem; margin-bottom: 6px; display: flex; align-items: center; gap: 9px; }
+    .compat-card h3 svg { width: 18px; height: 18px; color: var(--cool); }
+    .compat-card p { font-size: .92rem; color: var(--ink-soft); }
+    .compat-card .models { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 7px; }
+    .compat-card .models span { font-family: 'JetBrains Mono', monospace; font-size: .76rem; background: var(--bg-soft); border: 1px solid var(--line); padding: 4px 9px; border-radius: 6px; color: var(--ink-soft); }
+
+    .callout {
+      margin-top: 30px; display: flex; gap: 14px; align-items: flex-start;
+      background: var(--warm-soft); border: 1px solid #f3dcc6; border-radius: var(--radius-sm);
+      padding: 18px 20px; font-size: .95rem; color: #7c4a22;
+    }
+    .callout svg { width: 22px; height: 22px; flex-shrink: 0; color: var(--warm); margin-top: 1px; }
+
+    /* ---------- Straight talk (risk) ---------- */
+    .realtalk {
+      position: relative; overflow: hidden;
+      background: linear-gradient(135deg, #1a1206 0%, #0f1726 60%, #0a1018 100%);
+      border-radius: 24px; padding: 56px 48px; color: #fff;
+      border: 1px solid rgba(232,129,74,.22);
+    }
+    .realtalk::before {
+      content:""; position:absolute; left:-70px; top:-70px; width:300px; height:300px; border-radius:50%;
+      background: radial-gradient(circle, rgba(232,129,74,.28), transparent 70%);
+    }
+    .realtalk > * { position: relative; z-index: 1; }
+    .realtalk .rt-tag {
+      display:inline-flex; align-items:center; gap:8px; font-size:.8rem; font-weight:600; letter-spacing:.08em;
+      text-transform:uppercase; color:#fcd9b6; background:rgba(232,129,74,.14); border:1px solid rgba(232,129,74,.32);
+      padding:6px 14px; border-radius:999px; margin-bottom:22px;
+    }
+    .realtalk h2 { font-size: clamp(1.6rem,3vw,2.2rem); }
+    .realtalk p { color:#c2cedd; max-width:64ch; margin-top:14px; }
+    .realtalk .rt-list { list-style:none; display:grid; gap:13px; margin-top:24px; }
+    .realtalk .rt-list li { display:flex; gap:12px; align-items:flex-start; color:#c2cedd; }
+    .realtalk .rt-list li svg { width:18px; height:18px; color:#e8814a; flex-shrink:0; margin-top:4px; }
+    .realtalk .rt-list a { color:#fcd9b6; text-decoration:underline; }
+    .realtalk .rt-punch { margin-top:28px; font-size:1.1rem; color:#fff; font-weight:600; line-height:1.5; }
+
+    /* ---------- CTA band ---------- */
+    .cta-band {
+      position: relative; overflow: hidden;
+      background: linear-gradient(135deg, var(--dark) 0%, #0d2030 100%);
+      border-radius: 24px; padding: 56px 48px; color: #fff;
+      display: flex; align-items: center; justify-content: space-between; gap: 30px; flex-wrap: wrap;
+      box-shadow: var(--shadow-lg);
+    }
+    .cta-band::after {
+      content:""; position:absolute; right:-60px; top:-60px; width:300px; height:300px; border-radius:50%;
+      background: radial-gradient(circle, rgba(20,163,184,.45), transparent 70%);
+    }
+    .cta-band h2 { font-size: clamp(1.6rem, 3vw, 2.2rem); position: relative; z-index: 1; }
+    .cta-band p { color: #a9b9cc; margin-top: 8px; position: relative; z-index: 1; max-width: 50ch; }
+    .cta-band .btns { position: relative; z-index: 1; display: flex; gap: 12px; flex-wrap: wrap; }
+
+    /* ---------- Footer ---------- */
+    footer.site { background: var(--dark); color: #94a3b8; padding: 64px 0 36px; }
+    footer.site .ftop { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 36px; padding-bottom: 40px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    footer.site .brand { color: #fff; }
+    footer.site .ftag { margin-top: 16px; font-size: .92rem; max-width: 34ch; color: #8896a9; }
+    footer.site h4 { color: #cbd5e1; font-size: .82rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 16px; }
+    footer.site ul { list-style: none; display: grid; gap: 11px; }
+    footer.site ul a { color: #94a3b8; font-size: .92rem; }
+    footer.site ul a:hover { color: #fff; text-decoration: none; }
+    .fdisclaimer {
+      margin-top: 32px; font-size: .84rem; color: #64748b; line-height: 1.6;
+      padding: 18px 20px; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.07); border-radius: 12px;
+    }
+    .fbot { margin-top: 28px; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; font-size: .85rem; color: #64748b; }
+
+    /* ---------- Reveal animation ---------- */
+    .js .reveal { opacity: 0; transform: translateY(22px); transition: opacity .6s ease, transform .6s ease; }
+    .js .reveal.in { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) {
+      .js .reveal { opacity: 1 !important; transform: none !important; transition: none; }
+      * { scroll-behavior: auto !important; }
+    }
+
+    /* ---------- Responsive ---------- */
+    @media (max-width: 920px) {
+      .features-grid, .entity-grid, .steps, .compat-grid { grid-template-columns: repeat(2, 1fr); }
+      .contrast { grid-template-columns: 1fr; }
+      .hw-grid { grid-template-columns: 1fr; gap: 32px; }
+      .hero-strip { grid-template-columns: repeat(2, 1fr); }
+      footer.site .ftop { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 640px) {
+      .section { padding: 64px 0; }
+      .nav-links { display: none; position: absolute; top: 66px; left: 0; right: 0; flex-direction: column; align-items: flex-start; gap: 0; background: var(--dark-2); border-bottom: 1px solid rgba(255,255,255,.1); padding: 8px 24px 18px; }
+      .nav-links.open { display: flex; }
+      .nav-links a { width: 100%; padding: 12px 0; border-top: 1px solid rgba(255,255,255,.07); }
+      .nav-cta { display: none; }
+      .nav-toggle { display: inline-flex; }
+      .features-grid, .entity-grid, .steps, .compat-grid, .qa-grid { grid-template-columns: 1fr; }
+      .cta-band, .realtalk { padding: 40px 26px; }
+      footer.site .ftop { grid-template-columns: 1fr; gap: 28px; }
+      .hero { padding: 60px 0 80px; }
+    }
+  </style>
+</head>
+<body>
+<script>document.documentElement.classList.add('js');</script>
+
+<!-- ============ NAV ============ -->
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a href="#top" class="brand">
+      <span class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12C5 6 11 6 12 12C13 18 19 18 19 12C19 6 13 6 12 12C11 18 5 18 5 12Z"/><circle cx="2.6" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="21.4" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
+      </span>
+      <span>InfinitESP <span class="esptag">/ ESPHome</span></span>
+    </a>
+    <nav class="nav-links" id="navlinks">
+      <a href="#features">What it does</a>
+      <a href="#requirements">Requirements</a>
+      <a href="#compat">Compatibility</a>
+      <a href="#hardware">Hardware</a>
+      <a href="#how">How it works</a>
+      <a href="#start">Get started</a>
+    </nav>
+    <a class="nav-cta" href="https://github.com/nebulous/infinitesp" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.7.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+      GitHub
+    </a>
+    <button class="nav-toggle" id="navtoggle" aria-label="Toggle menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- ============ HERO ============ -->
+<section class="hero" id="top">
+  <span class="hero-glow cool"></span>
+  <span class="hero-glow warm"></span>
+  <div class="wrap hero-inner">
+    <h1>Own your HVAC.<br><span class="grad">Locally.</span></h1>
+    <p class="hero-sub">
+      If you already use Home Assistant and have a Carrier, Bryant, or ICP communicating thermostat, InfinitESP may be what you're looking for. It's free firmware that links an ESPHome-compatible device to the HVAC's RS-485 serial bus and exposes zones, sensors, and settings in Home Assistant.
+    </p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="#requirements">Learn more
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/nebulous/infinitesp" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.7.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+        View on GitHub
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FEATURES ============ -->
+<section class="section" id="features">
+  <div class="wrap">
+    <div class="section-head center reveal">
+      <h2>Puts HVAC data into Home Assistant.</h2>
+      <p class="lead">InfinitESP announces itself to Home Assistant, sending values for zones, sensors, and settings if it discovers them on the serial bus.</p>
+    </div>
+
+    <div class="features-grid">
+      <div class="feature reveal">
+        <div class="fic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19a4.5 4.5 0 0 0 .5-9 6 6 0 0 0-11.6-1.5A4 4 0 0 0 6.5 19z"/><path d="M2 2l20 20"/></svg></div>
+        <h3>Runs locally</h3>
+        <p>Your thermostat talks to InfinitESP over a wire in your wall. Traffic stays on your network, and it keeps working without an internet connection.</p>
+      </div>
+      <div class="feature reveal">
+        <div class="fic warm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4v10.5a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0z"/></svg></div>
+        <h3>Per-zone climate</h3>
+        <p>Heat, cool, auto, and off for each zone. Dual heat and cool setpoints, fan speeds, schedules, and hold timers.</p>
+      </div>
+      <div class="feature reveal">
+        <div class="fic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14a4 4 0 1 0-4-4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></div>
+        <h3>Diagnostics</h3>
+        <p>Compressor RPM, blower airflow, superheat, subcooling, and coil and outdoor temperatures.</p>
+      </div>
+      <div class="feature reveal">
+        <div class="fic warm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9.6 4.6A2 2 0 1 1 11 8H2M12.6 19.4A2 2 0 1 0 14 16H2M17.5 8a2.5 2.5 0 1 1 2 2H2"/></svg></div>
+        <h3>Zone &amp; damper control</h3>
+        <p>See each zone's damper position on multi-zone systems, and drive relays or motors from damper commands on the serial bus.</p>
+      </div>
+      <div class="feature reveal">
+        <div class="fic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg></div>
+        <h3>Home Assistant native</h3>
+        <p>Registers through ESPHome automatically. Entities populate shortly after the serial bus comes online.</p>
+      </div>
+      <div class="feature reveal">
+        <div class="fic warm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-4.5-9.5-9A5.5 5.5 0 0 1 12 6a5.5 5.5 0 0 1 9.5 6c-2.5 4.5-9.5 9-9.5 9z"/></svg></div>
+        <h3>Free and open source</h3>
+        <p>Open source under the MIT license, free to use and modify. Built by and for the community.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ WHAT YOU GET ============ -->
+<section class="section bg-soft-band">
+  <div class="wrap">
+    <div class="section-head center reveal">
+      <h2>Sensors, diagnostics, and controls.</h2>
+      <p class="lead">InfinitESP makes entities available in Home Assistant that you can chart, automate, and expose to voice assistants.</p>
+    </div>
+
+    <div class="entity-grid">
+      <div class="entity reveal">
+        <div class="eic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4v10.5a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0z"/></svg></div>
+        <div><h3>Climate</h3><p>Per-zone thermostats with heat/cool/auto/off, setpoints, fan modes, and presets.</p></div>
+      </div>
+      <div class="entity reveal">
+        <div class="eic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v14H3zM3 21h18M9 17v4M15 17v4"/></svg></div>
+        <div><h3>Sensors</h3><p>Zone temp and humidity, outdoor air, blower RPM, compressor stage, and more.</p></div>
+      </div>
+      <div class="entity reveal">
+        <div class="eic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9.6 4.6A2 2 0 1 1 11 8H2M12.6 19.4A2 2 0 1 0 14 16H2M17.5 8a2.5 2.5 0 1 1 2 2H2"/></svg></div>
+        <div><h3>Covers</h3><p>Per-zone damper position (0 to 100%), with triggers to drive your own hardware.</p></div>
+      </div>
+      <div class="entity reveal">
+        <div class="eic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <div><h3>Binary sensors</h3><p>Bus online status, compressor running, and electric heat active.</p></div>
+      </div>
+      <div class="entity reveal">
+        <div class="eic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg></div>
+        <div><h3>Selects</h3><p>System mode and per-zone fan speed, settable from a dropdown.</p></div>
+      </div>
+      <div class="entity reveal">
+        <div class="eic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h16"/></svg></div>
+        <div><h3>Text sensors</h3><p>Zone names, hold state, thermostat network details, and comfort profiles.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ REQUIREMENTS ============ -->
+<section class="section" id="requirements">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <h2>Requirements</h2>
+      <p class="lead">InfinitESP is experimental software for hobbyists that connects an ESP32-family device to an HVAC RS-485 serial bus.</p>
+    </div>
+
+    <div class="qa-grid">
+      <div class="qa reveal">
+        <span class="qic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18 9 9l3 4 3-3 5 8z"/><path d="M4 6h16M4 12h8"/></svg></span>
+        <div>
+          <div class="q">Communicating thermostat</div>
+          <div class="a">Carrier, Bryant, and ICP "communicating" systems talk to their components over an RS-485 serial bus. InfinitESP is designed to use this protocol. Conventional thermostat systems with simple control wires are not supported.</div>
+        </div>
+      </div>
+
+      <div class="qa reveal">
+        <span class="qic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg></span>
+        <div>
+          <div class="q">Home Assistant</div>
+          <div class="a">A free, open-source home automation platform. InfinitESP surfaces its data and controls there. <a href="https://www.home-assistant.io/" target="_blank" rel="noopener">Home Assistant</a> is free to self-host. Nabu Casa, the foundation's commercial partner, offers an optional paid cloud service.</div>
+        </div>
+      </div>
+
+      <div class="qa reveal">
+        <span class="qic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg></span>
+        <div>
+          <div class="q">ESPHome</div>
+          <div class="a">A system for configuring ESP32-family devices from a text file. <a href="https://esphome.io/" target="_blank" rel="noopener">ESPHome</a> is part of the Open Home Foundation, the same organization behind Home Assistant. InfinitESP installs through it.</div>
+        </div>
+      </div>
+
+      <div class="qa reveal">
+        <span class="qic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5M9 17h6a3 3 0 0 0 3-3v-3H6v3a3 3 0 0 0 3 3zM9 8V4M15 8V4"/></svg></span>
+        <div>
+          <div class="q">An ESP32 with an RS-485 port</div>
+          <div class="a">Any Esphome-compatable board with sufficient memory and paired with an RS-485 transceiver could work. Specific hardware is not mandated. Bring your own and let the community know how it works.</div>
+        </div>
+      </div>
+
+      <div class="qa reveal">
+        <span class="qic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21v-6M9 18h6l-3 3-3-3z"/><path d="M4 4h16v6H4z"/><path d="M8 10v3M16 10v3"/></svg></span>
+        <div>
+          <div class="q">Wiring to the HVAC bus</div>
+          <div class="a">Two data wires and a ground from the ESP32 to the serial bus. RS-485 uses a differential signal which needs to have proper polarity (A to A, B to B). Reversed polarity typically doesn't damage the hardware, so if the serial bus doesn't come up, A and B might be swapped.</div>
+        </div>
+      </div>
+
+      <div class="qa reveal">
+        <span class="qic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg></span>
+        <div>
+          <div class="q">Hobbyist expectations</div>
+          <div class="a">Community project with no support guarantee. Bugs are expected and debugging is part of the experience. The software may need adjustment as equipment and firmware vary. Pull Requests welcome.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ COMPATIBILITY ============ -->
+<section class="section bg-soft-band" id="compat">
+  <div class="wrap">
+    <div class="section-head center reveal">
+      <h2>Will it work with my system?</h2>
+      <p class="lead">What matters is the RS-485 serial protocol these systems share, not the brand badge. InfinitESP targets communicating Carrier, Bryant, and ICP systems.</p>
+    </div>
+
+    <div class="compat-grid">
+      <div class="compat-card reveal">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 20h10M10 16v4M14 16v4"/></svg> Thermostats</h3>
+        <p>Communicating Carrier, Bryant, and ICP thermostats on the ABCD bus.</p>
+      </div>
+      <div class="compat-card reveal">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6M12 22v-2M5 5l3 3M16 16l3 3M2 12h6M16 12h6M5 19l3-3M16 8l3-3"/></svg> HVAC equipment</h3>
+        <p>Infinity or Evolution furnace, air handler, or heat pump connected to the same ABCD bus as the thermostat.</p>
+        <div class="models"><span>Furnace</span><span>Air handler</span><span>Heat pump</span></div>
+      </div>
+      <div class="compat-card reveal">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.6 4.6A2 2 0 1 1 11 8H2M12.6 19.4A2 2 0 1 0 14 16H2M17.5 8a2.5 2.5 0 1 1 2 2H2"/></svg> Zone controllers</h3>
+        <p>Operates in one of two modes: passively observes a Damper Control Module on your bus, or emulates one. The emulation mode is for systems without a Damper Control Module installed.</p>
+        <div class="models"><span>emulated</span></div>
+      </div>
+    </div>
+
+    <div class="callout reveal">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+      <div>This is reverse-engineered, community-built software, not a Carrier product. It seems to work for the author, but behavior can vary across equipment and firmware. <a href="https://github.com/nebulous/infinitesp#targeted-systems" target="_blank" rel="noopener">Check the compatibility notes</a> before buying hardware.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ HARDWARE ============ -->
+<section class="section" id="hardware">
+  <div class="wrap">
+    <div class="hw-grid">
+      <div class="reveal">
+        <div class="hw-img">
+          <a href="https://amzn.to/4mX6tLp" target="_blank" rel="noopener">
+            <img src="https://www.waveshare.com/w/upload/thumb/e/ee/ESP32-S3-Relay-6CH.jpg/1200px-ESP32-S3-Relay-6CH.jpg" alt="Waveshare ESP32-S3-Relay-6CH board" loading="lazy" />
+          </a>
+          <div class="cap">Waveshare ESP32-S3-Relay-6CH is a board the author has used. It's overkill for monitoring and SAM emulation, and its RS-485 interface has some caveats. Any ESP32 with an RS485 port could work. Leave a comment in Github with what you use.<a href="https://amzn.to/4mX6tLp" target="_blank" rel="noopener">View on Amazon</a><a href="#affiliate-disclosure" style="font-size:.7em;vertical-align:super;text-decoration:none;margin-left:2px" aria-label="Affiliate disclosure">†</a></div>
+        </div>
+      </div>
+
+      <div class="reveal">
+        <h2 style="margin-top:18px">A board, Home Assistant, and your system.</h2>
+        <ul class="hw-list">
+          <li>
+            <span class="hic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg></span>
+            <div><h4>Any ESP32 with an RS485 port</h4><p>Any ESP32 board paired with an RS485 transceiver could do. The Waveshare board linked here is what the author runs: it has the transceiver onboard, a case, and six relay outputs. It isn't required.</p></div>
+          </li>
+          <li>
+            <span class="hic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg></span>
+            <div><h4>Home Assistant</h4><p>The free, open-source smart home platform. If you already run it, you're set. InfinitESP registers through ESPHome and needs no extra integration.</p></div>
+          </li>
+          <li>
+            <span class="hic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4v10.5a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0z"/><path d="M12 2v2"/></svg></span>
+            <div><h4>A compatible HVAC system</h4><p>A Carrier Infinity, Bryant Evolution, or ICP system with a communicating ABCD bus. See compatibility below.</p></div>
+          </li>
+        </ul>
+        <div style="margin-top:26px"><a class="btn btn-primary" href="#start">See the setup steps
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ HOW IT WORKS ============ -->
+<section class="section bg-soft-band" id="how">
+  <div class="wrap">
+    <div class="section-head center reveal">
+      <h2>How InfinitESP connects to your system.</h2>
+      <p class="lead">InfinitESP connects as a device on the RS-485 serial bus.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step reveal">
+        <div class="num"></div>
+        <h3>Listening</h3>
+        <p>Core functionality observes traffic already flowing between the thermostat and HVAC equipment and decodes it into Home Assistant sensors.</p>
+      </div>
+      <div class="step reveal">
+        <div class="num"></div>
+        <h3>SAM emulation</h3>
+        <p>InfinitESP can control thermostat setpoints by emulating a SAM module. It registers Home Assistant climate entities for each thermostat zone. Optional, and where more direct control begins.</p>
+      </div>
+      <div class="step reveal">
+        <div class="num"></div>
+        <h3>Zone-controller emulation</h3>
+        <p>InfinitESP can additionally emulate a Damper control module. Home Assistant sensors can report to the HVAC system as zone temperatures, and damper commands from the serial bus can trigger Home Assistant actuators. Optional, and the most involved of the three.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ STRAIGHT TALK (risk / liability) ============ -->
+<section class="section" id="straight-talk">
+  <div class="wrap">
+    <div class="realtalk reveal">
+      <span class="rt-tag">The risks</span>
+      <h2>This is experimental software on expensive equipment.</h2>
+      <p>InfinitESP is a volunteer project built by hobbyists reverse-engineering a serial protocol for fun. It is not a Carrier product. Its license provides no warranty, it is not supported, and proper behavior isn't guaranteed.</p>
+      <ul class="rt-list">
+        <li><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="4"/></svg> You are wiring a cheap board into a furnace that costs thousands.</li>
+        <li><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="4"/></svg> A bug or a misread register could send a command your equipment was not designed for.</li>
+        <li><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="4"/></svg> It is experimental. The <a href="https://github.com/nebulous/infinitesp/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a> and the <a href="https://github.com/nebulous/infinitesp/blob/main/NOTICE" target="_blank" rel="noopener">NOTICE file</a> spell out that you use it at your own risk.</li>
+      </ul>
+      <p class="rt-punch">If that's more risk than you want to take on, InfinitESP probably isn't the right fit. If local control is worth the trade to you, the rest of this page shows how to get started.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ GET STARTED ============ -->
+<section class="section bg-soft-band" id="start">
+  <div class="wrap">
+    <div class="cta-band reveal">
+      <div>
+        <h2>Still want to try?</h2>
+        <p>Check out the more detailed setup documentation and examples on GitHub.</p>
+      </div>
+      <div class="btns">
+        <a class="btn btn-primary" href="https://github.com/nebulous/infinitesp" target="_blank" rel="noopener">Read the docs
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </a>
+        <a class="btn btn-ghost" href="https://amzn.to/4mX6tLp" target="_blank" rel="noopener">Get a board</a>
+      </div>
+    </div>
+
+    <div class="steps" style="margin-top:56px">
+      <div class="step reveal">
+        <div class="num"></div>
+        <h3>Install ESPHome</h3>
+        <p>Grab ESPHome 2026.1 or newer, usually as the Home Assistant add-on, and clone the InfinitESP repo.</p>
+        <span class="code">git clone github.com/nebulous/infinitesp</span>
+      </div>
+      <div class="step reveal">
+        <div class="num"></div>
+        <h3>Add your Wi-Fi</h3>
+        <p>Put your network name and password in <span class="mono">secrets.yaml</span>, then trim the example config to your zones.</p>
+        <span class="code">secrets.yaml</span>
+      </div>
+      <div class="step reveal">
+        <div class="num"></div>
+        <h3>Flash &amp; connect</h3>
+        <p>Install to the ESP32 over USB, then wire its RS-485 port to the serial bus. The ESP32 joins Home Assistant to the serial bus.</p>
+        <span class="code">Click Install in ESPHome</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer class="site">
+  <div class="wrap">
+    <div class="ftop">
+      <div>
+        <a href="#top" class="brand">
+          <span class="mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12C5 6 11 6 12 12C13 18 19 18 19 12C19 6 13 6 12 12C11 18 5 18 5 12Z"/><circle cx="2.6" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="21.4" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
+          </span>
+          <span>InfinitESP</span>
+        </a>
+        <p class="ftag">Free, open-source firmware that links Carrier Infinity, Bryant Evolution, and ICP HVAC systems to Home Assistant. Configured through ESPHome.</p>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/nebulous/infinitesp" target="_blank" rel="noopener">GitHub repository</a></li>
+          <li><a href="https://github.com/nebulous/infinitesp#quick-start" target="_blank" rel="noopener">Quick start</a></li>
+          <li><a href="https://github.com/nebulous/infinitesp#configuration-reference" target="_blank" rel="noopener">Configuration</a></li>
+          <li><a href="https://github.com/nebulous/infinitesp/issues" target="_blank" rel="noopener">Report an issue</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Built with</h4>
+        <ul>
+          <li><a href="https://esphome.io/" target="_blank" rel="noopener">ESPHome</a></li>
+          <li><a href="https://www.home-assistant.io/" target="_blank" rel="noopener">Home Assistant</a></li>
+          <li><a href="https://github.com/nebulous/infinitude" target="_blank" rel="noopener">Infinitude</a></li>
+          <li><a href="https://github.com/nebulous/infinitesp/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Hardware</h4>
+        <ul>
+          <li><a href="https://amzn.to/4mX6tLp" target="_blank" rel="noopener">Waveshare ESP32-S3-Relay-6CH</a></li>
+          <li><a href="https://amzn.to/4eMssT1" target="_blank" rel="noopener">RS485 module (alternative)</a></li>
+          <li><a href="#compat">Compatibility</a></li>
+          <li><a href="#start">Get started</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="fdisclaimer">
+      InfinitESP communicates with and can control HVAC equipment. It was built by reverse-engineering an RS-485 serial protocol, with no vendor endorsement and no guarantee of correctness. A bug or misread register could send commands your equipment was not designed for. This software is experimental. Use is entirely at your own risk. The authors will not fix your HVAC, your compressor, or your house.
+    </div>
+
+    <div class="fbot">
+      <span id="affiliate-disclosure">&copy; <span id="year"></span> InfinitESP contributors. MIT licensed. Links to Amazon may be affiliate links.</span>
+      <span>Carrier, Bryant, ICP, and Infinity are trademarks of their respective owners. This project is independent and unaffiliated.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Year
+  document.getElementById('year').textContent = new Date().getFullYear();
+
+  // Mobile nav toggle
+  var toggle = document.getElementById('navtoggle');
+  var links = document.getElementById('navlinks');
+  toggle.addEventListener('click', function () { links.classList.toggle('open'); });
+  links.querySelectorAll('a').forEach(function (a) {
+    a.addEventListener('click', function () { links.classList.remove('open'); });
+  });
+
+  // Reveal on scroll
+  var reveals = document.querySelectorAll('.reveal');
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+    reveals.forEach(function (el) { io.observe(el); });
+  } else {
+    reveals.forEach(function (el) { el.classList.add('in'); });
+  }
+</script>
+</body>
+</html>
