@@ -274,7 +274,7 @@
     .compat-card .models span { font-family: 'JetBrains Mono', monospace; font-size: .76rem; background: var(--bg-soft); border: 1px solid var(--line); padding: 4px 9px; border-radius: 6px; color: var(--ink-soft); }
 
     .callout {
-      margin-top: 30px; display: flex; gap: 14px; align-items: flex-start;
+      margin-top: 16px; display: flex; gap: 14px; align-items: flex-start;
       background: var(--warm-soft); border: 1px solid #f3dcc6; border-radius: var(--radius-sm);
       padding: 18px 20px; font-size: .95rem; color: #7c4a22;
     }
@@ -330,10 +330,6 @@
     footer.site ul { list-style: none; display: grid; gap: 11px; }
     footer.site ul a { color: #94a3b8; font-size: .92rem; }
     footer.site ul a:hover { color: #fff; text-decoration: none; }
-    .fdisclaimer {
-      margin-top: 32px; font-size: .84rem; color: #64748b; line-height: 1.6;
-      padding: 18px 20px; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.07); border-radius: 12px;
-    }
     .fbot { margin-top: 28px; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; font-size: .85rem; color: #64748b; }
 
     /* ---------- Reveal animation ---------- */
@@ -401,7 +397,7 @@
   <span class="hero-glow cool"></span>
   <span class="hero-glow warm"></span>
   <div class="wrap hero-inner">
-    <h1>Own your HVAC.<br><span class="grad">Locally.</span></h1>
+    <h1>Own your HVAC<br><span class="grad">Locally</span></h1>
     <p class="hero-sub">
       If you already use Home Assistant and have a Carrier, Bryant, or ICP communicating thermostat, InfinitESP may be what you're looking for. It's free firmware that links an ESPHome-compatible device to the HVAC's RS-485 serial bus and exposes zones, sensors, and settings in Home Assistant.
     </p>
@@ -664,7 +660,7 @@
       <ul class="rt-list">
         <li><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="4"/></svg> You are wiring a cheap board into a furnace that costs thousands.</li>
         <li><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="4"/></svg> A bug or a misread register could send a command your equipment was not designed for.</li>
-        <li><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="4"/></svg> It is experimental. The <a href="https://github.com/nebulous/infinitesp/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a> and the <a href="https://github.com/nebulous/infinitesp/blob/main/NOTICE" target="_blank" rel="noopener">NOTICE file</a> spell out that you use it at your own risk.</li>
+        <li><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="4"/></svg> It is experimental. The MIT <a href="https://github.com/nebulous/infinitesp/blob/main/LICENSE" target="_blank" rel="noopener">license</a> and the <a href="https://github.com/nebulous/infinitesp/blob/main/NOTICE" target="_blank" rel="noopener">NOTICE</a> file spell out that you use it at your own risk.</li>
       </ul>
       <p class="rt-punch">If that's more risk than you want to take on, InfinitESP probably isn't the right fit. If local control is worth the trade to you, the rest of this page shows how to get started.</p>
     </div>
@@ -752,21 +748,14 @@
       </div>
     </div>
 
-    <div class="fdisclaimer">
-      InfinitESP communicates with and can control HVAC equipment. It was built by reverse-engineering an RS-485 serial protocol, with no vendor endorsement and no guarantee of correctness. A bug or misread register could send commands your equipment was not designed for. This software is experimental. Use is entirely at your own risk. The authors will not fix your HVAC, your compressor, or your house.
-    </div>
-
     <div class="fbot">
-      <span id="affiliate-disclosure">&copy; <span id="year"></span> InfinitESP contributors. MIT licensed. Links to Amazon may be affiliate links.</span>
+      <span id="affiliate-disclosure">MIT licensed. Links to Amazon may be affiliate links.</span>
       <span>Carrier, Bryant, ICP, and Infinity are trademarks of their respective owners. This project is independent and unaffiliated.</span>
     </div>
   </div>
 </footer>
 
 <script>
-  // Year
-  document.getElementById('year').textContent = new Date().getFullYear();
-
   // Mobile nav toggle
   var toggle = document.getElementById('navtoggle');
   var links = document.getElementById('navlinks');
