@@ -459,16 +459,15 @@ void InfinitESPComponent::handle_passive_frame_() {
                    (unsigned) comp_rpm, data.size());
       }
       if (src_class == 5 && reg_key == REG_ODU_DEMAND && data.size() >= 7) {
-        ESP_LOGD("InfinitESP", "ODU 0608: demand=%u stage=%u modulation=%u raw=[%02X %02X %02X %02X %02X %02X %02X]",
-                 data[3], data[5], data[6],
+        ESP_LOGD("InfinitESP", "ODU 0608: compressor_frequency=%.1f Hz raw=[%02X %02X %02X %02X %02X %02X %02X]",
+                 odu_compressor_frequency_(data),
                  data[0], data[1], data[2], data[3], data[4], data[5], data[6]);
       }
-      if (src_class == 5 && reg_key == REG_ODU_SETPOINT) {
-        float sp = odu_setpoint_f_(data);
-        if (!std::isnan(sp))
-          ESP_LOGD("InfinitESP", "ODU 060B: setpoint=%u\xc2\xb0" "F raw=[%02X %02X %02X %02X %02X]",
-                   (unsigned) sp, data[0], data[1], data[2], data[3], data[4]);
+      if (src_class == 5 && reg_key == REG_ODU_STAGE_INFO && data.size() >= 1) {
+        ESP_LOGD("InfinitESP", "ODU 060e: stage=%u raw=[%02X]",
+                 (unsigned) odu_stage_(data), data[0]);
       }
+
       if (src_class == 5 && reg_key == REG_ODU_FLOATS && data.size() >= 25) {
         ESP_LOGI("InfinitESP", "ODU 061f: sh_tgt=%.1f sh_act=%.1f sc_tgt=%.1f sc_act=%.1f dyn=%.1f unk=%.3f",
                  odu_float_(data, 1), odu_float_(data, 2),
@@ -559,6 +558,20 @@ void InfinitESPComponent::handle_passive_frame_() {
         mirror_to_sam_(reg_key, data);
         notify_entities_(sam_address_, reg_key);
       }
+    }
+
+    // Capture thermostat→ODU writes. The ODU never replies to these (write-only
+    // registers like 060b setpoint and 0605 commanded stage), so passive write
+    // capture is the only source. Stored under dst (ODU address) so ODU sensors
+    // match on bus_class 5. Write rows (0x0605/060b/0610/0612/061a/061d/061e)
+    // do not collide with reply rows (0x0602/0604/0608/060a/060e/061f/0625).
+    if (current_frame_.dst >> 4 == 5 && current_frame_.src == ADDR_THERMOSTAT &&
+        current_frame_.payload.size() > 3) {
+      std::vector<uint8_t> odu_data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
+      store_register_(current_frame_.dst, reg_key, odu_data);
+      if (reg_key == REG_ODU_CMD_STAGE && odu_data.size() >= 4)
+        ESP_LOGD("InfinitESP", "ODU 0605 write: commanded_stage=%.1f", (double) odu_commanded_stage_(odu_data));
+      notify_entities_(current_frame_.dst, reg_key);
     }
   }
 }

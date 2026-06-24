@@ -143,22 +143,44 @@ static const uint8_t REG3B03_SIZE = 150;
 
 // IDU (Indoor Unit / Furnace / Air Handler) register keys
 // These are passively snooped from thermostat↔IDU traffic.
+// IDU (Indoor Unit) register keys
+// Passively snooped from thermostat<->IDU traffic.
+// IDU tables (from device self-described 0xXX01 tabledefs):
+//   0x01 DEVCONFG  device configuration (REG_DEVICE_INFO = 0x0104)
+//   0x02 SYSTIME  system time/date (thermostat-owned)
+//   0x03 RLCSMAIN main controller, RLCS (Residential & Light Commercial Systems) family - IDU-side (498 bytes, 30 rows)
+//   0x04 VARSPEED variable-speed ECM blower drive (300 bytes, 17 rows)
+// Tables 0x05-0x0F return FUNC 0x15 (not present on this hardware).
+//
+// Table 0x03 RLCSMAIN:
 static const uint16_t REG_IDU_STATUS = 0x0306;     // Blower RPM, operating info (10 bytes)
 static const uint16_t REG_IDU_CONFIG = 0x0316;      // Airflow CFM, electric heat (14 bytes)
 static const uint16_t REG_IDU_CYCLES = 0x0310;     // Cycle counters (4-byte key-value entries)
 static const uint16_t REG_IDU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-value entries)
 
-// ODU (Outdoor Unit / Heat Pump) register keys
-// Passively snooped from thermostat↔ODU traffic.
+// ODU (Outdoor Unit) register keys
+// Passively snooped from thermostat<->ODU traffic.
+// ODU tables (from device self-described 0xXX01 tabledefs):
+//   0x01 DEVCONFG  device configuration (REG_DEVICE_INFO = 0x0104)
+//   0x02 SYSTIME  system time/date (thermostat-owned; ODU never reads it)
+//   0x03 RLCSMAIN main controller, RLCS (Residential & Light Commercial Systems) family - ODU sensors & loop state
+//   0x06 VAR COMP variable-speed compressor drive - frequency & stage
+// Tables 0x04,0x05,0x07-0x0F return FUNC 0x15 (not present on this hardware).
+//
+// Table 0x03 RLCSMAIN:
 static const uint16_t REG_ODU_STATUS1 = 0x0302;    // Temperatures and operating data
-static const uint16_t REG_ODU_STATUS2 = 0x0303;    // Short status (compressor stage)
+static const uint16_t REG_ODU_STATUS2 = 0x0303;    // Short status (4 bytes)
 static const uint16_t REG_ODU_STATUS3 = 0x0304;    // Temperatures and pressures
-static const uint16_t REG_ODU_COMP_SPEED = 0x0604;  // Compressor speed (uint16 pairs, first = current RPM)
-static const uint16_t REG_ODU_DEMAND = 0x0608;     // Demand/stage indicator
-static const uint16_t REG_ODU_SETPOINT = 0x060B;   // Target temperature setpoint (°F)
-static const uint16_t REG_ODU_FLOATS = 0x061F;     // IEEE754 float32 array (superheat, subcooling, etc.)
 static const uint16_t REG_ODU_CYCLES = 0x0310;     // Cycle counters (4-byte key-value entries)
 static const uint16_t REG_ODU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-value entries)
+//
+// Table 0x06 VAR COMP:
+static const uint16_t REG_ODU_COMP_SPEED = 0x0604;  // Compressor speed (uint16 pairs, first = current RPM)
+static const uint16_t REG_ODU_DEMAND = 0x0608;     // Compressor drive: frequency uint16 at [5..6] (0.1 Hz)
+static const uint16_t REG_ODU_CMD_STAGE = 0x0605;  // Commanded compressor stage (float32 at [0..3]: 0.0/1.0..5.0)
+static const uint16_t REG_ODU_STAGE_INFO = 0x060E;  // Actual stage index (byte 0: 0=off, 1..5=stage)
+static const uint16_t REG_ODU_SETPOINT = 0x060B;   // Target value at byte[2], native °F (label TBD; not confirmed a cooling setpoint)
+static const uint16_t REG_ODU_FLOATS = 0x061F;     // IEEE754 float32 array (superheat, subcooling, etc.)
 
 // Frame constants
 static const uint8_t FRAME_HEADER_SIZE = 8;
@@ -386,19 +408,37 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     if (data.size() < 2) return NAN;
     return (float) (((uint16_t) data[0] << 8) | data[1]);
   }
-  // ODU register 0608 (REG_ODU_DEMAND): demand / stage / modulation
-  static float odu_demand_(const std::vector<uint8_t> &data) {
-    return data.size() >= 7 ? (float) data[3] : NAN;
+  // ODU register 0608 (REG_ODU_DEMAND): compressor drive frequency, u16 BE at [5..6], 0.1 Hz
+  // Scale confirmed for stages 1-4 against Carrier rated RPM (4-pole motor, sync rpm = 3*v);
+  // stage 5 (144 Hz) predicted, not yet measured. See private/DEVLOG.md 2026-06-23.
+  static float odu_compressor_frequency_(const std::vector<uint8_t> &data) {
+    if (data.size() < 7) return NAN;
+    return (float) (((uint16_t) data[5] << 8) | data[6]) / 10.0f;
   }
+  // ODU register 060e (REG_ODU_STAGE_INFO): variable-speed stage index at byte 0
+  // {0=off, 1..5=stage}. Verified against rpm-derived stage; resolves the
+  // frequency ambiguity (1500/1700 rpm both read stage 1).
   static float odu_stage_(const std::vector<uint8_t> &data) {
-    return data.size() >= 7 ? (float) data[5] : NAN;
+    return data.size() >= 1 ? (float) data[0] : NAN;
   }
-  static float odu_modulation_(const std::vector<uint8_t> &data) {
-    return data.size() >= 7 ? (float) data[6] : NAN;
-  }
-  // ODU register 060B (REG_ODU_SETPOINT): target temp at data[4], native °F whole degrees
+  // ODU register 060B (REG_ODU_SETPOINT): variable target value at byte[2], native °F whole degrees.
+  // Write-only (thermostat→ODU). Offset fix: was data[4] (always 0); data[2] carries the value.
+  // Range 25-115°F, varies independently of OAT and zone setpoints. NOT confirmed to be a
+  // cooling setpoint (the thermostat does not tell the ODU an indoor setpoint); likely a
+  // refrigerant-loop coil/discharge control target. No sensor exposed - kept for future decode.
   static float odu_setpoint_f_(const std::vector<uint8_t> &data) {
-    return data.size() >= 5 ? (float) data[4] : NAN;
+    return data.size() >= 3 ? (float) data[2] : NAN;
+  }
+  // ODU register 0605 (REG_ODU_CMD_STAGE): commanded compressor stage, float32 BE at [0..3]
+  // (0.0=off, 1.0..5.0=stage). Write-only; drives actual stage (060e) with ~15s lag.
+  static float odu_commanded_stage_(const std::vector<uint8_t> &data) {
+    return decode_f32_be_(data, 0);
+  }
+  // ODU register 0304 (REG_ODU_STATUS3): line voltage at data[7], whole volts.
+  // Validated against Carrier cloud linevolt field: bus 0304[7]=238-240 vs cloud 239V.
+  // State-independent (held tight ±1 LSB across idle and across user's wider observations).
+  static float odu_line_voltage_(const std::vector<uint8_t> &data) {
+    return data.size() >= 8 ? (float) data[7] : NAN;
   }
   // ODU register 0304 (REG_ODU_STATUS3): operating mode at data[10]
   static float odu_operating_mode_(const std::vector<uint8_t> &data) {

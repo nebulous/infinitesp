@@ -282,27 +282,21 @@ sensor:
     entity_category: diagnostic
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
-    name: "ODU Demand"
-    type: odu_demand
-    icon: "mdi:percent"
+    name: "ODU Compressor Frequency"
+    type: compressor_frequency
+    icon: "mdi:sine-wave"
+    entity_category: diagnostic
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "ODU Commanded Stage"
+    type: odu_commanded_stage
+    icon: "mdi:transmission-tower"
     entity_category: diagnostic
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "ODU Stage"
     type: odu_stage
     icon: "mdi:step-forward"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Modulation"
-    type: odu_modulation
-    icon: "mdi:tune"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Setpoint"
-    type: odu_setpoint
-    icon: "mdi:thermometer-check"
     entity_category: diagnostic
   - platform: infinitesp
     infinitesp_id: infinitesp_hub

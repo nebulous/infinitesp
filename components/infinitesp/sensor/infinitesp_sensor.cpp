@@ -72,28 +72,47 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
-  // ODU demand % / stage / modulation from register 0608
-  if (register_key == REG_ODU_DEMAND &&
-      (sensor_type_ == "odu_demand" || sensor_type_ == "odu_stage" || sensor_type_ == "odu_modulation")) {
+  // Compressor drive frequency from register 0608 (uint16 BE at [5..6], 0.1 Hz)
+  if (register_key == REG_ODU_DEMAND && sensor_type_ == "compressor_frequency") {
     auto *data = parent_->get_register(device_addr, REG_ODU_DEMAND);
     if (data) {
-      float v = NAN;
-      if (sensor_type_ == "odu_demand")      v = parent_->odu_demand_(*data);
-      else if (sensor_type_ == "odu_stage")   v = parent_->odu_stage_(*data);
-      else if (sensor_type_ == "odu_modulation") v = parent_->odu_modulation_(*data);
-      if (!std::isnan(v))
-        value = v;
+      float f = parent_->odu_compressor_frequency_(*data);
+      if (!std::isnan(f))
+        value = f;
     }
   }
 
-  // ODU setpoint from register 060b (byte 5 of payload, which is data[4])
-  // ODU temperatures are always °F (int16 BE / 16 encoding) regardless of bus unit
-  if (register_key == REG_ODU_SETPOINT && sensor_type_ == "odu_setpoint") {
-    auto *data = parent_->get_register(device_addr, REG_ODU_SETPOINT);
+  // Variable-speed stage index from register 060e (byte 0: 0=off, 1..5=stage)
+  if (register_key == REG_ODU_STAGE_INFO && sensor_type_ == "odu_stage") {
+    auto *data = parent_->get_register(device_addr, REG_ODU_STAGE_INFO);
     if (data) {
-      float sp_f = parent_->odu_setpoint_f_(*data);
-      if (!std::isnan(sp_f))
-        value = (sp_f - 32.0f) * (5.0f / 9.0f);
+      float s = parent_->odu_stage_(*data);
+      if (!std::isnan(s))
+        value = s;
+    }
+  }
+
+  // Commanded compressor stage from register 0605 (float32 BE at [0..3]: 0.0/1.0..5.0)
+  // Write-only (thermostat→ODU); captured in handle_passive_frame_. Drives the
+  // actual stage (060e) with ~15s lag.
+  if (register_key == REG_ODU_CMD_STAGE && sensor_type_ == "odu_commanded_stage") {
+    auto *data = parent_->get_register(device_addr, REG_ODU_CMD_STAGE);
+    if (data) {
+      float s = parent_->odu_commanded_stage_(*data);
+      if (!std::isnan(s))
+        value = s;
+    }
+  }
+
+
+  // ODU line voltage from register 0304 byte 7 (whole volts, state-independent).
+  // Validated against Carrier cloud linevolt: bus 238-240 vs cloud 239V.
+  if (register_key == REG_ODU_STATUS3 && sensor_type_ == "odu_line_voltage") {
+    auto *data = parent_->get_register(device_addr, REG_ODU_STATUS3);
+    if (data) {
+      float v = parent_->odu_line_voltage_(*data);
+      if (!std::isnan(v))
+        value = v;
     }
   }
 

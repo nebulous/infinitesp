@@ -367,7 +367,7 @@ sensor:
 
   # All diagnostic sensor types:
   #   blower_rpm, airflow_cfm, compressor_rpm
-  #   odu_demand, odu_stage, odu_modulation, odu_setpoint, odu_mode
+  #   compressor_frequency, odu_commanded_stage, odu_stage, odu_mode
   #   odu_outdoor_temp, odu_coil_temp, odu_suction_temp,
   #   odu_subcooling_degf_int, odu_indoor_ambient, odu_discharge_temp
   #   odu_float_1 (superheat target), odu_float_2 (superheat actual),

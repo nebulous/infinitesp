@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
-from esphome.const import CONF_ID, CONF_TYPE, STATE_CLASS_MEASUREMENT, DEVICE_CLASS_TEMPERATURE
+from esphome.const import CONF_ID, CONF_TYPE, STATE_CLASS_MEASUREMENT, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_VOLTAGE
 from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
 CONF_ZONE = "zone"
@@ -20,11 +20,12 @@ SENSOR_TYPES = {
     "airflow_cfm": {"key": "airflow_cfm", "unit": "CFM", "bus_class": 4},
     # ODU sensors — device class 5
     "compressor_rpm": {"key": "compressor_rpm", "unit": "RPM", "bus_class": 5},
-    "odu_demand": {"key": "odu_demand", "unit": "%", "bus_class": 5},
+    "compressor_frequency": {"key": "compressor_frequency", "unit": "Hz", "bus_class": 5},
+    "odu_commanded_stage": {"key": "odu_commanded_stage", "unit": "", "bus_class": 5},
     "odu_stage": {"key": "odu_stage", "unit": "", "bus_class": 5},
-    "odu_modulation": {"key": "odu_modulation", "unit": "", "bus_class": 5},
-    "odu_setpoint": {"key": "odu_setpoint", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_mode": {"key": "odu_operating_mode", "unit": "", "bus_class": 5},
+    # ODU line voltage from register 0304 byte 7 (whole volts, state-independent)
+    "odu_line_voltage": {"key": "odu_line_voltage", "unit": "V", "device_class": DEVICE_CLASS_VOLTAGE, "bus_class": 5},
     # ODU IEEE754 float32 values from register 061f
     "odu_float_1": {"key": "odu_float_1", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_float_2": {"key": "odu_float_2", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
