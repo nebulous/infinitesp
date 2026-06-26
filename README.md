@@ -624,7 +624,11 @@ components/
 │   ├── binary_sensor/       # Bus status, compressor, electric heat
 │   ├── select/              # System mode, fan mode selects
 │   └── text_sensor/         # Zone names, WiFi info, dealer info, profiles
-└── uart_tcp_client/         # UART-over-TCP transport component
+└── sam_ascii/               # TCP port 23 command interface (REPORT?, setpoints, etc.)
+#
+# Transport components (uart_tcp_client, usb_cdc_acm, uart_tcp_server,
+# uart_bridge) come from esphome-uart-link, pulled in via external_components.
+# See the UART Transports section above.
 ```
 
 ## Disclaimer
