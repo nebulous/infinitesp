@@ -168,6 +168,16 @@ uart:
 # device: with zone_controller_address at 0, InfinitESP still passively
 # monitors a real physical ZC already on the bus. Damper covers and per-zone
 # climate heating/cooling action then reflect the real damper state.
+#
+# WARNING: ZC EMULATION REQUIRES REAL DAMPERS. When the thermostat commissions
+# a zone it runs a duct checkout that maps damper position to airflow by
+# reading the indoor unit's fan telemetry. That only converges with real
+# dampers that change duct static pressure. An emulated ZC reports damper
+# position but produces no airflow change, so the checkout loops (~every 3
+# min) and the THERMOSTAT STOPS ALL HEATING AND COOLING while it loops. This
+# is inherent to emulation, not fixable in firmware. Emulate only on a system
+# with real dampers/ductwork. To add a temp sensor to an existing zoned
+# system, leave this at 0 and passively monitor the real hardware.
 infinitesp:
   id: infinitesp_hub
   uart_id: bus_uart           # Change to bus_cdcuart or bus_tcpuart if using those
