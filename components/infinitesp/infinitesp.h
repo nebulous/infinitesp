@@ -32,6 +32,10 @@ class Sensor;
 namespace infinitesp {
 
 // Address constants
+// Thermostat install-discovery source address. Used by the thermostat itself
+// during initial system discovery on install. Documentary only — InfinitESP
+// never transmits as 0x1F. Kept distinct from FAKESAM to avoid conflating the
+// thermostat's discovery concept with our table-name probing.
 static const uint8_t ADDR_DISCOVERY = 0x1F;
 static const uint8_t ADDR_THERMOSTAT = 0x20;
 static const uint8_t ADDR_INDOOR_UNIT = 0x40;
@@ -105,7 +109,7 @@ static const uint8_t FAN_MED = 2;
 static const uint8_t FAN_HIGH = 3;
 
 // Zone Controller registers (device address 0x60)
-static const uint16_t REG_ZC_ZONE_STATUS = 0x0302;  // Zone sensor readings (24 bytes, TLV)
+static const uint16_t REG_ZC_ZONE_STATUS = 0x0302;  // Zone sensor readings (24-byte TLV, see layout below)
 static const uint16_t REG_ZC_DAMPER_CMD = 0x0308;   // Damper positions (write from tstat)
 static const uint16_t REG_ZC_ZONE_CONFIG = 0x0319;  // Damper state feedback (8 bytes)
 static const uint16_t REG_ZC_PRESENCE = 0x3405;      // Presence probe (discovery)
@@ -113,9 +117,22 @@ static const uint16_t REG_ZC_HEARTBEAT = 0x3404;     // Write/heartbeat flag (1 
 static const uint16_t REG_ZC_CYCLES = 0x0310;       // Cycle counters (12 bytes, 3 KV entries)
 static const uint16_t REG_ZC_RUNTIME = 0x0311;      // Runtime hours (12 bytes, 3 KV entries)
 
-// ZC zone sensor encoding: uint16 BE, °F = value / 16
-// e.g. 0x047E = 1150 → 71.875°F. Range limited only by uint16 (4095°F).
+// ZC register 0302 (REG_ZC_ZONE_STATUS) — 24-byte TLV: six entries of
+// [tag, id, val_hi, val_lo], always sent in id order:
+//   0x01 z1, 0x02 z2, 0x03 z3, 0x04 z4, 0x14 LAT, 0x1C HPT.
+// tag 0x01 = sensor present (value valid); 0x04 = not installed (0x0000).
+// Value = uint16 BE, °F = value / 16. e.g. 0x047E → 1150 → 71.875°F.
+// Verified by hooking a thermistor to the LAT/HPT ports and reading the
+// thermostat's Furnace Status page (not (°F-64)×16 as once guessed).
+static const uint8_t ZC_0302_TAG_PRESENT = 0x01;
+static const uint8_t ZC_ID_LAT = 0x14;              // LAT — leaving air temperature thermistor
+static const uint8_t ZC_ID_HPT = 0x1C;              // HPT thermistor port
 static const float ZC_TEMP_SCALE = 16.0f;
+// Sanity band for thermistor feeds (LAT/HPT). Supply air can exceed the
+// 40-99°F indoor band used for zones; -40..250°F covers any real HVAC
+// thermistor while still catching gross sensor_unit misconfigurations.
+static const float ZC_THERMISTOR_MIN_F = -40.0f;
+static const float ZC_THERMISTOR_MAX_F = 250.0f;
 
 // Register 3B02 layout offsets (see AGENTS.md for full layout)
 static const uint8_t REG3B02_ACTIVE_ZONES = 0;
@@ -251,19 +268,44 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zc_address(uint8_t addr) { zc_address_ = addr; }
   uint8_t get_zc_address() const { return zc_address_; }
   bool zc_enabled() const { return zc_address_ != 0; }
-// True if this zone's damper is open (zone is receiving conditioned air).
-  // Consults register 0308 under the ZC address: our emulated ZC (zc_address_)
-  // when emulating, or the standard 0x60 when passively snooping a real
-  // physical ZC. No damper data yet (no ZC on the bus, or not yet seen), or
-  // zone index beyond the 4-byte register (zones 5-8): true — nothing to
-  // suppress on, and single-zone systems track the system 1:1. Otherwise the
-  // zone's damper byte (0x00-0x0F) is nonzero.
+
+  // Multi-ZC mapping. A Carrier damper system uses one SYSTXCC4ZC01 per four
+  // zones: the primary controller (base = zc_address_ when emulating, else
+  // ADDR_ZONE_CTRL/0x60) serves system zones 1-4, and a second controller at
+  // base+1 serves zones 5-8. Verified on hardware: two physical controllers
+  // answer the thermostat at 0x60 and 0x61 (issue #9). Each controller numbers
+  // its own four zones 1-4 (local id), so system zone N maps to a (controller,
+  // local id, byte) triple.
+  uint8_t zc_addr_for_zone_(uint8_t zone) const {
+    uint8_t base = zc_enabled() ? zc_address_ : ADDR_ZONE_CTRL;
+    return base + (zone >= 1 ? (zone - 1) / 4 : 0);
+  }
+  // Local zone id (1-4) within that controller for system zone N.
+  uint8_t zc_local_id_for_zone_(uint8_t zone) const {
+    return ((zone >= 1 ? zone - 1 : 0) % 4) + 1;
+  }
+  // Byte offset (0-3) within a 4-zone register (0308 dampers, 0319 state) for zone N.
+  uint8_t zc_byte_for_zone_(uint8_t zone) const {
+    return (zone >= 1 ? zone - 1 : 0) % 4;
+  }
+  // True if addr is one of our emulated ZC addresses (primary 0x60 or secondary 0x61).
+  bool is_emu_zc_addr_(uint8_t addr) const {
+    return zc_enabled() && (addr == zc_address_ || addr == (uint8_t)(zc_address_ + 1));
+  }
+
+  // True if this zone's damper is open (zone is receiving conditioned air).
+  // Reads register 0308 from the controller serving this zone. No data yet
+  // (no ZC seen for this zone's controller): true — single-zone / unknown
+  // systems track the system 1:1, and nothing should be suppressed. Otherwise
+  // the zone's damper byte (0x00-0x0F) is nonzero.
   bool zone_damper_open(uint8_t zone) const {
-    uint8_t zc = zc_enabled() ? zc_address_ : ADDR_ZONE_CTRL;
-    auto *data = get_register(zc, REG_ZC_DAMPER_CMD);
-    if (!data || zone < 1 || zone > data->size())
+    auto *data = get_register(zc_addr_for_zone_(zone), REG_ZC_DAMPER_CMD);
+    if (!data || zone < 1)
       return true;
-    return (*data)[zone - 1] != 0;
+    uint8_t idx = zc_byte_for_zone_(zone);
+    if (idx >= data->size())
+      return true;
+    return (*data)[idx] != 0;
   }
   void set_temperature_unit(TemperatureUnit unit) { temperature_unit_ = unit; }
   TemperatureUnit get_temperature_unit() const { return temperature_unit_; }
@@ -296,19 +338,27 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // ZC zone temperature sensor references
   void set_zc_temperature_sensor(uint8_t zone, sensor::Sensor *s);
   void set_zc_sensor_is_fahrenheit(uint8_t zone, bool is_f) {
-    if (zone >= 2 && zone <= 4) zc_zones_[zone].sensor_unit = is_f ? 2 : 1;
+    if (zone >= 2 && zone <= 8) zc_zones_[zone].sensor_unit = is_f ? 2 : 1;
   }
 
   // Resolve sensor unit: explicit setting, or inherit from bus
   bool zc_sensor_is_fahrenheit_(uint8_t zone) const {
-    if (zone < 2 || zone > 4) return false;
-    switch (zc_zones_[zone].sensor_unit) {
-      case 1: return false;  // explicit °C
-      case 2: return true;   // explicit °F
-      default: return !bus_uses_celsius();  // inherit from bus
-    }
+    if (zone < 2 || zone > 8) return false;
+    return zc_unit_is_fahrenheit_(zc_zones_[zone]);
   }
   void set_zc_staleness_timeout(uint8_t zone, uint32_t timeout_ms);
+
+  // ZC thermistor sensor references — register 0302 ids 0x14 (LAT) / 0x1C (HPT).
+  // Emulation only: feeds an external ESPHome sensor into the ZC 0302 TLV as a
+  // present (tag 0x01) reading. Unlike zones, supply-air thermistors have no
+  // sane ambient fallback — when the sensor is stale/unavailable the entry
+  // reverts to not-installed (tag 0x04) so the thermostat stops seeing it.
+  void set_zc_lat_sensor(sensor::Sensor *s);
+  void set_zc_hpt_sensor(sensor::Sensor *s);
+  void set_zc_lat_is_fahrenheit(bool is_f) { zc_lat_.sensor_unit = is_f ? 2 : 1; }
+  void set_zc_hpt_is_fahrenheit(bool is_f) { zc_hpt_.sensor_unit = is_f ? 2 : 1; }
+  void set_zc_lat_staleness(uint32_t ms) { zc_lat_.staleness_timeout_ms = ms; }
+  void set_zc_hpt_staleness(uint32_t ms) { zc_hpt_.staleness_timeout_ms = ms; }
 
   const std::vector<uint8_t> *get_register(uint8_t addr, uint16_t key) const;
   uint8_t get_zone_count() const;
@@ -445,7 +495,10 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     return data.size() >= 11 ? (float) data[10] : NAN;
   }
   // ODU register 061F (REG_ODU_FLOATS): float idx 1..6 at offset 1 + (idx-1)*4.
-  // idx 1..5 are °F deltas, idx 6 is dimensionless. Caller applies conversion.
+  // idx 1..5 are °F deltas (ΔT, not absolute temps); idx 6 is dimensionless.
+  // idx 5 is a discharge-related control delta (NOT discharge superheat - goes
+  // negative ~75% while running; see Infinitude OutdoorUnit.pm 061F).
+  // Caller converts ΔF→ΔC (×5/9) for idx 1..5; idx 6 passed through.
   static float odu_float_(const std::vector<uint8_t> &data, uint8_t idx) {
     return decode_f32_be_(data, 1 + (idx - 1) * 4);
   }
@@ -479,12 +532,23 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void handle_read_request_();
   void handle_write_request_();
   void handle_reply_();
+  void handle_discovery_reply_();
+  void handle_metric_units_reply_(uint8_t device_addr, uint16_t reg_key, const std::vector<uint8_t> &data);
+  void poll_metric_units_();
 
   void poll_thermostat_();
+  void poll_discovery_();
   void initialize_defaults_();
   void update_zc_zone_temp_(uint8_t zone, float temp_f);
+  void write_zc_zone_temp_entry_(uint8_t zone, float temp_f, bool present);
   void check_zc_sensor_fallback_();
   void on_zc_sensor_update_(uint8_t zone, float value);
+  void register_zc_thermistor_(ZCZoneConfig &slot, uint8_t tlv_id, sensor::Sensor *s);
+  void on_zc_thermistor_update_(ZCZoneConfig &slot, uint8_t tlv_id, float value);
+  bool zc_unit_is_fahrenheit_(const ZCZoneConfig &slot) const;
+  // Write a ZC 0302 TLV entry by id: tag (0x01 present / 0x04 not-installed) and
+  // uint16-BE value (temp_f * 16). Idempotent; stores + notifies on change.
+  void write_zc_temp_entry_(uint8_t zc_addr, uint8_t tlv_id, float temp_f, bool present);
 
   // Bus traffic capture for diagnostics / protocol reverse engineering
   struct TrafficEntry {
@@ -526,13 +590,21 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // Per-device register storage: address → (register_key → data)
   std::map<uint8_t, std::map<uint16_t, std::vector<uint8_t>>> device_registers_;
 
+  // Table names learned by probing each observed device's 0xNN01 tabledef
+  // register as ADDR_FAKESAM (0x93). Keyed by (device addr, table number).
+  std::map<std::pair<uint8_t, uint8_t>, std::string> table_names_;
+  std::map<std::pair<uint8_t, uint8_t>, uint32_t> discovery_query_ms_;  // last query ts (retry backoff)
+  uint32_t last_discovery_poll_ms_{0};
+
   std::vector<uint8_t> rx_buffer_;
   std::vector<uint8_t> rx_hex_log_;
   InfinitESPFrame current_frame_;
   std::vector<InfinitESPEntity *> entities_;
   uint8_t sam_address_{ADDR_FAKESAM};
   uint8_t zc_address_{0};  // 0 = zone controller emulation disabled
-  ZCZoneConfig zc_zones_[5];  // index 0=unused, 1-4=zones (only 2-4 have sensors)
+  ZCZoneConfig zc_zones_[9];  // index 0=unused, 1-8=zones (2-8 may have external sensors)
+  ZCZoneConfig zc_lat_;       // LAT thermistor (register 0302 id 0x14)
+  ZCZoneConfig zc_hpt_;       // HPT thermistor (register 0302 id 0x1C)
   uint32_t last_zc_sensor_check_{0};
   uint32_t last_rx_time_{0};
   uint32_t last_poll_time_{0};
@@ -635,6 +707,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   TemperatureUnit temperature_unit_{TemperatureUnit::AUTO};
   bool bus_celsius_detected_{false};  // cached heuristic result (AUTO mode)
   bool bus_unit_detected_{false};     // true after first successful detection
+  // Authoritative metric-units flag, read from the thermostat's 3B06 push
+  // (when sam emulated — the tstat pushes 3B06 to 0x92, captured under addr
+  // 0x20) or polled from 3B05 as FakeSAM (when sam NOT emulated). 3B05/3B06
+  // data[1]: 0=English(°F), 1=Metric(°C). Verified live 2026-06-26.
+  // metric_units_known_=false until first authoritative read → heuristic fallback.
+  bool metric_units_known_{false};
+  bool metric_units_{false};         // valid only when metric_units_known_
+  uint32_t last_unit_poll_ms_{0};
 
   // RS485 transmit enable pin (optional)
 #ifdef USE_INFINITESP_FLOW_CONTROL_PIN

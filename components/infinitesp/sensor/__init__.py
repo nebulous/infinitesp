@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
-from esphome.const import CONF_ID, CONF_TYPE, STATE_CLASS_MEASUREMENT, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_VOLTAGE
+from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_VOLTAGE
 from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
 CONF_ZONE = "zone"
@@ -40,9 +40,13 @@ SENSOR_TYPES = {
     "odu_subcooling_degf_int": {"key": "odu_subcooling_degf_int", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_indoor_ambient": {"key": "odu_indoor_ambient", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_discharge_temp": {"key": "odu_discharge_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
-    # ZC zone temperatures (register 0302, device class 6 = 0x60>>4)
-    # Value encoding: raw = (°F - 64) × 16, converted to °C for HA
+    # ZC register 0302 (device class 6 = 0x60>>4). 24-byte TLV [tag,id,hi,lo],
+    # °F = uint16_BE / 16. zone N -> id N; id 0x14 = LAT, id 0x1C = HPT.
+    # LAT/HPT exist only on zone boards with those thermistor ports wired, so
+    # they default to disabled (enable in HA if your board reports them).
     "zc_zone_temperature": {"key": "zc_zone_temperature", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 6},
+    "zc_lat": {"key": "zc_lat", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 6, "disabled_by_default": True},
+    "zc_hpt": {"key": "zc_hpt", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 6, "disabled_by_default": True},
     # IDU cycle counters (register 0310, 4-byte key-value entries) — device class 4
     "idu_low_heat_cycles": {"key": "idu_low_heat_cycles", "unit": "cycles", "bus_class": 4},
     "idu_high_heat_cycles": {"key": "idu_high_heat_cycles", "unit": "cycles", "bus_class": 4},
@@ -67,6 +71,17 @@ SENSOR_TYPES = {
     "odu_poweron_hours": {"key": "odu_poweron_hours", "unit": "h", "bus_class": 5},
 }
 
+def _apply_sensor_type(config):
+    """Inject unit/device_class from SENSOR_TYPES and force disabled_by_default
+    for sensor types that opt into it (e.g. zc_lat/zc_hpt)."""
+    info = SENSOR_TYPES[config[CONF_TYPE]]
+    config[sensor.CONF_UNIT_OF_MEASUREMENT] = info["unit"]
+    config[sensor.CONF_DEVICE_CLASS] = info.get("device_class", "")
+    if info.get("disabled_by_default"):
+        config[CONF_DISABLED_BY_DEFAULT] = True
+    return config
+
+
 CONFIG_SCHEMA = cv.All(
     cv.Schema({cv.Required(CONF_TYPE): cv.one_of(*SENSOR_TYPES, lower=True)}).extend(
         sensor.sensor_schema(
@@ -80,8 +95,7 @@ CONFIG_SCHEMA = cv.All(
             }
         )
     ),
-    lambda config: {**config, sensor.CONF_UNIT_OF_MEASUREMENT: SENSOR_TYPES[config[CONF_TYPE]]["unit"],
-                    sensor.CONF_DEVICE_CLASS: SENSOR_TYPES[config[CONF_TYPE]].get("device_class", "")},
+    _apply_sensor_type,
 )
 
 

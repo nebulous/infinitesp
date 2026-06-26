@@ -30,6 +30,13 @@ CONF_TEMPERATURE_UNIT = "temperature_unit"
 CONF_ZC_ZONE_2 = "zc_zone_2"
 CONF_ZC_ZONE_3 = "zc_zone_3"
 CONF_ZC_ZONE_4 = "zc_zone_4"
+CONF_ZC_ZONE_5 = "zc_zone_5"   # secondary controller (0x61), local zone 1
+CONF_ZC_ZONE_6 = "zc_zone_6"   # secondary controller (0x61), local zone 2
+CONF_ZC_ZONE_7 = "zc_zone_7"   # secondary controller (0x61), local zone 3
+CONF_ZC_ZONE_8 = "zc_zone_8"   # secondary controller (0x61), local zone 4
+# ZC thermistor sensor references (register 0302 ids 0x14/0x1C = LAT/HPT)
+CONF_ZC_LAT = "zc_lat"
+CONF_ZC_HPT = "zc_hpt"
 CONF_TEMPERATURE_SENSOR = "temperature_sensor"
 CONF_STALENESS_TIMEOUT = "staleness_timeout"
 CONF_SENSOR_UNIT = "sensor_unit"
@@ -46,23 +53,31 @@ TEMP_UNIT_CELSIUS = "C"
 
 
 def _validate_zc_config(config):
-    """Warn on ZC zone sensor misconfiguration."""
-    for zone_key in [CONF_ZC_ZONE_2, CONF_ZC_ZONE_3, CONF_ZC_ZONE_4]:
-        if zone_key not in config:
+    """Warn on ZC sensor misconfiguration."""
+    # Zone refs fall back to zone-1 ambient when stale; thermistor refs (LAT/HPT)
+    # revert to not-installed. Either way a missing sensor_unit risks a wrong
+    # conversion, so warn for all of them.
+    sensor_keys = [CONF_ZC_ZONE_2, CONF_ZC_ZONE_3, CONF_ZC_ZONE_4,
+                  CONF_ZC_ZONE_5, CONF_ZC_ZONE_6, CONF_ZC_ZONE_7, CONF_ZC_ZONE_8,
+                  CONF_ZC_LAT, CONF_ZC_HPT]
+    for key in sensor_keys:
+        if key not in config:
             continue
         if config.get(CONF_ZONE_CONTROLLER_ADDRESS, 0) == 0:
-            _LOGGER.warning("'%s' configured but zone_controller_address is 0; ZC emulation disabled", zone_key)
+            _LOGGER.warning("'%s' configured but zone_controller_address is 0; ZC emulation disabled", key)
         # A sensor's native unit is independent of the bus; defaulting to the
-        # system unit is a guess. It's caught at runtime by the 40-99°F band
-        # check (rejected → falls back to zone-1 ambient), but warn so users
-        # set sensor_unit explicitly and avoid mis-conversion in the first place.
-        if CONF_TEMPERATURE_SENSOR in config[zone_key] and CONF_SENSOR_UNIT not in config[zone_key]:
+        # system unit is a guess. It's caught at runtime by the plausibility
+        # check (40-99°F band for zones, -40-250°F for LAT/HPT), but warn so
+        # users set sensor_unit explicitly and avoid mis-conversion in the first
+        # place.
+        if CONF_TEMPERATURE_SENSOR in config[key] and CONF_SENSOR_UNIT not in config[key]:
             _LOGGER.warning(
                 "'%s.temperature_sensor' has no 'sensor_unit'; defaulting to the system "
-                "unit. A wrong guess is rejected at runtime (40-99°F band) and falls back "
-                "to zone-1 ambient, but set 'sensor_unit: F' or 'sensor_unit: C' explicitly "
-                "to avoid mis-conversion. Check the sensor's published value to pick correctly.",
-                zone_key)
+                "unit. A wrong guess is rejected at runtime (falls back to zone-1 ambient "
+                "for zones, or not-installed for LAT/HPT), but set 'sensor_unit: F' or "
+                "'sensor_unit: C' explicitly to avoid mis-conversion. Check the sensor's "
+                "published value to pick correctly.",
+                key)
     return config
 
 
@@ -99,11 +114,22 @@ CONFIG_SCHEMA = cv.All(
             # Zone controller emulation: set to 0x60 to emulate a SYSTXCC4ZC01
             cv.Optional(CONF_ZONE_CONTROLLER_ADDRESS, default=0): cv.int_range(min=0, max=255),
             # Temperature unit: auto (heuristic), F, or C
-            cv.Optional(CONF_TEMPERATURE_UNIT, default=TEMP_UNIT_AUTO): cv.one_of(TEMP_UNIT_AUTO, TEMP_UNIT_FAHRENHEIT, TEMP_UNIT_CELSIUS, lower=True),
-            # ZC zone temperature sensor references (requires zone_controller_address)
+            cv.Optional(CONF_TEMPERATURE_UNIT, default=TEMP_UNIT_AUTO): cv.one_of(TEMP_UNIT_AUTO, TEMP_UNIT_FAHRENHEIT, TEMP_UNIT_CELSIUS),
+            # ZC zone temperature sensor references (requires zone_controller_address).
+            # Zones 2-4 are on the primary controller (0x60); 5-8 on a second
+            # controller at +1 (0x61). Zone 1 is always thermostat-direct.
             cv.Optional(CONF_ZC_ZONE_2): ZC_ZONE_SCHEMA,
             cv.Optional(CONF_ZC_ZONE_3): ZC_ZONE_SCHEMA,
             cv.Optional(CONF_ZC_ZONE_4): ZC_ZONE_SCHEMA,
+            cv.Optional(CONF_ZC_ZONE_5): ZC_ZONE_SCHEMA,
+            cv.Optional(CONF_ZC_ZONE_6): ZC_ZONE_SCHEMA,
+            cv.Optional(CONF_ZC_ZONE_7): ZC_ZONE_SCHEMA,
+            cv.Optional(CONF_ZC_ZONE_8): ZC_ZONE_SCHEMA,
+            # ZC thermistor references (LAT/HPT). Same schema; when the fed
+            # sensor goes stale the entry reverts to not-installed (no ambient
+            # fallback, unlike zones).
+            cv.Optional(CONF_ZC_LAT): ZC_ZONE_SCHEMA,
+            cv.Optional(CONF_ZC_HPT): ZC_ZONE_SCHEMA,
         }
     ).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA),
     _validate_addresses,
@@ -131,8 +157,11 @@ async def to_code(config):
     if config[CONF_ZONE_CONTROLLER_ADDRESS] != 0:
         cg.add(var.set_zc_address(config[CONF_ZONE_CONTROLLER_ADDRESS]))
 
-    # Wire up ZC zone temperature sensor references
-    for zone_num, zone_key in [(2, CONF_ZC_ZONE_2), (3, CONF_ZC_ZONE_3), (4, CONF_ZC_ZONE_4)]:
+    # Wire up ZC zone temperature sensor references. Zones 2-4 → primary
+    # controller (0x60); 5-8 → secondary controller (0x61).
+    for zone_num, zone_key in [(2, CONF_ZC_ZONE_2), (3, CONF_ZC_ZONE_3), (4, CONF_ZC_ZONE_4),
+                               (5, CONF_ZC_ZONE_5), (6, CONF_ZC_ZONE_6),
+                               (7, CONF_ZC_ZONE_7), (8, CONF_ZC_ZONE_8)]:
         if zone_key in config:
             zone_cfg = config[zone_key]
             if CONF_TEMPERATURE_SENSOR in zone_cfg:
@@ -144,6 +173,22 @@ async def to_code(config):
                     cg.add(var.set_zc_sensor_is_fahrenheit(zone_num, is_f))
             timeout = zone_cfg.get(CONF_STALENESS_TIMEOUT, 120)
             cg.add(var.set_zc_staleness_timeout(zone_num, timeout * 1000))
+
+    # Wire up ZC thermistor references (LAT/HPT) — feeds external ESPHome
+    # sensors into register 0302 ids 0x14/0x1C. Emulation only.
+    for key, set_sensor, set_unit, set_stale in [
+        (CONF_ZC_LAT, var.set_zc_lat_sensor, var.set_zc_lat_is_fahrenheit, var.set_zc_lat_staleness),
+        (CONF_ZC_HPT, var.set_zc_hpt_sensor, var.set_zc_hpt_is_fahrenheit, var.set_zc_hpt_staleness),
+    ]:
+        if key not in config:
+            continue
+        tcfg = config[key]
+        if CONF_TEMPERATURE_SENSOR in tcfg:
+            sens = await cg.get_variable(tcfg[CONF_TEMPERATURE_SENSOR])
+            cg.add(set_sensor(sens))
+            if CONF_SENSOR_UNIT in tcfg:
+                cg.add(set_unit(tcfg[CONF_SENSOR_UNIT] == "F"))
+        cg.add(set_stale(tcfg.get(CONF_STALENESS_TIMEOUT, 120) * 1000))
 
     temp_unit = config[CONF_TEMPERATURE_UNIT]
     if temp_unit == TEMP_UNIT_AUTO:

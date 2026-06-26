@@ -32,24 +32,32 @@ void InfinitESPCover::control(const cover::CoverCall &call) {
 }
 
 void InfinitESPCover::on_register_update(uint8_t device_addr, uint16_t register_key) {
-  // Damper positions arrive as a 4-byte WRITE to 0308 (one byte per zone,
-  // zones 1-4) and are mirrored to 0319. Both keys notify; react to either.
+  // Damper positions arrive as a 4-byte WRITE to 0308 (one byte per local
+  // zone, 1-4) and are mirrored to 0319. Both keys notify; react to either.
   if (register_key != REG_ZC_DAMPER_CMD && register_key != REG_ZC_ZONE_CONFIG)
     return;
-  if (zone_ < 1 || zone_ > 4)
+  if (zone_ < 1 || zone_ > 8)
+    return;
+  // Multi-ZC: only react to the controller serving this zone (0x60 for
+  // zones 1-4, 0x61 for zones 5-8). Both controllers notify (same device
+  // class), so without this guard a zone-5 cover would read zone-1's byte
+  // from the 0x60 notify.
+  if (device_addr != parent_->zc_addr_for_zone_(zone_))
     return;
 
   auto *data = parent_->get_register(device_addr, REG_ZC_DAMPER_CMD);
   if (!data || data->size() < 4)
     return;
 
-  // The damper byte is itself the step (0x00-0x0F). Compare in step space so
-  // the 0308/0319 mirror (same value, two notifies) and the thermostat's
-  // periodic re-asserts fire exactly once per real change, and so an HA-set
-  // transient (control()) snapping back to the bus value still fires when the
-  // steps actually differ. Anchor: last_step_ (0xFF sentinel fires the first
-  // time, so a zone fully-open at boot still actuates).
-  uint8_t new_step = data->at(zone_ - 1);
+  // The damper byte is itself the step (0x00-0x0F). The local byte index for
+  // system zone N is (N-1)%4. Compare in step space so the 0308/0319 mirror
+  // (same value, two notifies) and the thermostat's periodic re-asserts fire
+  // exactly once per real change, and so an HA-set transient (control())
+  // snapping back to the bus value still fires when the steps actually differ.
+  // Anchor: last_step_ (0xFF sentinel fires the first time, so a zone
+  // fully-open at boot still actuates).
+  uint8_t byte_idx = parent_->zc_byte_for_zone_(zone_);
+  uint8_t new_step = data->at(byte_idx);
   if (new_step == last_step_)
     return;  // same step we last acted on — nothing to do
   last_step_ = new_step;

@@ -23,7 +23,7 @@ CONF_ON_CHANGE = "on_change"
 CONFIG_SCHEMA = cover.cover_schema(InfinitESPCover).extend(
     {
         cv.GenerateID(CONF_INFINITESP_ID): cv.use_id(CONF_INFINITESP_ID),
-        cv.Required(CONF_ZONE): cv.int_range(min=1, max=4),
+        cv.Required(CONF_ZONE): cv.int_range(min=1, max=8),
         cv.Optional(CONF_ON_CHANGE): automation.validate_automation(single=True),
     }
 )

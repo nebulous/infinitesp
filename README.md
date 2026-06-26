@@ -57,6 +57,7 @@ Carrier ABCD bus (RS485, 38400 baud, 8N1)
     ├── 0x40  Indoor Unit / Furnace / Air Handler
     ├── 0x50  Outdoor Unit / Heat Pump
     ├── 0x60  Zone Controller (Damper Control Module, SYSTXCC4ZC01)
+    ├── 0x61  Zone Controller (second board, zones 5-8 on large systems)
     └── 0x92  InfinitESP (SAM emulator)
 ```
 
@@ -205,7 +206,7 @@ infinitesp:
   sam_address: 0x92  # SAM address. 0x93 = FakeSAM test mode, 0 = disabled (passive monitor)
   zone_controller_address: 0x60  # Zone Controller address. 0 = no emulation (passive monitor of a real ZC if present)
   # Optional: temperature unit detection (default: auto)
-  # temperature_unit: auto     # auto-detect from bus data, or force F / C
+  # temperature_unit: auto     # read from bus, or force F / C
   # Optional status LED (mutually exclusive):
   status_light_id: rgb_led    # Reference an existing ESPHome light (RGB supported)
   # status_led_pin: GPIO2      # Or just a GPIO pin for a simple LED
@@ -221,7 +222,9 @@ Carrier zoned systems put a Damper Control Module (SYSTXCC4ZC01) on the bus at a
 In either case the damper `cover` entities (see [Covers](#covers)) and per-zone climate heating/cooling action reflect the real damper state.
 
 **Injecting external zone temperature sensors (emulation only).**
-When emulating the zone controller, the thermostat expects each zone to report a temperature. InfinitESP can source these from any ESPHome sensor (a local Dallas 1-Wire or DHT/BME wired to the ESP32, or a Home Assistant entity via the `homeassistant` platform) instead of letting the thermostat read its own remote sensors. Configure one block per zone (zones 2–4; zone 1 is reported by the thermostat itself):
+When emulating the zone controller, the thermostat expects each zone to report a temperature. InfinitESP can source these from any ESPHome sensor (a local Dallas 1-Wire or DHT/BME wired to the ESP32, or a Home Assistant entity via the `homeassistant` platform) instead of letting the thermostat read its own remote sensors. Configure one block per zone (zones 2–8; zone 1 is reported by the thermostat itself):
+
+Systems with more than four zones use a second controller at `0x61`. InfinitESP emulates both the primary (`0x60`, zones 1–4) and secondary (`0x61`, zones 5–8) when `zone_controller_address` is set. Zone 5 maps to local zone 1 on the secondary controller, zone 6 to local 2, and so on. A thermostat commissioned for only four zones never polls `0x61`, so the secondary stays inert unless you wire sensors into `zc_zone_5` through `zc_zone_8`.
 
 ```yaml
 # Option A: local Dallas 1-Wire sensor wired to the ESP32
@@ -250,6 +253,11 @@ infinitesp:
     temperature_sensor: ...
   zc_zone_4:
     temperature_sensor: ...
+  # Zones 5-8 live on a second emulated controller at 0x61 (only if the
+  # thermostat is commissioned for more than four zones).
+  # zc_zone_5:
+  #   temperature_sensor: office_temp
+  #   sensor_unit: F
 ```
 
 Only one `sensor:` block is needed per zone. InfinitESP reads whichever `id` you wire in. `internal: true` keeps the raw sensor out of Home Assistant since its value surfaces through the zone controller emulation. If `temperature_sensor` is omitted, InfinitESP reports whatever the bus last reported for that zone. `staleness_timeout` (default 120s) controls how long to keep using the external value before falling back.
@@ -258,23 +266,32 @@ Only one `sensor:` block is needed per zone. InfinitESP reads whichever `id` you
 
 **Why it matters / sanity check.** InfinitESP rejects any injected reading that converts to values outside of the **40-99 °F** band (the indoor range the thermostat itself uses for setpoints) and falls back to the primary zone-1 ambient value until a plausible reading returns. A wrong `sensor_unit` always lands outside this band. For example, a °F sensor treated as °C reports a 70 °F room as ~160 °F, so the zone reads zone-1 ambient instead of garbage. The range check is a safety net, not a correctness test: **after configuring, check the zone temperatures on your thermostat and confirm they match the room.** A reading that silently fell back to zone-1 because of a mis-set unit looks "fine" (a real temperature, just not *that* zone's), so visual confirmation is the only reliable validation.
 
+**LAT/HPT thermistor ports (emulation only).** The zone board also has leaving-air-temperature (LAT) and HPT thermistor ports, reported as TLV entries in the same register (ids `0x14` and `0x1C`). `zc_lat` and `zc_hpt` feed external sensors into those ports. Unlike zone temperatures, supply-air temp has no sane ambient fallback: when the fed sensor goes stale (past `staleness_timeout`), the entry reverts to not-installed so the thermostat stops seeing it rather than reading a bogus value. These sensors are disabled by default in Home Assistant; enable them if your board reports them.
+
 This sensor-injection feature requires emulation. With a passive (physical) zone controller, the real hardware owns temperature reporting and these blocks have no effect.
 
 #### Temperature Unit Detection
 
-The Carrier ABCD bus encodes temperatures differently depending on the thermostat's display unit setting (°F or °C). No register reports which unit is active. InfinitESP detects it automatically.
+The Carrier ABCD bus encodes temperatures differently depending on the thermostat's display unit setting (°F or °C). InfinitESP reads the active unit from the bus and applies it automatically.
 
-The `temperature_unit` option controls how InfinitESP interprets bus temperatures:
+The unit flag lives at data offset 1 of every table-0x3B register the thermostat serves (state, zones, accessories, dealer): `0x00` = English/°F, `0x01` = Metric/°C. In `auto` mode InfinitESP reads that flag:
+
+- When emulating the SAM, the thermostat pushes its dealer register (3B06) to InfinitESP on every poll cycle. InfinitESP reads the flag from it.
+- When not emulating the SAM, InfinitESP polls the thermostat's accessories register (3B05) and reads the flag from the reply.
+
+Until the first authoritative read lands (a few seconds after boot), InfinitESP falls back to a heuristic: any active zone temperature byte ≤ 50 means °C. No plausible HVAC zone exceeds 50°C (122°F).
+
+The `temperature_unit` option forces a unit instead of reading it:
 
 | Value | Behavior |
 |-------|----------|
-| `auto` (default) | Detects from bus data: any active zone temperature ≤ 50 means °C. No plausible HVAC zone exceeds 50°C (122°F). Re-evaluates on every poll cycle. |
-| `F` | Force Fahrenheit: treat all bus values as °F regardless of detected state. |
-| `C` | Force Celsius: treat all bus values as °C regardless of detected state. |
+| `auto` (default) | Read the unit from the bus (3B06 when emulating the SAM, else a polled 3B05), with the zone-temperature heuristic as a boot-time fallback. |
+| `F` | Force Fahrenheit. |
+| `C` | Force Celsius. |
 
-Most users never need to change this from `auto`. The explicit `F`/`C` options are for edge cases or debugging.
+Most users never change this from `auto`. The explicit options exist for edge cases or debugging.
 
-All temperature sensors publish in °C with `device_class: temperature`, so Home Assistant automatically converts to the user's preferred display unit.
+All temperature sensors publish in °C with `device_class: temperature`, so Home Assistant converts to the user's preferred display unit.
 
 The status LED indicates system health:
 
@@ -305,7 +322,7 @@ cover:
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Living Room Damper"
-    zone: 1    # 1–4
+    zone: 1    # 1–8, matches Carrier zone number
     device_class: damper
 ```
 
@@ -367,13 +384,17 @@ sensor:
 
   # All diagnostic sensor types:
   #   blower_rpm, airflow_cfm, compressor_rpm
-  #   compressor_frequency, odu_commanded_stage, odu_stage, odu_mode
+  #   compressor_frequency, odu_commanded_stage, odu_stage, odu_mode, odu_line_voltage
   #   odu_outdoor_temp, odu_coil_temp, odu_suction_temp,
   #   odu_subcooling_degf_int, odu_indoor_ambient, odu_discharge_temp
   #   odu_float_1 (superheat target), odu_float_2 (superheat actual),
   #   odu_float_3 (subcooling target), odu_float_4 (subcooling actual),
   #   odu_float_5, odu_float_6
   #   vacation_min_temp, vacation_max_temp
+  #
+  # Zone controller sensors (need zone_controller on the bus; zc_lat/zc_hpt are
+  # the board's LAT/HPT thermistor ports, disabled by default):
+  #   zc_zone_temperature (requires zone:), zc_lat, zc_hpt
   #
   # Cycle counters and runtime hours (may not be available on all systems):
   #   idu_low_heat_cycles, idu_high_heat_cycles, idu_med_heat_cycles,
@@ -507,7 +528,7 @@ In addition to SAM-register traffic, InfinitESP passively observes inter-device 
 
 - **Indoor unit** (0x40): blower RPM, airflow CFM, electric heat status
 - **Outdoor unit** (0x50): compressor RPM, demand %, operating stage, modulation, superheat/subcooling, outdoor/coil/suction/subcooling/discharge temperatures
-- **Zone controller** (0x60): zone temperatures and damper positions. When you are **not** emulating the zone controller, InfinitESP passively snoops the thermostat↔zone-controller traffic to report damper positions and drive per-zone climate conditioning state. (When you *are* emulating it, the same data is captured directly through the emulation path.)
+- **Zone controller** (0x60 / 0x61): zone temperatures and damper positions. When you are **not** emulating the zone controller, InfinitESP passively snoops the thermostat↔zone-controller traffic to report damper positions and drive per-zone climate conditioning state. (When you *are* emulating it, the same data is captured directly through the emulation path.)
 
 No extra polling needed. The thermostat already queries these devices, and InfinitESP just listens in.
 

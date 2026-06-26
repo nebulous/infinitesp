@@ -126,10 +126,15 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
-  // ODU IEEE754 float32 values from register 061f, always native °F. Convert to °C.
+  // ODU IEEE754 float32 values from register 061f. Native °F for idx 1..5,
+  // but 1..5 are DELTAS (superheat/subcooling ΔT), so convert ΔF→ΔC (×5/9,
+  // no -32 offset). idx 6 is dimensionless, passed through.
   // Layout via accessor odu_float_(idx): idx 1..6 at offset 1+(idx-1)*4.
   //   1: superheat target  2: superheat actual  3: subcooling target
-  //   4: subcooling actual 5: discharge superheat (all °F deltas)
+  //   4: subcooling actual 5: discharge-related control delta (NOT discharge superheat -
+  //      refuted: it goes negative ~75% while running, impossible for superheat).
+  //      Likely a discharge-temp/superheat control deviation incorporating head
+  //      pressure. Exact identity unconfirmed. See Infinitude OutdoorUnit.pm 061F.
   //   6: dimensionless constant
   if (register_key == REG_ODU_FLOATS && sensor_type_.rfind("odu_float_", 0) == 0) {
     auto *data = parent_->get_register(device_addr, REG_ODU_FLOATS);
@@ -139,7 +144,7 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
         float fval = parent_->odu_float_(*data, idx);
         if (!std::isnan(fval)) {
           if (idx <= 5)
-            value = (fval - 32.0f) * (5.0f / 9.0f);  // °F → °C
+            value = fval * (5.0f / 9.0f);  // °F delta → °C delta (superheat/subcooling are ΔT, not absolute)
           else
             value = fval;  // float 6 is dimensionless
         }
@@ -193,16 +198,41 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
-  // --- ZC zone temperatures (register 0302, ZC device address 0x60) ---
-  // Per-zone: [tag, id, value_hi, value_lo] where °F = uint16_BE / 16
-  if (register_key == REG_ZC_ZONE_STATUS && sensor_type_ == "zc_zone_temperature") {
-    auto *data = parent_->get_register(device_addr, REG_ZC_ZONE_STATUS);
-    if (data && data->size() == 24 && zone_ >= 2 && zone_ <= 4) {
-      uint8_t off_hi = 4 + (zone_ - 2) * 4 + 2;
-      uint8_t off_lo = off_hi + 1;
-      uint16_t raw = ((uint16_t) data->at(off_hi) << 8) | data->at(off_lo);
-      float temp_f = (float) raw / ZC_TEMP_SCALE;
-      value = (temp_f - 32.0f) * (5.0f / 9.0f);  // °F → °C for HA
+  // --- ZC register 0302 (REG_ZC_ZONE_STATUS) ---
+  // 24-byte TLV: six entries [tag, id, val_hi, val_lo] in id order
+  //   0x01 local-z1, 0x02 z2, 0x03 z3, 0x04 z4, 0x14 LAT, 0x1C HPT.
+  // tag 0x01 = present (value valid); 0x04 = not installed (0x0000).
+  // °F = uint16_BE / 16. Multi-ZC: system zone N maps to controller
+  // zc_addr_for_zone_(N) and LOCAL id zc_local_id_for_zone_(N) (zones 5-8 are
+  // local 1-4 on the secondary controller 0x61). LAT/HPT are thermistor ports
+  // on the primary controller (0x60). Only react to the controller that owns
+  // the wanted entry, and skip entries whose tag isn't present to avoid
+  // publishing 0°F → -17.8°C for uninstalled sensors.
+  if (register_key == REG_ZC_ZONE_STATUS) {
+    uint8_t want_id = 0;
+    uint8_t want_addr = 0;
+    if (sensor_type_ == "zc_zone_temperature") {
+      want_id = parent_->zc_local_id_for_zone_(zone_);
+      want_addr = parent_->zc_addr_for_zone_(zone_);
+    } else if (sensor_type_ == "zc_lat") {
+      want_id = ZC_ID_LAT;      // 0x14
+      want_addr = parent_->zc_addr_for_zone_(1);  // primary controller
+    } else if (sensor_type_ == "zc_hpt") {
+      want_id = ZC_ID_HPT;      // 0x1C
+      want_addr = parent_->zc_addr_for_zone_(1);  // primary controller
+    }
+    if (want_id != 0 && device_addr == want_addr) {
+      auto *data = parent_->get_register(device_addr, REG_ZC_ZONE_STATUS);
+      if (data && data->size() == 24) {
+        for (uint8_t e = 0; e + 3 < 24; e += 4) {
+          if (data->at(e + 1) == want_id && data->at(e) == ZC_0302_TAG_PRESENT) {
+            uint16_t raw = ((uint16_t) data->at(e + 2) << 8) | data->at(e + 3);
+            float temp_f = (float) raw / ZC_TEMP_SCALE;
+            value = (temp_f - 32.0f) * (5.0f / 9.0f);  // °F → °C for HA
+            break;
+          }
+        }
+      }
     }
   }
 

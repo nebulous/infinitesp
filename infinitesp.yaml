@@ -176,6 +176,22 @@ infinitesp:
   # flow_control_pin: GPIO13   # RS485 DE/RE control (needed for some transceivers)
   # status_light_id: rgb_led  # Status LED reference (see light: section below)
 
+  # Feed external ESPHome sensors into the emulated ZC's register 0302. Zone
+  # temps use zc_zone_2/3/4 (primary controller 0x60; stale → fall back to
+  # zone-1 ambient) or zc_zone_5-8 (secondary controller 0x61, for systems
+  # commissioned with more than four zones). The LAT/HPT thermistor ports
+  # (zc_lat / zc_hpt) report the fed value while fresh and revert to
+  # not-installed when the sensor goes stale — there is no ambient fallback
+  # for supply-air temp. Only meaningful when emulating the ZC.
+  # Requires an external sensor reporting °F or °C; set sensor_unit to match.
+  # zc_lat:
+  #   temperature_sensor: my_lat_sensor
+  #   sensor_unit: F
+  #   staleness_timeout: 120
+  # zc_hpt:
+  #   temperature_sensor: my_hpt_sensor
+  #   sensor_unit: F
+
 # ──────────────────────────────────────────────
 # Climate zones
 # ──────────────────────────────────────────────
@@ -202,7 +218,7 @@ climate:
 # a real physical zone controller already on the bus. Either way the cover and
 # the per-zone climate heating/cooling action reflect real damper state. With
 # no ZC of any kind these covers never publish (unknown).
-# Add one entry per active zone (1–4). Without an on_change trigger the cover
+# Add one entry per active zone (1–8). Without an on_change trigger the cover
 # is read-only.
 # ──────────────────────────────────────────────
 
@@ -258,6 +274,18 @@ sensor:
     infinitesp_id: infinitesp_hub
     name: "Outdoor Temperature"
     type: outdoor_temperature
+
+  # Zone board thermistor ports (register 0302, ids 0x14/0x1C). Only populated
+  # by a real Zone Controller with LAT/HPT thermistors wired; disabled by
+  # default — enable in Home Assistant if your board reports them.
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Leaving Air Temperature"
+    type: zc_lat
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "HPT Temperature"
+    type: zc_hpt
 
   # Indoor unit diagnostics (passively snooped from bus traffic)
   - platform: infinitesp
