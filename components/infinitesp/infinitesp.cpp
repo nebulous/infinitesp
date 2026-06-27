@@ -1485,6 +1485,11 @@ void InfinitESPComponent::initialize_defaults_() {
   // (0x60, system zones 1-4) and a secondary at zc_address_+1 (0x61, zones 5-8),
   // matching a real two-controller Carrier damper system (issue #9). Each is a
   // full SYSTXCC4ZC01 with a distinct serial. Based on SYSTXCC4ZC01 captures.
+  //
+  // The secondary (0x61) is only emulated when a zone >4 has a temperature
+  // sensor wired (zc_secondary_enabled_()). An empty 0x61 would still answer
+  // the thermostat's 3405 presence probe and get commissioned, forcing an
+  // 8-zone install even when the system only has zones 1-4 active.
   if (zc_enabled()) {
     auto seed_zc = [this](uint8_t zc_addr, const char *serial) {
       auto pad_str_zc = [](std::vector<uint8_t> &buf, const char *str, size_t width) {
@@ -1579,7 +1584,13 @@ void InfinitESPComponent::initialize_defaults_() {
                device_registers_[zc_addr].size(), zc_addr);
     };
     seed_zc(zc_address_, "1726ESP32ZC01");       // 0x60 — system zones 1-4
-    seed_zc((uint8_t) (zc_address_ + 1), "1726ESP32ZC02");  // 0x61 — system zones 5-8
+    // Secondary 0x61 only when a zone >4 is configured; otherwise it would be
+    // discovered and commission zones 5-8 that have no sensors.
+    if (zc_secondary_enabled_())
+      seed_zc((uint8_t) (zc_address_ + 1), "1726ESP32ZC02");  // 0x61 — system zones 5-8
+    else
+      ESP_LOGI("InfinitESP", "No zones >4 configured — secondary ZC at 0x%02X not emulated",
+               (uint8_t) (zc_address_ + 1));
   }
 }
 

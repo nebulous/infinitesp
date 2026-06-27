@@ -288,9 +288,24 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint8_t zc_byte_for_zone_(uint8_t zone) const {
     return (zone >= 1 ? zone - 1 : 0) % 4;
   }
-  // True if addr is one of our emulated ZC addresses (primary 0x60 or secondary 0x61).
+  // True if addr is one of our emulated ZC addresses (primary 0x60, and
+  // secondary 0x61 only when a zone >4 is configured with a sensor).
   bool is_emu_zc_addr_(uint8_t addr) const {
-    return zc_enabled() && (addr == zc_address_ || addr == (uint8_t)(zc_address_ + 1));
+    if (!zc_enabled())
+      return false;
+    if (addr == zc_address_)
+      return true;
+    return addr == (uint8_t)(zc_address_ + 1) && zc_secondary_enabled_();
+  }
+  // Secondary ZC (0x61, zones 5-8) is only emulated when at least one of those
+  // zones has a temperature_sensor wired. Emulating an empty 0x61 would cause
+  // the thermostat to commission zones 5-8 during discovery even though no
+  // zones live there.
+  bool zc_secondary_enabled_() const {
+    for (uint8_t z = 5; z <= 8; z++)
+      if (zc_zones_[z].temp_sensor != nullptr)
+        return true;
+    return false;
   }
 
   // True if this zone's damper is open (zone is receiving conditioned air).
