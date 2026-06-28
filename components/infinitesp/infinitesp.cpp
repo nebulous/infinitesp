@@ -572,12 +572,7 @@ void InfinitESPComponent::handle_passive_frame_() {
         uint8_t zc_dst = current_frame_.dst;  // 0x60 or 0x61
         store_register_(zc_dst, REG_ZC_DAMPER_CMD, damper);
         // Mirror damper positions to 0319 (matches emulation behavior)
-        std::vector<uint8_t> state_0319(8);
-        for (uint8_t i = 0; i < 4 && i < damper.size(); i++)
-          state_0319[i] = damper[i];
-        for (uint8_t i = 4; i < 8; i++)
-          state_0319[i] = 0xFF;
-        store_register_(zc_dst, REG_ZC_ZONE_CONFIG, state_0319);
+        mirror_damper_to_0319_(zc_dst, damper);
         ESP_LOGD("InfinitESP", "ZC %02X damper (passive): %02X %02X %02X %02X",
                  zc_dst,
                  damper.size() > 0 ? damper[0] : 0, damper.size() > 1 ? damper[1] : 0,
@@ -757,12 +752,7 @@ void InfinitESPComponent::handle_write_request_() {
         store_register_(dest, REG_ZC_DAMPER_CMD, damper);
 
         // Mirror damper positions to 0319 (no delay)
-        std::vector<uint8_t> state_0319(8);
-        for (uint8_t i = 0; i < 4 && i < damper.size(); i++)
-          state_0319[i] = damper[i];
-        for (uint8_t i = 4; i < 8; i++)
-          state_0319[i] = 0xFF;
-        store_register_(dest, REG_ZC_ZONE_CONFIG, state_0319);
+        mirror_damper_to_0319_(dest, damper);
 
         ESP_LOGD("InfinitESP", "ZC damper: %02X %02X %02X %02X -> 0319 mirrored",
                  damper.size() > 0 ? damper[0] : 0, damper.size() > 1 ? damper[1] : 0,
@@ -1123,6 +1113,18 @@ void InfinitESPComponent::mirror_to_sam_(uint16_t reg_key, const std::vector<uin
     sam_state_received_ = true;
 }
 
+void InfinitESPComponent::mirror_damper_to_0319_(uint8_t addr, const std::vector<uint8_t> &damper) {
+  // 0308 carries 4 damper bytes; 0319 mirrors them into an 8-byte state field
+  // (bytes 0-3 = positions, bytes 4-7 = 0xFF). Shared by the emulated-ZC write
+  // path (handle_write_request_) and the passive physical-ZC capture.
+  std::vector<uint8_t> state_0319(8);
+  for (uint8_t i = 0; i < 4 && i < damper.size(); i++)
+    state_0319[i] = damper[i];
+  for (uint8_t i = 4; i < 8; i++)
+    state_0319[i] = 0xFF;
+  store_register_(addr, REG_ZC_ZONE_CONFIG, state_0319);
+}
+
 void InfinitESPComponent::poll_register(uint8_t table, uint8_t row) {
   uint16_t reg_key = (table << 8) | row;
   ESP_LOGI("InfinitESP", "Manual poll: register %02X%02X", table, row);
@@ -1260,20 +1262,14 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
   uint8_t clsp_raw = (*comfort)[base + 1];
   uint8_t fan = (*comfort)[base + 2];
 
-  // Comfort profiles use different encoding than 3B03 setpoints:
-  //   °F mode: comfort bytes = whole °F (same as setpoints, no conversion needed)
-  //   °C mode: comfort bytes = half-degrees (byte/2=°C), setpoints = whole °C
-  // So in °C mode we must convert: comfort_half_degrees → °C → setpoint_whole_°C
-  uint8_t htsp_bus, clsp_bus;
-  if (bus_uses_celsius()) {
-    float ht_c = (float) htsp_raw / 2.0f;
-    float cl_c = (float) clsp_raw / 2.0f;
-    htsp_bus = (uint8_t) roundf(ht_c);
-    clsp_bus = (uint8_t) roundf(cl_c);
-  } else {
-    htsp_bus = htsp_raw;
-    clsp_bus = clsp_raw;
-  }
+  // Convert comfort bytes to the 3B03 setpoint encoding via the shared helpers
+  // (comfort_byte_to_celsius → celsius_to_setpoint) — single source of truth for
+  // the comfort→setpoint transform. Byte-identical to the previous inline branch.
+  // NOTE: comfort_byte_to_celsius() is itself tracked as buggy in °C mode (ROADMAP
+  // bug #1: 400A is always °F, not C*2); routing through it here means a future
+  // fix to that helper propagates to apply_activity too.
+  uint8_t htsp_bus = celsius_to_setpoint(comfort_byte_to_celsius(htsp_raw));
+  uint8_t clsp_bus = celsius_to_setpoint(comfort_byte_to_celsius(clsp_raw));
 
   const char *names[] = {"home", "away", "sleep", "wake", "manual"};
   ESP_LOGI("InfinitESP", "Apply activity %s to zone %d: heat=%d->%d cool=%d->%d fan=%d hold=%d min (%s)",
@@ -1360,16 +1356,20 @@ void InfinitESPComponent::set_system_mode(uint8_t mode) {
 
 // --- Default Register Initialization ---
 
+// Pad/zero-fill a fixed-width ASCII field into a register buffer. Carrier's
+// register layout uses NUL (0x00) padding (not spaces) after the string.
+// File-local; shared by the SAM and ZC device-info seeds in initialize_defaults_().
+static void pad_str(std::vector<uint8_t> &buf, const char *str, size_t width) {
+  size_t slen = strlen(str);
+  for (size_t i = 0; i < width; i++)
+    buf.push_back(i < slen ? (uint8_t) str[i] : 0x00);
+}
+
 void InfinitESPComponent::initialize_defaults_() {
   // --- SAM registers ---
   if (sam_enabled()) {
     // Register 0104 - Device info (120 bytes)
     {
-      auto pad_str = [](std::vector<uint8_t> &buf, const char *str, size_t width) {
-        size_t slen = strlen(str);
-        for (size_t i = 0; i < width; i++)
-        buf.push_back(i < slen ? (uint8_t) str[i] : 0x00);
-      };
       std::vector<uint8_t> data;
       data.reserve(120);
       pad_str(data, "SYSTEM ACCESS MODULE", 24);    // device
@@ -1377,7 +1377,7 @@ void InfinitESPComponent::initialize_defaults_() {
       pad_str(data, __DATE__, 16);                  // software (auto build date)
       pad_str(data, "InfinitESP--SAM", 20);         // model
       pad_str(data, "", 12);                        // reference
-      pad_str(data, "1726ESP32SAM01", 24);              // serial (week 17, 2026 = InfinitESP first working climate)
+      pad_str(data, "1726ESP32SAM01", 24);          // serial (week 17, 2026 = InfinitESP first working climate)
       store_register_(sam_address_, REG_DEVICE_INFO, data);
     }
 
@@ -1492,22 +1492,16 @@ void InfinitESPComponent::initialize_defaults_() {
   // 8-zone install even when the system only has zones 1-4 active.
   if (zc_enabled()) {
     auto seed_zc = [this](uint8_t zc_addr, const char *serial) {
-      auto pad_str_zc = [](std::vector<uint8_t> &buf, const char *str, size_t width) {
-        size_t slen = strlen(str);
-        for (size_t i = 0; i < width; i++)
-          buf.push_back(i < slen ? (uint8_t) str[i] : 0x00);
-      };
-
       // Register 0104 - Device info (120 bytes)
       {
         std::vector<uint8_t> data;
         data.reserve(120);
-        pad_str_zc(data, "INFINITESP ZONE CTRL", 24);  // device
-        pad_str_zc(data, "", 24);                       // location
-        pad_str_zc(data, __DATE__, 16);                 // software
-        pad_str_zc(data, "SYSTXCC4ZC01", 20);           // model (real model so thermostat recognizes it)
-        pad_str_zc(data, "INFD-ZC-01", 12);              // reference
-        pad_str_zc(data, serial, 24);                    // serial (week 17, 2026; unique per controller)
+        pad_str(data, "INFINITESP ZONE CTRL", 24);  // device
+        pad_str(data, "", 24);                       // location
+        pad_str(data, __DATE__, 16);                 // software
+        pad_str(data, "SYSTXCC4ZC01", 20);           // model (real model so thermostat recognizes it)
+        pad_str(data, "INFD-ZC-01", 12);              // reference
+        pad_str(data, serial, 24);                    // serial (week 17, 2026; unique per controller)
         store_register_(zc_addr, REG_DEVICE_INFO, data);
       }
 

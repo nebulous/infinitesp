@@ -303,9 +303,6 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
           new_cool = pending_cool_;
       } else {
         pending_active_ = false;  // window expired or thermostat confirmed
-        // If thermostat adopted our values, clear pending naturally
-        if (pending_active_ && new_heat == pending_heat_ && new_cool == pending_cool_)
-          pending_active_ = false;
       }
 
       // Track whether cached setpoints changed (for publish gating)

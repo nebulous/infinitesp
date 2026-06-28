@@ -564,6 +564,10 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // Write a ZC 0302 TLV entry by id: tag (0x01 present / 0x04 not-installed) and
   // uint16-BE value (temp_f * 16). Idempotent; stores + notifies on change.
   void write_zc_temp_entry_(uint8_t zc_addr, uint8_t tlv_id, float temp_f, bool present);
+  // Mirror a 4-byte damper command (0308) into the 8-byte 0319 state register:
+  // bytes 0-3 = damper positions, bytes 4-7 = 0xFF. Shared by the emulated-ZC
+  // write path and the passive physical-ZC capture.
+  void mirror_damper_to_0319_(uint8_t addr, const std::vector<uint8_t> &damper);
 
   // Bus traffic capture for diagnostics / protocol reverse engineering
   struct TrafficEntry {

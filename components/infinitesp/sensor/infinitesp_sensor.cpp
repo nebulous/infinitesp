@@ -155,46 +155,24 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
   // ODU register 0302: int16 BE / 16, always native °F. Convert to °C.
   // Field idx via accessor odu_status1_meas_f_(idx): 0=outdoor 1=coil 2=suction
   // 3=subcooling(ΔT) 4=indoor_amb 5=discharge. idx 3 is a delta (no -32).
-  if (register_key == REG_ODU_STATUS1 && sensor_type_ == "odu_outdoor_temp") {
-    auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);
-    if (data) {
-      float f = parent_->odu_status1_meas_f_(*data, 0);
-      if (!std::isnan(f)) value = (f - 32.0f) * (5.0f / 9.0f);
-    }
-  }
-  if (register_key == REG_ODU_STATUS1 && sensor_type_ == "odu_coil_temp") {
-    auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);
-    if (data) {
-      float f = parent_->odu_status1_meas_f_(*data, 1);
-      if (!std::isnan(f)) value = (f - 32.0f) * (5.0f / 9.0f);
-    }
-  }
-  if (register_key == REG_ODU_STATUS1 && sensor_type_ == "odu_suction_temp") {
-    auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);
-    if (data) {
-      float f = parent_->odu_status1_meas_f_(*data, 2);
-      if (!std::isnan(f)) value = (f - 32.0f) * (5.0f / 9.0f);
-    }
-  }
-  if (register_key == REG_ODU_STATUS1 && sensor_type_ == "odu_subcooling_degf_int") {
-    auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);
-    if (data) {
-      float f = parent_->odu_status1_meas_f_(*data, 3);  // delta °F
-      if (!std::isnan(f)) value = f * (5.0f / 9.0f);  // delta °F → delta °C
-    }
-  }
-  if (register_key == REG_ODU_STATUS1 && sensor_type_ == "odu_indoor_ambient") {
-    auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);
-    if (data) {
-      float f = parent_->odu_status1_meas_f_(*data, 4);
-      if (!std::isnan(f)) value = (f - 32.0f) * (5.0f / 9.0f);
-    }
-  }
-  if (register_key == REG_ODU_STATUS1 && sensor_type_ == "odu_discharge_temp") {
-    auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);
-    if (data) {
-      float f = parent_->odu_status1_meas_f_(*data, 5);
-      if (!std::isnan(f)) value = (f - 32.0f) * (5.0f / 9.0f);
+  if (register_key == REG_ODU_STATUS1) {
+    struct Field { const char *suffix; uint8_t idx; bool delta; };
+    static const Field fields[] = {
+        {"odu_outdoor_temp", 0, false}, {"odu_coil_temp", 1, false},
+        {"odu_suction_temp", 2, false}, {"odu_subcooling_degf_int", 3, true},
+        {"odu_indoor_ambient", 4, false}, {"odu_discharge_temp", 5, false},
+    };
+    for (const auto &fld : fields) {
+      if (sensor_type_ != fld.suffix)
+        continue;
+      auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);
+      if (data) {
+        float f = parent_->odu_status1_meas_f_(*data, fld.idx);
+        if (!std::isnan(f))
+          value = fld.delta ? (f * (5.0f / 9.0f))            // ΔF → ΔC
+                            : ((f - 32.0f) * (5.0f / 9.0f));  // °F → °C
+      }
+      break;  // at most one suffix matches
     }
   }
 

@@ -38,7 +38,7 @@ class InfinitESPClimate : public climate::Climate, public InfinitESPEntity {
 
  protected:
   float current_temp_{NAN};
-  uint8_t current_action_{0};
+  climate::ClimateAction current_action_{climate::CLIMATE_ACTION_OFF};
   uint8_t last_stage_{0};   // last stage nibble from 3B02 stagmode
   uint8_t last_mode_{0};    // last mode nibble from 3B02 stagmode (direction when stage>0)
   uint8_t heat_sp_{68};
