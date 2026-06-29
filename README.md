@@ -460,11 +460,35 @@ text_sensor:
 
 ## SAM ASCII Interface
 
-InfinitESP provides a command-line interface over TCP port 23 for live bus inspection and control. Connect with any telnet client:
+InfinitESP implements the Carrier SAM ASCII serial protocol — the same text command/response interface a real SYSTXCCSAM01 exposes on its DB-9 RS-232 port (9600 8N1, CRLF). The `sam_ascii` component is a plain ESPHome `UARTDevice`: it speaks the protocol over whatever `uart_id` you bind it to and has no transport of its own. The command set works the same way regardless of transport.
 
-```
+**Over the network (the default in the example config).** The bundled config binds `sam_ascii` to a `uart_tcp_server` on port 23, so you can drive it with any telnet client:
+
+```bash
 nc infinitesp.local 23
 ```
+
+**Over a real RS-232 port (a true SAM replacement).** Point `sam_ascii` at a second hardware UART wired to an RS-232 transceiver and it behaves like the physical SAM's serial port — useful for replacing a faulty module or feeding a legacy automation controller that expects a SAM:
+
+```yaml
+uart:
+  - id: bus_uart       # ABCD RS485 bus (38400)
+    # ... RS485 pins ...
+    baud_rate: 38400
+  - id: ascii_uart     # SAM RS-232 port (9600 8N1)
+    tx_pin: GPIO4
+    rx_pin: GPIO5
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+
+sam_ascii:
+  infinitesp_id: infinitesp_hub
+  uart_id: ascii_uart
+```
+
+The rest of this section shows the commands; they work identically over either transport.
 
 ### Read Commands
 
@@ -614,7 +638,7 @@ esphome logs infinitesp.yaml --device infinitesp.local
 
 30 seconds of output is usually plenty. The `STATS` line printed every 5 seconds contains bus health diagnostics (`crc_fail`, `reply_exp`, `reply_got`, etc.).
 
-**The REPORT? command** provides a quick bus snapshot and often eliminates the need for full logs. If you can reach the device over the network, connect to the SAM ASCII interface on TCP port 23 and run `REPORT?`. For example:
+**The REPORT? command** provides a quick bus snapshot and often eliminates the need for full logs. If you can reach the device over the network, connect to the SAM ASCII interface (TCP port 23 in the default config) and run `REPORT?`. For example:
 
 ```bash
 nc infinitesp.local 23
@@ -645,7 +669,7 @@ components/
 │   ├── binary_sensor/       # Bus status, compressor, electric heat
 │   ├── select/              # System mode, fan mode selects
 │   └── text_sensor/         # Zone names, WiFi info, dealer info, profiles
-└── sam_ascii/               # TCP port 23 command interface (REPORT?, setpoints, etc.)
+└── sam_ascii/               # SAM ASCII serial CLI (REPORT?, setpoints, etc.)
 #
 # Transport components (uart_tcp_client, usb_cdc_acm, uart_tcp_server,
 # uart_bridge) come from esphome-uart-link, pulled in via external_components.
