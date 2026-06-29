@@ -62,11 +62,22 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
   }
 
   // ODU (Outdoor Unit) passively snooped registers
-  // Compressor RPM from register 0604 (first uint16 BE pair = current speed)
+  // Compressor RPM from register 0604. Two uint16 BE pairs per stage:
+  //   target (commanded) at [0..1], actual (measured) at [2..3].
+  // See Infinitude OutdoorUnit.pm 0604 (target_rpm / current_rpm — Infinitude
+  // uses 'current' here but 'actual' elsewhere; InfinitESP unifies on 'actual').
+  if (register_key == REG_ODU_COMP_SPEED && sensor_type_ == "target_compressor_rpm") {
+    auto *data = parent_->get_register(device_addr, REG_ODU_COMP_SPEED);
+    if (data) {
+      float rpm = parent_->odu_compressor_target_rpm_(*data);
+      if (!std::isnan(rpm))
+        value = rpm;
+    }
+  }
   if (register_key == REG_ODU_COMP_SPEED && sensor_type_ == "compressor_rpm") {
     auto *data = parent_->get_register(device_addr, REG_ODU_COMP_SPEED);
     if (data) {
-      float rpm = parent_->odu_compressor_rpm_(*data);
+      float rpm = parent_->odu_compressor_actual_rpm_(*data);
       if (!std::isnan(rpm))
         value = rpm;
     }

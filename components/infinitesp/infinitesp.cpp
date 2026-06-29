@@ -488,10 +488,11 @@ void InfinitESPComponent::handle_passive_frame_() {
                  data.size() > 2 ? data[2] : 0, data.size() > 3 ? data[3] : 0);
       }
       if (src_class == 5 && reg_key == REG_ODU_COMP_SPEED) {
-        float comp_rpm = odu_compressor_rpm_(data);
-        if (!std::isnan(comp_rpm))
-          ESP_LOGD("InfinitESP", "ODU 0604: compressor_rpm=%u (%u bytes)",
-                   (unsigned) comp_rpm, data.size());
+        float target = odu_compressor_target_rpm_(data);
+        float actual = odu_compressor_actual_rpm_(data);
+        if (!std::isnan(target) && !std::isnan(actual))
+          ESP_LOGD("InfinitESP", "ODU 0604: target_rpm=%u actual_rpm=%u (%u bytes)",
+                   (unsigned) target, (unsigned) actual, data.size());
       }
       if (src_class == 5 && reg_key == REG_ODU_DEMAND && data.size() >= 7) {
         ESP_LOGD("InfinitESP", "ODU 0608: compressor_frequency=%.1f Hz raw=[%02X %02X %02X %02X %02X %02X %02X]",

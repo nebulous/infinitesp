@@ -18,12 +18,13 @@ void InfinitESPBinarySensor::on_register_update(uint8_t device_addr, uint16_t re
       publish_state(parent_->idu_electric_heat_(*data));
   }
 
-  // Compressor running: from ODU register 0604 (passive snoop)
-  // First uint16 BE pair = current compressor RPM; non-zero means running
+  // Compressor running: from ODU register 0604 (passive snoop).
+  // Uses actual (measured) RPM [2..3], not the commanded target —
+  // non-zero means the compressor is actually spinning.
   if (sensor_type_ == "compressor_running" && register_key == REG_ODU_COMP_SPEED) {
     auto *data = parent_->get_register(device_addr, REG_ODU_COMP_SPEED);
     if (data) {
-      float rpm = parent_->odu_compressor_rpm_(*data);
+      float rpm = parent_->odu_compressor_actual_rpm_(*data);
       if (!std::isnan(rpm))
         publish_state(rpm != 0);
     }

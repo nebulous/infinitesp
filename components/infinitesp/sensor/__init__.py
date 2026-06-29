@@ -19,7 +19,11 @@ SENSOR_TYPES = {
     "blower_rpm": {"key": "blower_rpm", "unit": "RPM", "bus_class": 4},
     "airflow_cfm": {"key": "airflow_cfm", "unit": "CFM", "bus_class": 4},
     # ODU sensors — device class 5
+    # bare = actual (measured) RPM [2..3] (the original `compressor_rpm` read
+    # [0..1] = target; re-pointed to actual). target_compressor_rpm [0..1] is
+    # additive. Infinitude OutdoorUnit.pm 0604: target_rpm / current_rpm.
     "compressor_rpm": {"key": "compressor_rpm", "unit": "RPM", "bus_class": 5},
+    "target_compressor_rpm": {"key": "target_compressor_rpm", "unit": "RPM", "bus_class": 5},
     "compressor_frequency": {"key": "compressor_frequency", "unit": "Hz", "bus_class": 5},
     "odu_commanded_stage": {"key": "odu_commanded_stage", "unit": "", "bus_class": 5},
     "odu_stage": {"key": "odu_stage", "unit": "", "bus_class": 5},

@@ -192,7 +192,7 @@ static const uint16_t REG_ODU_CYCLES = 0x0310;     // Cycle counters (4-byte key
 static const uint16_t REG_ODU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-value entries)
 //
 // Table 0x06 VAR COMP:
-static const uint16_t REG_ODU_COMP_SPEED = 0x0604;  // Compressor speed (uint16 pairs, first = current RPM)
+static const uint16_t REG_ODU_COMP_SPEED = 0x0604;  // Compressor speed: target RPM [0..1], current RPM [2..3] (per stage)
 static const uint16_t REG_ODU_DEMAND = 0x0608;     // Compressor drive: frequency uint16 at [5..6] (0.1 Hz)
 static const uint16_t REG_ODU_CMD_STAGE = 0x0605;  // Commanded compressor stage (float32 at [0..3]: 0.0/1.0..5.0)
 static const uint16_t REG_ODU_STAGE_INFO = 0x060E;  // Actual stage index (byte 0: 0=off, 1..5=stage)
@@ -468,10 +468,22 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   static bool idu_electric_heat_(const std::vector<uint8_t> &data) {
     return !data.empty() && (data[0] & 0x03) != 0;
   }
-  // ODU register 0604 (REG_ODU_COMP_SPEED): current compressor RPM, u16 BE at [0..1]
-  static float odu_compressor_rpm_(const std::vector<uint8_t> &data) {
+  // ODU register 0604 (REG_ODU_COMP_SPEED): two uint16 BE pairs per stage.
+  //   [0..1] = target (commanded) RPM  — holds round rated stage speeds
+  //            {0,1500,1700,2460,2800,3650}
+  //   [2..3] = actual (measured) RPM — fluctuates around target
+  //            (~3·drive_hz with slip)
+  // Verified via 0604-vs-060e stage crosstab and the v=0x0484 frame where
+  // actual(3640) != target(2800). See DEVLOG 2026-06-21 and Infinitude
+  // OutdoorUnit.pm 0604 (target_rpm / current_rpm — Infinitude uses 'current'
+  // here but 'actual' elsewhere; InfinitESP unifies on 'actual').
+  static float odu_compressor_target_rpm_(const std::vector<uint8_t> &data) {
     if (data.size() < 2) return NAN;
     return (float) (((uint16_t) data[0] << 8) | data[1]);
+  }
+  static float odu_compressor_actual_rpm_(const std::vector<uint8_t> &data) {
+    if (data.size() < 4) return NAN;
+    return (float) (((uint16_t) data[2] << 8) | data[3]);
   }
   // ODU register 0608 (REG_ODU_DEMAND): compressor drive frequency, u16 BE at [5..6], 0.1 Hz
   // Scale confirmed for stages 1-4 against Carrier rated RPM (4-pole motor, sync rpm = 3*v);

@@ -314,7 +314,13 @@ sensor:
     icon: "mdi:air-filter"
     entity_category: diagnostic
 
-  # Outdoor unit - compressor (passively snooped)
+  # Outdoor unit - compressor, passively snooped (target=commanded, actual=measured)
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Target Compressor RPM"
+    type: target_compressor_rpm
+    icon: "mdi:engine"
+    entity_category: diagnostic
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Compressor RPM"

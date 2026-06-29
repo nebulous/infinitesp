@@ -385,7 +385,8 @@ sensor:
     type: blower_rpm
 
   # All diagnostic sensor types:
-  #   blower_rpm, airflow_cfm, compressor_rpm
+  #   blower_rpm, airflow_cfm, compressor_rpm (actual), target_compressor_rpm
+  #   (`compressor_rpm` = measured RPM [2..3]; `target_compressor_rpm` = commanded [0..1].)
   #   compressor_frequency, odu_commanded_stage, odu_stage, odu_mode, odu_line_voltage
   #   odu_outdoor_temp, odu_coil_temp, odu_suction_temp,
   #   odu_subcooling_degf_int, odu_indoor_ambient, odu_discharge_temp
