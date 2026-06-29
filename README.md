@@ -14,7 +14,7 @@ InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address 
 |---|---|
 | **Climate** | Per-zone thermostat with heat/cool/auto/off modes, dual heat+cool setpoints, fan control, and preset support (per schedule, home, away, sleep, wake, hold timer, hold indefinitely) |
 | **Covers** | Per-zone damper position (0–100%) from the zone controller(either an emulated or a real physical zone controller) |
-| **Sensors** | Zone temperature, zone humidity, outdoor air temp, blower RPM, airflow CFM, compressor RPM, ODU demand/stage/modulation, superheat/subcooling targets & actuals, ODU temperatures (outdoor/coil/suction/subcooling/discharge), vacation min/max temps |
+| **Sensors** | Zone temperature, zone humidity, outdoor air temp, blower RPM, airflow CFM, compressor RPM, ODU demand/stage/modulation, expansion valve position, superheat/subcooling targets & actuals, ODU temperatures (outdoor/coil/suction/subcooling/discharge), vacation min/max temps |
 | **Binary Sensors** | Bus online/offline status, compressor running, electric heat active |
 | **Selects** | System mode (heat/cool/auto/off/emergency heat), per-zone fan speed (auto/low/med/high) |
 | **Text Sensors** | Zone names, hold state, thermostat WiFi SSID/hostname/MAC, proxy server, dealer info, comfort profile dump |
@@ -387,7 +387,7 @@ sensor:
   # All diagnostic sensor types:
   #   blower_rpm, airflow_cfm, compressor_rpm (actual), target_compressor_rpm
   #   (`compressor_rpm` = measured RPM [2..3]; `target_compressor_rpm` = commanded [0..1].)
-  #   compressor_frequency, odu_commanded_stage, odu_stage, odu_mode, odu_line_voltage
+  #   compressor_frequency, odu_expansion_valve, odu_commanded_stage, odu_stage, odu_mode, odu_line_voltage
   #   odu_outdoor_temp, odu_coil_temp, odu_suction_temp,
   #   odu_subcooling_degf_int, odu_indoor_ambient, odu_discharge_temp
   #   odu_float_1 (superheat target), odu_float_2 (superheat actual),
@@ -572,7 +572,7 @@ Mode and setpoint changes use a two-pronged approach: a 3B03 notification write 
 In addition to SAM-register traffic, InfinitESP passively observes inter-device traffic on the bus to extract diagnostic data:
 
 - **Indoor unit** (0x40): blower RPM, airflow CFM, electric heat status
-- **Outdoor unit** (0x50): compressor RPM, demand %, operating stage, modulation, superheat/subcooling, outdoor/coil/suction/subcooling/discharge temperatures
+- **Outdoor unit** (0x50): compressor RPM, demand %, operating stage, modulation, expansion valve position, superheat/subcooling, outdoor/coil/suction/subcooling/discharge temperatures
 - **Zone controller** (0x60 / 0x61): zone temperatures and damper positions. When you are **not** emulating the zone controller, InfinitESP passively snoops the thermostat↔zone-controller traffic to report damper positions and drive per-zone climate conditioning state. (When you *are* emulating it, the same data is captured directly through the emulation path.)
 
 No extra polling needed. The thermostat already queries these devices, and InfinitESP just listens in.

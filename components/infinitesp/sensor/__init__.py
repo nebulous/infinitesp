@@ -25,6 +25,9 @@ SENSOR_TYPES = {
     "compressor_rpm": {"key": "compressor_rpm", "unit": "RPM", "bus_class": 5},
     "target_compressor_rpm": {"key": "target_compressor_rpm", "unit": "RPM", "bus_class": 5},
     "compressor_frequency": {"key": "compressor_frequency", "unit": "Hz", "bus_class": 5},
+    # ODU expansion valve position from register 0608 byte [2] (0-100 percent).
+    # Ramps over 10-15s on cycle transitions; reads 0 (off) or 100 (running) otherwise.
+    "odu_expansion_valve": {"key": "odu_expansion_valve", "unit": "%", "bus_class": 5},
     "odu_commanded_stage": {"key": "odu_commanded_stage", "unit": "", "bus_class": 5},
     "odu_stage": {"key": "odu_stage", "unit": "", "bus_class": 5},
     "odu_mode": {"key": "odu_operating_mode", "unit": "", "bus_class": 5},

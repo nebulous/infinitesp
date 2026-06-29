@@ -247,7 +247,7 @@ static const uint16_t REG_ODU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-
 //
 // Table 0x06 VAR COMP:
 static const uint16_t REG_ODU_COMP_SPEED = 0x0604;  // Compressor speed: target RPM [0..1], current RPM [2..3] (per stage)
-static const uint16_t REG_ODU_DEMAND = 0x0608;     // Compressor drive: frequency uint16 at [5..6] (0.1 Hz)
+static const uint16_t REG_ODU_DEMAND = 0x0608;     // Compressor drive: frequency uint16 at [5..6] (0.1 Hz), expansion valve % at [2]
 static const uint16_t REG_ODU_CMD_STAGE = 0x0605;  // Commanded compressor stage (float32 at [0..3]: 0.0/1.0..5.0)
 static const uint16_t REG_ODU_STAGE_INFO = 0x060E;  // Actual stage index (byte 0: 0=off, 1..5=stage)
 static const uint16_t REG_ODU_SETPOINT = 0x060B;   // Target value at byte[2], native °F (label TBD; not confirmed a cooling setpoint)
@@ -545,6 +545,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   static float odu_compressor_frequency_(const std::vector<uint8_t> &data) {
     if (data.size() < 7) return NAN;
     return (float) (((uint16_t) data[5] << 8) | data[6]) / 10.0f;
+  }
+  // ODU register 0608 (REG_ODU_DEMAND): expansion valve position at byte [2], 0-100 percent.
+  // Proven from bus captures: ramps through intermediate values (39-95%) over 10-15s on
+  // compressor start/stop transitions, settles at 100% while running and 0% while off.
+  // The full-stroke travel time rules out a boolean status flag or a fan/load percent.
+  // Discovered by feisley; confirmed across 8 transitions in the bus-logger archive.
+  static float odu_expansion_valve_(const std::vector<uint8_t> &data) {
+    return data.size() >= 3 ? (float) data[2] : NAN;
   }
   // ODU register 060e (REG_ODU_STAGE_INFO): variable-speed stage index at byte 0
   // {0=off, 1..5=stage}. Verified against rpm-derived stage; resolves the

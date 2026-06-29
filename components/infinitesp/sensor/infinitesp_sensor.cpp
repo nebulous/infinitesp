@@ -93,6 +93,17 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
+  // Expansion valve position from register 0608 byte [2] (0-100 percent).
+  // Expect 0 (off) or 100 (running) most of the time; brief ramps on cycle transitions.
+  if (register_key == REG_ODU_DEMAND && sensor_type_ == "odu_expansion_valve") {
+    auto *data = parent_->get_register(device_addr, REG_ODU_DEMAND);
+    if (data) {
+      float v = parent_->odu_expansion_valve_(*data);
+      if (!std::isnan(v))
+        value = v;
+    }
+  }
+
   // Variable-speed stage index from register 060e (byte 0: 0=off, 1..5=stage)
   if (register_key == REG_ODU_STAGE_INFO && sensor_type_ == "odu_stage") {
     auto *data = parent_->get_register(device_addr, REG_ODU_STAGE_INFO);

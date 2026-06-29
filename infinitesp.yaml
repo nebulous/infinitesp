@@ -335,6 +335,13 @@ sensor:
     entity_category: diagnostic
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
+    name: "ODU Expansion Valve"
+    type: odu_expansion_valve
+    accuracy_decimals: 0
+    icon: "mdi:valve"
+    entity_category: diagnostic
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
     name: "ODU Commanded Stage"
     type: odu_commanded_stage
     icon: "mdi:transmission-tower"
