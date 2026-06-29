@@ -1423,16 +1423,21 @@ void InfinitESPComponent::initialize_defaults_() {
     }
 
     // Register 3B04 - Vacation settings (11 bytes)
+    // Seed values follow Infinitude's current CarBus::SAM 3B04 guess (our own RE,
+    // not a Carrier source): byte 1 metric_units, min/max temp at 5/6, humidity
+    // at 7/8, fan at 9. Only byte 1 is live-confirmed; the field-to-offset
+    // mapping for the rest is unverified. The prior seed wrote min/max temp at
+    // 3/4 (an older guess) — this just brings the seed in line with the current
+    // guess so VACMINT/VACMAXT reads aren't obviously wrong.
     {
-      std::vector<uint8_t> data(11, 0);
-      data[0] = 0;    // active: off
-      data[1] = 0;    // hours low
-      data[2] = 0;    // hours high
-      data[3] = 60;   // min_temp: 60F
-      data[4] = 85;   // max_temp: 85F
-      data[5] = 0;    // min_humidity
-      data[6] = 100;  // max_humidity: 100%
-      data[7] = 0;    // fan_mode: auto
+      std::vector<uint8_t> data(REG3B04_SIZE, 0);
+      data[REG3B04_ACTIVE] = 0;         // vacation off
+      data[REG3B04_METRIC_UNITS] = 0;   // English (matches 3B06 default)
+      data[REG3B04_MIN_TEMP] = 60;      // °F
+      data[REG3B04_MAX_TEMP] = 85;      // °F
+      data[REG3B04_MIN_HUMIDITY] = 0;   // NONE
+      data[REG3B04_MAX_HUMIDITY] = 100; // NONE
+      data[REG3B04_FAN_MODE] = 0;       // auto
       store_register_(sam_address_, REG_SAM_VACATION, data);
     }
 
@@ -1451,21 +1456,28 @@ void InfinitESPComponent::initialize_defaults_() {
     }
 
     // Register 3B06 - Dealer info (52 bytes)
+    // Seed values follow Infinitude's current CarBus::SAM 3B06 guess (our own RE,
+    // not a Carrier source). Only the byte-1 metric_units flag is live-confirmed;
+    // the config fields (deadband/cph/periods/programs) and dealer_name/phone
+    // offsets are guesses. byte 7 was previously guessed 'temp_units' but is
+    // observed 0xFF on Touch (the F/C ASCII codes live only on the RS-232 port,
+    // not in this register). bus_uses_celsius() reads the runtime metric_units_
+    // member (set from the thermostat's 3B06 push), not this seed byte, so the
+    // seed here only affects the cached default register.
     {
-      std::vector<uint8_t> data(52, 0);
-      data[0] = 8;    // backlight
-      data[1] = 1;    // auto_mode
-      data[2] = 0;    // unknown1
-      data[3] = 3;    // deadband
-      data[4] = 4;    // cycles_per_hour
-      data[5] = 4;    // schedule_periods
-      data[6] = 1;    // programs_enabled
-      data[7] = 0x46; // temp_units: 'F'
-      data[8] = 0xFF; // unknown2
-      data[9] = 1;    // unknown_padding[0]
-      // dealer_name at offset 12: 20 bytes
-      strncpy(reinterpret_cast<char *>(&data[12]), "InfinitESP", 20);
-      // dealer_phone at offset 32: 20 bytes (all zeros)
+      std::vector<uint8_t> data(REG3B06_SIZE, 0);
+      data[REG3B06_BACKLIGHT] = 8;           // level 8
+      data[REG3B06_METRIC_UNITS] = 0;        // English (°F)
+      data[REG3B06_DEADBAND] = 3;
+      data[REG3B06_CYCLES_PER_HOUR] = 4;
+      data[REG3B06_SCHEDULE_PERIODS] = 4;
+      data[REG3B06_PROGRAMS_ENABLED] = 1;
+      data[7] = 0xFF;                        // unknown2 (Touch observes 0xFF)
+      data[8] = 0xFF;                        // unknown3
+      data[9] = 1;                           // programs_enabled_2
+      data[10] = 0;                          // metric_units mirror (English)
+      strncpy(reinterpret_cast<char *>(&data[REG3B06_DEALER_NAME]), "InfinitESP", 20);
+      // dealer_phone at offset 32: all zeros
       store_register_(sam_address_, REG_SAM_DEALER, data);
     }
 

@@ -158,6 +158,60 @@ static const uint8_t REG3B03_HOLD_DURATIONS = 38;     // hold_duration[8], uint1
 static const uint8_t REG3B03_ZONE_NAMES = 54;         // zone_names[8], 12 chars each
 static const uint8_t REG3B03_SIZE = 150;
 
+// Register 3B04 (REG_SAM_VACATION) layout — vacation settings (11 bytes)
+// NOTE on provenance: these offsets are inherited from Infinitude's CarBus::SAM
+// 3B04 parser, which is our own reverse-engineering — NOT a Carrier source. Only
+// the metric_units flag at byte 1 has live-test backing (it flips on an F/C
+// toggle); the rest (min/max temp at 5/6, humidity at 7/8, fan at 9) is a current
+// best guess, unconfirmed against real hardware. The vacation days/hours field
+// lives somewhere in the padding region (bytes 2-4) but its exact offset/unit is
+// unknown (Infinitude saw "hours region all 0x00" during its verification), so
+// VACDAYS is not decoded.
+static const uint8_t REG3B04_ACTIVE = 0;        // 0=off, nonzero=on
+static const uint8_t REG3B04_METRIC_UNITS = 1;  // 0=English, 1=Metric (shared 0x3B flag)
+static const uint8_t REG3B04_MIN_TEMP = 5;       // °F or °C per metric_units
+static const uint8_t REG3B04_MAX_TEMP = 6;
+static const uint8_t REG3B04_MIN_HUMIDITY = 7;   // 0 = NONE
+static const uint8_t REG3B04_MAX_HUMIDITY = 8;   // 100 = NONE
+static const uint8_t REG3B04_FAN_MODE = 9;       // 0=auto .. 3=high
+static const uint8_t REG3B04_SIZE = 11;
+
+// Register 3B05 (REG_SAM_ACCESSORIES) layout — accessory life & reminders (11 bytes)
+// NOTE on provenance: inherited from Infinitude's CarBus::SAM 3B05 parser (our
+// own RE, not a Carrier source). Which byte maps to which accessory (filter/UV/
+// humidifier/ventilator, life vs. reminder) is unconfirmed vs. real hardware.
+// Values are presumed to be consumption % (0 = new/reset, 100 = replace); the
+// ASCII `FILTRLVL!0` reset presumably maps to writing 0 here. byte 1 is the
+// shared metric_units flag (the one offset with live-test backing).
+static const uint8_t REG3B05_FILTER = 3;          // filter life used %
+static const uint8_t REG3B05_UV = 4;              // UV lamp life used %
+static const uint8_t REG3B05_HUMIDIFIER = 5;      // humidifier pad life used %
+static const uint8_t REG3B05_VENTILATOR = 6;      // ventilator filter life used %
+static const uint8_t REG3B05_FILTER_RMD = 7;      // 0=off, 1=on
+static const uint8_t REG3B05_UV_RMD = 8;
+static const uint8_t REG3B05_HUMIDIFIER_RMD = 9;
+static const uint8_t REG3B05_VENTILATOR_RMD = 10;
+static const uint8_t REG3B05_SIZE = 11;
+
+// Register 3B06 (REG_SAM_DEALER) layout — dealer info & config (52 bytes)
+// NOTE on provenance: inherited from Infinitude's CarBus::SAM 3B06 parser (our
+// own RE, not a Carrier source) after its 2026-06-26 restructure. The metric_units
+// flag at byte 1 (mirror at byte 10) has live-test backing; the rest (deadband,
+// cycles_per_hour, schedule_periods, programs_enabled, dealer_name/phone offsets)
+// is unconfirmed vs. real hardware. byte 7 was previously guessed 'temp_units'
+// but is observed 0xFF on Touch (the F/C ASCII codes live only on the RS-232 port,
+// not in this register); the prior 'auto_mode' guess at byte 1 is incompatible
+// with the unit flag, so CFGAUTO has no confirmed field and is not exposed.
+static const uint8_t REG3B06_BACKLIGHT = 0;         // Touch: ON=level>=3, OFF=<=2
+static const uint8_t REG3B06_METRIC_UNITS = 1;      // 0=English, 1=Metric (shared flag)
+static const uint8_t REG3B06_DEADBAND = 3;          // 0-6
+static const uint8_t REG3B06_CYCLES_PER_HOUR = 4;   // 2-6
+static const uint8_t REG3B06_SCHEDULE_PERIODS = 5;  // 2 or 4
+static const uint8_t REG3B06_PROGRAMS_ENABLED = 6;  // 0=off, 1=on
+static const uint8_t REG3B06_DEALER_NAME = 12;      // 20 bytes (18 usable)
+static const uint8_t REG3B06_DEALER_PHONE = 32;     // 20 bytes (18 usable)
+static const uint8_t REG3B06_SIZE = 52;
+
 // IDU (Indoor Unit / Furnace / Air Handler) register keys
 // These are passively snooped from thermostat↔IDU traffic.
 // IDU (Indoor Unit) register keys

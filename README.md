@@ -474,14 +474,32 @@ nc infinitesp.local 23
 | `OAT?` | Outdoor air temperature (°F) |
 | `TIME?` | Current time from bus clock |
 | `DAY?` | Current day of week |
-| `HOLD?` | Hold state (OFF / ON until HH:MM PM / PERMANENT) |
+| `ZONE?` | Active zone bitmask |
+| `BLIGHT?` | Backlight (ON/OFF) |
+| `CFGEM?` | Display units (F/C) |
+| `CFGDEAD?` | Heat/cool deadband (0-6) |
+| `CFGCPH?` | Cycles per hour (2-6) |
+| `CFGPER?` | Schedule periods per day (2 or 4) |
+| `CFGPGM?` | Programming enabled (ON/OFF) |
+| `DEALER?` | Dealer name |
+| `DEALERPH?` | Dealer phone |
+| `FILTRLVL?` / `UVLVL?` / `HUMLVL?` / `VENTLVL?` | Accessory life used % |
+| `FILTRRMD?` / `UVRMD?` / `HUMRMD?` / `VENTRMD?` | Accessory reminder (ON/OFF) |
+| `VACAT?` | Vacation state (ON/OFF) |
+| `VACMINT?` / `VACMAXT?` | Vacation min/max temperature |
+| `VACMINH?` / `VACMAXH?` | Vacation min/max humidity |
+| `VACFAN?` | Vacation fan mode |
+| `Z1RT?` | Zone 1 room temperature (°F) |
+| `Z1RH?` | Zone 1 humidity (%) |
+| `Z1RHTG?` | Zone 1 humidification target (%) |
 | `Z1HTSP?` | Zone 1 heat setpoint (°F) |
 | `Z1CLSP?` | Zone 1 cool setpoint (°F) |
 | `Z1FAN?` | Zone 1 fan mode (AUTO/LOW/MED/HIGH) |
-| `Z1RT?` | Zone 1 room temperature (°F) |
-| `Z1RH?` | Zone 1 humidity (%) |
+| `Z1HOLD?` | Hold state (OFF / ON until HH:MM PM / PERMANENT) |
+| `Z1OVR?` | Timed override active (ON/OFF) |
+| `Z1OTMR?` | Override timer (HH:MM) |
+| `Z1UNOCC?` | Zone unoccupied (ON/OFF) |
 | `Z1NAME?` | Zone 1 name |
-| `ZONE?` | Active zone bitmask |
 | `HELP` | List all commands |
 
 Prefix with `Z#` for other zones (e.g., `Z2HTSP?`).
