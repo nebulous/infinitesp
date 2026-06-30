@@ -541,6 +541,12 @@ void InfinitESPComponent::handle_passive_frame_() {
       uint8_t zc_src = current_frame_.src;  // 0x60 or 0x61
       store_register_(zc_src, zc_key, zc_data);
       ESP_LOGD("InfinitESP", "ZC %02X %04X reply captured (%u bytes)", zc_src, zc_key, zc_data.size());
+      // Per-controller damper state: dump 0319 bytes 0-3 so a two-controller
+      // system can confirm the secondary (0x61) reports its own positions
+      // distinct from the primary (issue #9).
+      if (zc_key == REG_ZC_ZONE_CONFIG && zc_data.size() >= 4)
+        ESP_LOGD("InfinitESP", "ZC %02X damper state (0319): %02X %02X %02X %02X",
+                 zc_src, zc_data[0], zc_data[1], zc_data[2], zc_data[3]);
       notify_entities_(zc_src, zc_key);
     }
   }
@@ -573,9 +579,11 @@ void InfinitESPComponent::handle_passive_frame_() {
                                      current_frame_.payload.begin() + 7);
         uint8_t zc_dst = current_frame_.dst;  // 0x60 or 0x61
         store_register_(zc_dst, REG_ZC_DAMPER_CMD, damper);
-        // Mirror damper positions to 0319 (matches emulation behavior)
-        mirror_damper_to_0319_(zc_dst, damper);
-        ESP_LOGD("InfinitESP", "ZC %02X damper (passive): %02X %02X %02X %02X",
+        // Do NOT mirror 0308 -> 0319 here: 0308 is written identically to both
+        // controllers, so mirroring would overwrite each controller's real
+        // 0319 state reply with the shared command. The real 0319 reply is
+        // the only per-controller damper source; let it stand.
+        ESP_LOGD("InfinitESP", "ZC %02X damper cmd (0308): %02X %02X %02X %02X",
                  zc_dst,
                  damper.size() > 0 ? damper[0] : 0, damper.size() > 1 ? damper[1] : 0,
                  damper.size() > 2 ? damper[2] : 0, damper.size() > 3 ? damper[3] : 0);

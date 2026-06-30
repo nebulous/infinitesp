@@ -45,7 +45,10 @@ void InfinitESPCover::on_register_update(uint8_t device_addr, uint16_t register_
   if (device_addr != parent_->zc_addr_for_zone_(zone_))
     return;
 
-  auto *data = parent_->get_register(device_addr, REG_ZC_DAMPER_CMD);
+  // Read the controller's actual damper STATE (0319 reply), not the 0308
+  // command: 0308 is written identically to both controllers, so only 0319
+  // distinguishes a zone on the secondary (0x61) from one on the primary.
+  auto *data = parent_->get_register(device_addr, REG_ZC_ZONE_CONFIG);
   if (!data || data->size() < 4)
     return;
 

@@ -363,12 +363,13 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   }
 
   // True if this zone's damper is open (zone is receiving conditioned air).
-  // Reads register 0308 from the controller serving this zone. No data yet
-  // (no ZC seen for this zone's controller): true — single-zone / unknown
-  // systems track the system 1:1, and nothing should be suppressed. Otherwise
-  // the zone's damper byte (0x00-0x0F) is nonzero.
+  // Reads register 0319 (per-controller damper state reply) from the
+  // controller serving this zone. No data yet (no ZC seen for this zone's
+  // controller): true — single-zone / unknown systems track the system 1:1,
+  // and nothing should be suppressed. Otherwise the zone's damper byte
+  // (0x00-0x0F) is nonzero.
   bool zone_damper_open(uint8_t zone) const {
-    auto *data = get_register(zc_addr_for_zone_(zone), REG_ZC_DAMPER_CMD);
+    auto *data = get_register(zc_addr_for_zone_(zone), REG_ZC_ZONE_CONFIG);
     if (!data || zone < 1)
       return true;
     uint8_t idx = zc_byte_for_zone_(zone);
