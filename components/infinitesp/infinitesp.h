@@ -338,20 +338,17 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint8_t zc_local_id_for_zone_(uint8_t zone) const {
     return ((zone >= 1 ? zone - 1 : 0) % 4) + 1;
   }
-  // Local byte offset (0-3) for a PER-CONTROLLER register where each controller
-  // numbers its own four zones 1-4 locally — e.g. the 0302 zone-temp TLV.
-  // Do NOT use this for the system-wide damper registers (0308/0319); see
-  // zc_system_byte_for_zone_ below.
+  // Local byte offset (0-3) for per-controller registers where each controller
+  // numbers its own zones 1-4 (e.g. the 0302 zone-temp TLV). NOT for the
+  // system-wide damper registers — use zc_system_byte_for_zone_ for those.
   uint8_t zc_byte_for_zone_(uint8_t zone) const {
     return (zone >= 1 ? zone - 1 : 0) % 4;
   }
-  // System byte offset for the SYSTEM-WIDE damper registers. 0308 (damper
-  // command) and 0319 (damper state feedback) carry one byte per SYSTEM zone
-  // 1-8 in a single 8-byte payload the thermostat writes IDENTICALLY to BOTH
-  // controllers (0x60 acts on bytes 0-3, 0x61 on bytes 4-7). Proven from a
-  // real physical-install wire capture: 0308 payload is exactly 8 data bytes
-  // (one per zone), not 4. So system zone N lives at byte N-1, NOT (N-1)%4.
-  // The %4 mapping is the bug that made zones 5-8 alias zones 1-4 (issue #9).
+  // System byte offset for the damper registers (0308 command, 0319 state).
+  // These are an 8-byte payload, one byte per system zone 1-8, written
+  // identically to both controllers — 0x60 acts on bytes 0-3, 0x61 on 4-7 —
+  // so zone N is at byte N-1, not (N-1)%4 (that local-id mapping aliases
+  // zones 5-8 onto 1-4).
   uint8_t zc_system_byte_for_zone_(uint8_t zone) const {
     return (zone >= 1 ? zone - 1 : 0);
   }
@@ -375,14 +372,11 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     return false;
   }
 
-  // True if this zone's damper is open (zone is receiving conditioned air).
-  // Reads the damper COMMAND register 0308 (system-wide, one byte per system
-  // zone 1-8) from the controller serving this zone. 0319 (state feedback) is
-  // unreliable on the secondary controller — 0x61 returns FF FF FF FF (empty)
-  // there — so the command is the only consistently-populated source. No 0308
-  // seen yet for this zone's controller: true — single-zone / unknown systems
-  // track the system 1:1, and nothing should be suppressed. Otherwise the
-  // zone's damper byte (0x00-0x0F) is nonzero.
+  // True if this zone's damper is open (receiving conditioned air). Reads the
+  // damper COMMAND register 0308, not 0319: the secondary controller returns
+  // all-FF on 0319, so 0308 is the only reliably-populated source. No 0308
+  // seen yet → true (single-zone/unknown systems track the system 1:1); the
+  // zone's damper byte is 0x00-0x0F and nonzero means open.
   bool zone_damper_open(uint8_t zone) const {
     auto *data = get_register(zc_addr_for_zone_(zone), REG_ZC_DAMPER_CMD);
     if (!data || zone < 1)

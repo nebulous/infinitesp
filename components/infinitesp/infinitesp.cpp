@@ -559,15 +559,11 @@ void InfinitESPComponent::handle_passive_frame_() {
       }
     }
 
-    // ZC damper command (0308) written by the thermostat to a real physical
-    // zone controller (0x60 or 0x61). When we emulate the ZC this frame is
-    // routed to handle_write_request_ and never reaches here; this branch only
-    // fires for a physical ZC. 0308 is a SYSTEM-WIDE 8-byte payload (one byte
-    // per system zone 1-8) written IDENTICALLY to BOTH controllers: 0x60 acts
-    // on bytes 0-3, 0x61 on bytes 4-7. Store the FULL payload under each
-    // controller's real address so a zone-N cover reads byte N-1 from its
-    // serving controller. (issue #9: the prior 4-byte slice made zones 5-8
-    // alias zones 1-4.)
+    // 0308 damper command from the thermostat to a physical ZC (0x60/0x61).
+    // Emulated-ZC frames go to handle_write_request_ instead, so this only
+    // fires for real hardware. 0308 is an 8-byte system-wide payload (see
+    // zc_system_byte_for_zone_); store the full payload under the destination
+    // controller's address.
     if (!zc_enabled() && (current_frame_.dst >> 4) == 6 &&
         reg_key == REG_ZC_DAMPER_CMD) {
       if (current_frame_.payload.size() > 3) {
@@ -744,9 +740,8 @@ void InfinitESPComponent::handle_write_request_() {
     ESP_LOGI("InfinitESP", "ZC WRITE %04X from %02X (%d bytes)",
              reg_key, current_frame_.src, current_frame_.payload.size() - 3);
 
-    // 0308: damper position command. SYSTEM-WIDE 8-byte payload (one byte per
-    // system zone 1-8); store the full payload. Mirror to 0319 for the
-    // thermostat's duct-eval read (emulated-ZC path only).
+    // 0308 damper command (8-byte system-wide; see zc_system_byte_for_zone_).
+    // Store the full payload and mirror to 0319 for the thermostat's duct-eval.
     if (reg_key == REG_ZC_DAMPER_CMD) {
       if (current_frame_.payload.size() > 3) {
         std::vector<uint8_t> damper(current_frame_.payload.begin() + 3,

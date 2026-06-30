@@ -32,39 +32,28 @@ void InfinitESPCover::control(const cover::CoverCall &call) {
 }
 
 void InfinitESPCover::on_register_update(uint8_t device_addr, uint16_t register_key) {
-  // Damper commands arrive as an 8-byte WRITE to 0308 (one byte per system
-  // zone 1-8). We read 0308 directly. The 0319 (state feedback) notify is
-  // harmless to also react to — we just ignore it and re-read 0308.
+  // Damper command is an 8-byte WRITE to 0308, one byte per system zone. We
+  // read 0308, not 0319 state feedback (the secondary controller returns
+  // all-FF there). Both keys notify; accept either and re-read 0308.
   if (register_key != REG_ZC_DAMPER_CMD && register_key != REG_ZC_ZONE_CONFIG)
     return;
   if (zone_ < 1 || zone_ > 8)
     return;
-  // Multi-ZC: only react to the controller serving this zone (0x60 for
-  // zones 1-4, 0x61 for zones 5-8). Both controllers notify (same device
-  // class), so without this guard a zone-5 cover would read zone-1's byte
-  // from the 0x60 notify.
+  // Only react to the controller serving this zone (0x60 for zones 1-4, 0x61
+  // for 5-8). Both store identical system payloads and both notify; this guard
+  // keeps each cover to one update per cycle.
   if (device_addr != parent_->zc_addr_for_zone_(zone_))
     return;
 
-  // Read the damper COMMAND (0308). It is SYSTEM-WIDE: an 8-byte payload, one
-  // byte per system zone 1-8, written identically to BOTH controllers. 0x60
-  // acts on bytes 0-3, 0x61 on bytes 4-7. We store the full payload under each
-  // controller's address and index by system zone, so a zone-5 cover reads
-  // byte 4 from 0x61. (0319 state feedback was the previous source, but the
-  // secondary controller 0x61 returns FF FF FF FF there — empty — so 0308 is
-  // the only reliably populated register. issue #9.)
+  // System-wide payload: zone N is at byte N-1 (zc_system_byte_for_zone_).
   auto *data = parent_->get_register(device_addr, REG_ZC_DAMPER_CMD);
   if (!data)
     return;
 
-  // The damper byte is itself the step (0x00-0x0F). The system-zone byte
-  // index is zone-1 (NOT (zone-1)%4 — that local-id mapping is for the 0302
-  // zone-temp TLV only). Compare in step space so the thermostat's periodic
-  // re-asserts fire exactly once per real change, and so an HA-set transient
-  // (control()) snapping back to the bus value still fires when the steps
-  // actually differ.
-  // Anchor: last_step_ (0xFF sentinel fires the first time, so a zone
-  // fully-open at boot still actuates).
+  // The damper byte is the step (0x00-0x0F). Compare in step space so periodic
+  // thermostat re-asserts and HA-set transients snapping back each fire once
+  // per real change. Anchor: last_step_ (0xFF sentinel fires the first time, so
+  // a fully-open zone at boot still actuates).
   uint8_t byte_idx = parent_->zc_system_byte_for_zone_(zone_);
   if (byte_idx >= data->size())
     return;
