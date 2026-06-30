@@ -540,37 +540,7 @@ void InfinitESPComponent::handle_passive_frame_() {
                                     current_frame_.payload.end());
       uint8_t zc_src = current_frame_.src;  // 0x60 or 0x61
       store_register_(zc_src, zc_key, zc_data);
-      // Issue #9 diagnostic: dump the FULL payload (all bytes) for registers we
-      // care about, so we can see where (if anywhere) the secondary controller
-      // (0x61) hides its damper data. The 4-byte prints masked bytes 4-7.
-      if (zc_key == REG_ZC_ZONE_CONFIG || zc_key == REG_ZC_DAMPER_CMD ||
-          zc_key == REG_DEVICE_INFO || zc_key == 0x030D) {
-        char hex[3 * 16 + 1];
-        hex[0] = '\0';
-        for (size_t i = 0; i < zc_data.size() && i < 16; i++) {
-          char b[4];
-          snprintf(b, sizeof(b), "%02X ", zc_data[i]);
-          strlcat(hex, b, sizeof(hex));
-        }
-        const char *label =
-            zc_key == REG_ZC_ZONE_CONFIG ? "damper state (0319)" :
-            zc_key == REG_ZC_DAMPER_CMD   ? "damper cmd (0308)"    :
-            zc_key == REG_DEVICE_INFO      ? "device info (0104)"   :
-                                             "030D";
-        ESP_LOGD("InfinitESP", "ZC %02X %s [%u bytes]: %s",
-                 zc_src, label, zc_data.size(), hex);
-        // Parse 0104 model/serial for the real (passively captured) controller
-        // so we can confirm what device actually answers at 0x61.
-        if (zc_key == REG_DEVICE_INFO && zc_data.size() >= 120) {
-          std::string model(zc_data.begin() + 64, zc_data.begin() + 84);
-          std::string serial(zc_data.begin() + 96, zc_data.begin() + 120);
-          ESP_LOGI("InfinitESP", "ZC %02X 0104 model: '%s' serial: '%s'",
-                   zc_src, model.c_str(), serial.c_str());
-        }
-      } else {
-        ESP_LOGD("InfinitESP", "ZC %02X %04X reply captured (%u bytes)",
-                 zc_src, zc_key, zc_data.size());
-      }
+      ESP_LOGD("InfinitESP", "ZC %02X %04X reply captured (%u bytes)", zc_src, zc_key, zc_data.size());
       notify_entities_(zc_src, zc_key);
     }
   }
@@ -605,20 +575,8 @@ void InfinitESPComponent::handle_passive_frame_() {
                                      current_frame_.payload.end());
         uint8_t zc_dst = current_frame_.dst;  // 0x60 or 0x61
         store_register_(zc_dst, REG_ZC_DAMPER_CMD, damper);
-        // Diagnostic: dump the full 0308 payload so the 8-byte system-wide
-        // layout (bytes 4-7 = zones 5-8) is visible in logs.
-        {
-          char hex[3 * 32 + 1];
-          hex[0] = '\0';
-          const auto &pl = current_frame_.payload;
-          for (size_t i = 0; i < pl.size() && i < 32; i++) {
-            char b[4];
-            snprintf(b, sizeof(b), "%02X ", pl[i]);
-            strlcat(hex, b, sizeof(hex));
-          }
-          ESP_LOGD("InfinitESP", "ZC %02X damper cmd (0308) [%u bytes]: %s",
-                   zc_dst, pl.size(), hex);
-        }
+        ESP_LOGD("InfinitESP", "ZC %02X damper cmd (0308) captured (%u bytes)",
+                 zc_dst, damper.size());
         notify_entities_(zc_dst, REG_ZC_DAMPER_CMD);
         notify_entities_(zc_dst, REG_ZC_ZONE_CONFIG);
       }
@@ -798,17 +756,8 @@ void InfinitESPComponent::handle_write_request_() {
         // Mirror damper positions to 0319 (no delay)
         mirror_damper_to_0319_(dest, damper);
 
-        {
-          char hex[3 * 16 + 1];
-          hex[0] = '\0';
-          for (size_t i = 0; i < damper.size() && i < 16; i++) {
-            char b[4];
-            snprintf(b, sizeof(b), "%02X ", damper[i]);
-            strlcat(hex, b, sizeof(hex));
-          }
-          ESP_LOGD("InfinitESP", "ZC damper [%u bytes]: %s -> 0319 mirrored",
-                   damper.size(), hex);
-        }
+        ESP_LOGD("InfinitESP", "ZC %02X damper cmd (0308) [%u bytes] -> 0319 mirrored",
+                 dest, damper.size());
 
         notify_entities_(dest, REG_ZC_DAMPER_CMD);
         notify_entities_(dest, REG_ZC_ZONE_CONFIG);
