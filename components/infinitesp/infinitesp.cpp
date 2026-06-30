@@ -1110,9 +1110,18 @@ void InfinitESPComponent::mirror_to_sam_(uint16_t reg_key, const std::vector<uin
 }
 
 void InfinitESPComponent::mirror_damper_to_0319_(uint8_t addr, const std::vector<uint8_t> &damper) {
-  // 0308 carries 4 damper bytes; 0319 mirrors them into an 8-byte state field
-  // (bytes 0-3 = positions, bytes 4-7 = 0xFF). Shared by the emulated-ZC write
-  // path (handle_write_request_) and the passive physical-ZC capture.
+  // 0308 carries the 8-byte system-wide damper payload; 0319 is per-controller
+  // state feedback. Used only by the emulated-ZC write path (the physical-ZC
+  // capture stores real 0319 replies directly). The PRIMARY mirrors its four
+  // zones into 0319 bytes 0-3 (bytes 4-7 unused = 0xFF). The SECONDARY returns
+  // all-FF on 0319 (proven from a two-controller wire capture, issue #9: 0x61
+  // returns FF FF FF FF on every 0319 poll — its 0319 is unpopulated), so emulate
+  // that exactly rather than inventing a per-controller model.
+  if (zc_enabled() && addr == (uint8_t)(zc_address_ + 1) && zc_secondary_enabled_()) {
+    std::vector<uint8_t> state_0319(8, 0xFF);
+    store_register_(addr, REG_ZC_ZONE_CONFIG, state_0319);
+    return;
+  }
   std::vector<uint8_t> state_0319(8);
   for (uint8_t i = 0; i < 4 && i < damper.size(); i++)
     state_0319[i] = damper[i];
@@ -1499,7 +1508,7 @@ void InfinitESPComponent::initialize_defaults_() {
   // the thermostat's 3405 presence probe and get commissioned, forcing an
   // 8-zone install even when the system only has zones 1-4 active.
   if (zc_enabled()) {
-    auto seed_zc = [this](uint8_t zc_addr, const char *serial) {
+    auto seed_zc = [this](uint8_t zc_addr, const char *serial, bool is_secondary) {
       // Register 0104 - Device info (120 bytes)
       {
         std::vector<uint8_t> data;
@@ -1535,9 +1544,14 @@ void InfinitESPComponent::initialize_defaults_() {
       }
 
       // Register 0319 - Damper state feedback (8 bytes)
-      // Start with all zones detected; mirrors 0308 writes at runtime.
+      // Primary: start all zones detected (0x0F); mirrors 0308 writes at runtime.
+      // Secondary: all-FF — a real secondary's 0319 is unpopulated (issue #9 wire
+      // capture: 0x61 returns FF FF FF FF on every 0319 poll). mirror_damper_to_0319_
+      // keeps it FF; seeding FF avoids a boot-window mismatch.
       {
-        std::vector<uint8_t> data = {0x0F, 0x0F, 0x0F, 0x0F, 0xFF, 0xFF, 0xFF, 0xFF};
+        std::vector<uint8_t> data = is_secondary
+            ? std::vector<uint8_t>{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+            : std::vector<uint8_t>{0x0F, 0x0F, 0x0F, 0x0F, 0xFF, 0xFF, 0xFF, 0xFF};
         store_register_(zc_addr, REG_ZC_ZONE_CONFIG, data);
       }
 
@@ -1585,11 +1599,11 @@ void InfinitESPComponent::initialize_defaults_() {
       ESP_LOGI("InfinitESP", "Initialized %d ZC registers at address 0x%02X",
                device_registers_[zc_addr].size(), zc_addr);
     };
-    seed_zc(zc_address_, "1726ESP32ZC01");       // 0x60 — system zones 1-4
+    seed_zc(zc_address_, "2726ESP32ZC01", false);       // 0x60 — system zones 1-4
     // Secondary 0x61 only when a zone >4 is configured; otherwise it would be
     // discovered and commission zones 5-8 that have no sensors.
     if (zc_secondary_enabled_())
-      seed_zc((uint8_t) (zc_address_ + 1), "1726ESP32ZC02");  // 0x61 — system zones 5-8
+      seed_zc((uint8_t) (zc_address_ + 1), "2726ESP32ZC02", true);  // 0x61 — system zones 5-8
     else
       ESP_LOGI("InfinitESP", "No zones >4 configured — secondary ZC at 0x%02X not emulated",
                (uint8_t) (zc_address_ + 1));
