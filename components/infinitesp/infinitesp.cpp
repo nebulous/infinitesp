@@ -1220,6 +1220,29 @@ void InfinitESPComponent::set_zone_fan(uint8_t zone, uint8_t fan_mode) {
   ESP_LOGI("InfinitESP", "Set zone %d fan=%d", zone, fan_mode);
 }
 
+uint8_t InfinitESPComponent::encode_hold_(uint16_t duration, uint8_t idx,
+                                          std::vector<uint8_t> &data) const {
+  // 3B03 hold encoding — three EXCLUSIVE intents (verified 2026-06-30, ROADMAP #6).
+  // The thermostat honors flag 0x02 writes to zones_holding: setting the bit
+  // registers a permanent hold (it adopts duration 0xFFFF itself); clearing the
+  // bit cancels the hold entirely (it zeroes its own countdown timer). Flag 0x80
+  // (override_timer) is IGNORED by the thermostat — never use it for hold control.
+  // Must stay consistent with the reader get_zone_hold_duration().
+  uint8_t hold_offset = REG3B03_HOLD_DURATIONS + (idx * 2);
+  uint16_t bus_dur = (duration > 0 && duration < HOLD_PERMANENT) ? duration : 0;
+  data[hold_offset] = (bus_dur >> 8) & 0xFF;       // big-endian (UBInt16 in Infinitude)
+  data[hold_offset + 1] = bus_dur & 0xFF;
+  if (duration >= HOLD_PERMANENT) {
+    data[REG3B03_ZONES_HOLDING] |= (1 << idx);     // permanent-hold bit (0x02 makes the
+    return CHANGE_HOLD;                            // tstat adopt duration 0xFFFF itself)
+  }
+  // Timed uses 0x80 per Infinitude, but the tstat ignores 0x80 — so a timed hold
+  // set this way won't register (only permanent/cancel via 0x02 are reliable).
+  // Cancel: clear the bit with 0x02 and the tstat zeroes its countdown timer.
+  data[REG3B03_ZONES_HOLDING] &= ~(1 << idx);
+  return CHANGE_HOLD;              // 0x02 (cancel: bit clear → tstat drops timer)
+}
+
 void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes) {
   if (!sam_enabled()) return;
   auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
@@ -1228,25 +1251,12 @@ void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes)
 
   std::vector<uint8_t> data = *zones_data;
   uint8_t idx = zone - 1;
-
-  uint8_t hold_offset = REG3B03_HOLD_DURATIONS + (idx * 2);
-  // Write as big-endian (UBInt16 in Infinitude parser)
-  data[hold_offset] = (duration_minutes >> 8) & 0xFF;
-  data[hold_offset + 1] = duration_minutes & 0xFF;
-
-  // Set/clear zones_holding bitmask
-  if (duration_minutes > 0) {
-    data[REG3B03_ZONES_HOLDING] |= (1 << idx);
-  } else {
-    data[REG3B03_ZONES_HOLDING] &= ~(1 << idx);
-  }
+  uint8_t flags = encode_hold_(duration_minutes, idx, data);
 
   // Update local cache
   data[REG3B03_CHANGE_FLAGS] = 0;
   mirror_to_sam_(REG_SAM_ZONES, data);
 
-  // Use CHANGE_HOLD flag (0x02) + CHANGE_OVERRIDE flag (0x80)
-  uint8_t flags = CHANGE_HOLD | CHANGE_OVERRIDE;
   std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, idx, 0x00, flags};
   payload.insert(payload.end(), data.begin() + 3, data.end());
 
@@ -1294,22 +1304,14 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
   data[REG3B03_HEAT_SETPOINTS + idx] = htsp_bus;
   data[REG3B03_COOL_SETPOINTS + idx] = clsp_bus;
 
-  // Set hold duration
-  uint8_t hold_offset = REG3B03_HOLD_DURATIONS + (idx * 2);
-  data[hold_offset] = (hold_duration >> 8) & 0xFF;
-  data[hold_offset + 1] = hold_duration & 0xFF;
-  if (hold_duration > 0) {
-    data[REG3B03_ZONES_HOLDING] |= (1 << idx);
-  } else {
-    data[REG3B03_ZONES_HOLDING] &= ~(1 << idx);
-  }
+  uint8_t hold_flag = encode_hold_(hold_duration, idx, data);
 
   // Update local cache
   data[REG3B03_CHANGE_FLAGS] = 0;
   mirror_to_sam_(REG_SAM_ZONES, data);
 
-  // Write with all change flags set (fan + hold + heat + cool + override)
-  uint8_t flags = CHANGE_FAN | CHANGE_HOLD | CHANGE_HEAT | CHANGE_COOL | CHANGE_OVERRIDE;
+  // Fan + heat + cool change flags, plus the (non-contradictory) hold flag.
+  uint8_t flags = CHANGE_FAN | CHANGE_HEAT | CHANGE_COOL | hold_flag;
   std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, idx, 0x00, flags};
   payload.insert(payload.end(), data.begin() + 3, data.end());
 

@@ -492,6 +492,15 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // current values). Marks bus state received for REG_SAM_STATE / REG_SAM_ZONES.
   void mirror_to_sam_(uint16_t reg_key, const std::vector<uint8_t> &data);
 
+  // Encode a logical hold into a 3B03 register buffer; returns the change_flags
+  // bit to set. Verified 2026-06-30 (ROADMAP #6). The thermostat honors flag 0x02
+  // writes to zones_holding; flag 0x80 (override_timer) is IGNORED by it.
+  //   duration == 0                  → cancel     (0x02, bit clear → tstat zeroes timer)
+  //   0 < duration < HOLD_PERMANENT  → timed      (0x80; NOTE: tstat ignores, won't register)
+  //   duration >= HOLD_PERMANENT     → permanent  (0x02, bit set  → tstat adopts dur 0xFFFF)
+  // Must match the reader get_zone_hold_duration().
+  uint8_t encode_hold_(uint16_t duration, uint8_t idx, std::vector<uint8_t> &data) const;
+
   // Decode big-endian IEEE754 float32 from byte vector
   static float decode_f32_be_(const std::vector<uint8_t> &data, size_t offset) {
     if (offset + 4 > data.size())
