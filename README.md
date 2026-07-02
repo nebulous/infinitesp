@@ -14,7 +14,7 @@ InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address 
 |---|---|
 | **Climate** | Per-zone thermostat with heat/cool/auto/off modes, dual heat+cool setpoints, fan control, and preset support (per schedule, home, away, sleep, wake, hold timer, hold indefinitely) |
 | **Covers** | Per-zone damper position (0–100%) from the zone controller(either an emulated or a real physical zone controller) |
-| **Sensors** | Zone temperature, zone humidity, outdoor air temp, blower RPM, airflow CFM, compressor RPM, ODU demand/stage/modulation, expansion valve position, superheat/subcooling targets & actuals, ODU temperatures (outdoor/coil/suction/subcooling/discharge), vacation min/max temps |
+| **Sensors** | Zone temperature, zone humidity, outdoor air temp, blower RPM, airflow CFM, compressor RPM, ODU demand/stage/modulation, expansion valve position, superheat/subcooling targets & actuals, ODU temperatures (outdoor/coil/suction/discharge) plus suction superheat, vacation min/max temps |
 | **Binary Sensors** | Bus online/offline status, compressor running, electric heat active |
 | **Selects** | System mode (heat/cool/auto/off/emergency heat), per-zone fan speed (auto/low/med/high) |
 | **Text Sensors** | Zone names, hold state, thermostat WiFi SSID/hostname/MAC, proxy server, dealer info, comfort profile dump |
@@ -30,7 +30,11 @@ The author's setup uses the **[Waveshare ESP32-S3-Relay-6CH](https://amzn.to/4mX
 The Waveshare board was chosen as a reference design for its case, onboard RS485 interface, and 6 relay outputs. The relays open the door to emulating other devices beyond the SAM, notably the NIM (Network Interface Module, SYSTXCCNIM01) the Damper Control Module (SYSTXCC4ZC01) is already part of InfinitESP. Damper actuation works through a trigger callback: each zone's cover fires `on_change` whenever the thermostat commands a new damper position, handing the new position to whatever relay or motor driver your hardware uses (see the [Covers](#covers) examples). When emulating the zone controller, each zone also takes a temperature sensor so the thermostat sees a room reading, falling back to the zone 1 temperature when no sensor is configured (see [Zone Controller](#zone-controller-optional)). The relay GPIOs are exposed in the example YAML config but are not part of the core SAM emulation. The firmware is hardware-agnostic. It just needs a `uart::UARTComponent`. The RS485 transceiver, ESP32 variant, and relay hardware are all irrelevant to the protocol engine.
 Generic ESP32 dev boards with a separate RS485 transceiver module should also work.
 
-> **Note:** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an insufficiently-biased bus, the line voltage collapses and the receiver reads garbage. **However**, a live Carrier ABCD bus may tolerate the flaw better than a bare bench setup. Other equipment on the bus biases the line (pull-up on A, pull-down on B), which can hold it in a logic `1` state during the driver's brief cut-outs and keep the receiver from reading garbage. This is not guaranteed: it depends on the bus topology and bias strength. Some installs work; some still show TX corruption. If you see TX corruption in testing or on an unusual bus configuration, add external biasing resistors, bypass the onboard transceiver entirely with a [pico-HAT-compatible RS485 module](https://amzn.to/4eMssT1) which plugs right into the header, or (if you're brave, desperate, or foolish) modify the SMD components on the board.
+> **Note:** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an insufficiently-biased bus, the line voltage collapses and the receiver reads garbage.
+>
+> InfinitESP ships with an experimental `uart_rmtx` UART component that drives the RS485 interface through the ESP32's Remote Control Transceiver (RMT) peripheral instead of the hardware UART. It emits a sub-bit line code that keeps the transceiver's auto-direction DE line primed during long constant-level runs, avoiding the dropout with no hardware modification. Bench-validated against a single physical SAM (100% reply rate on 160 short-frame queries, zero CRC errors). See its [README](components/uart_rmtx/README.md) for the mechanism, configuration, and current validation status.
+>
+> A live Carrier ABCD bus may tolerate the flaw without any fix, depending on bus topology. If `uart_rmtx` does not resolve it, any other fix requires adding or modifying hardware (for example, bypassing the onboard transceiver with a separate RS485 module).
 
 ### 📣 Calling all users:
 If you have hardware such as a Carrier NIM (SYSTXCCNIM01), ~Damper Control Module (SYSTXCC4ZC01)~(implemented, but new logs are always good validation), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Understanding and emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be valuable. See [Reporting Issues](#reporting-issues) for how to collect them. A `REPORT?` snapshot helps too, but full protocol logs are best for emulation work since they show the timing and framing that static register dumps miss. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
@@ -389,7 +393,7 @@ sensor:
   #   (`compressor_rpm` = measured RPM [2..3]; `target_compressor_rpm` = commanded [0..1].)
   #   compressor_frequency, odu_expansion_valve, odu_commanded_stage, odu_stage, odu_mode, odu_line_voltage
   #   odu_outdoor_temp, odu_coil_temp, odu_suction_temp,
-  #   odu_subcooling_degf_int, odu_indoor_ambient, odu_discharge_temp
+  #   odu_suction_superheat, odu_indoor_ambient, odu_discharge_temp
   #   odu_float_1 (superheat target), odu_float_2 (superheat actual),
   #   odu_float_3 (subcooling target), odu_float_4 (subcooling actual),
   #   odu_float_5, odu_float_6
@@ -572,7 +576,7 @@ Mode and setpoint changes use a two-pronged approach: a 3B03 notification write 
 In addition to SAM-register traffic, InfinitESP passively observes inter-device traffic on the bus to extract diagnostic data:
 
 - **Indoor unit** (0x40): blower RPM, airflow CFM, electric heat status
-- **Outdoor unit** (0x50): compressor RPM, demand %, operating stage, modulation, expansion valve position, superheat/subcooling, outdoor/coil/suction/subcooling/discharge temperatures
+- **Outdoor unit** (0x50): compressor RPM, demand %, operating stage, modulation, expansion valve position, superheat/subcooling, outdoor/coil/suction/discharge temperatures plus suction superheat
 - **Zone controller** (0x60 / 0x61): zone temperatures and damper positions. When you are **not** emulating the zone controller, InfinitESP passively snoops the thermostat↔zone-controller traffic to report damper positions and drive per-zone climate conditioning state. (When you *are* emulating it, the same data is captured directly through the emulation path.)
 
 No extra polling needed. The thermostat already queries these devices, and InfinitESP just listens in.
