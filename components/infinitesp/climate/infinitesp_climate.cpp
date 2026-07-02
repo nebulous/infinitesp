@@ -81,7 +81,13 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
       cool_sp_ = target_bus;
     }
     parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
-    this->target_temperature = target_c;
+    // Write the active bound, not the target_temperature union alias (which
+    // overlaps low — see CLIMATE union gotcha). HA renders the cool slider from
+    // target_temperature_high and the heat slider from target_temperature_low.
+    if (this->mode == climate::CLIMATE_MODE_HEAT)
+      this->target_temperature_low = target_c;
+    else if (this->mode == climate::CLIMATE_MODE_COOL)
+      this->target_temperature_high = target_c;
     set_pending_setpoint_(heat_sp_, cool_sp_);
   }
   if (call.get_target_temperature_low().has_value()) {
@@ -324,7 +330,6 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
         if (stage == 0 || mode == SYSMODE_AUTO || sys_mode_ != SYSMODE_AUTO)
           can_update_mode = true;
       }
-
       if (can_update_mode && mode != sys_mode_) {
         sys_mode_ = mode;
         switch (mode) {
@@ -338,12 +343,10 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
         // Update setpoints based on mode: single target for heat/cool, dual for heat_cool
         float heat_c = parent_->setpoint_to_celsius(heat_sp_);
         float cool_c = parent_->setpoint_to_celsius(cool_sp_);
+        // low/high are the source of truth for this two-point entity; never
+        // write the target_temperature union alias (it overlaps low).
         this->target_temperature_low = heat_c;
         this->target_temperature_high = cool_c;
-        if (this->mode == climate::CLIMATE_MODE_HEAT)
-          this->target_temperature = heat_c;
-        else if (this->mode == climate::CLIMATE_MODE_COOL)
-          this->target_temperature = cool_c;
         changed = true;
       }
     }
@@ -390,13 +393,10 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       float cool_c = parent_->setpoint_to_celsius(new_cool);
       if (std::isnan(this->target_temperature_low) || std::isnan(this->target_temperature_high))
         sp_changed = true;  // force publish to initialize HA state
+      // low/high are the source of truth; never write target_temperature
+      // (union alias of low — writing it in cool mode clobbers the heat sp).
       this->target_temperature_low = heat_c;
       this->target_temperature_high = cool_c;
-      // Set single target_temperature for the current mode (HA uses this in heat/cool)
-      if (this->mode == climate::CLIMATE_MODE_HEAT)
-        this->target_temperature = heat_c;
-      else if (this->mode == climate::CLIMATE_MODE_COOL)
-        this->target_temperature = cool_c;
 
       if (sp_changed)
         changed = true;
