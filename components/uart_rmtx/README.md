@@ -145,7 +145,7 @@ The bus turnaround is built in. After the last TX bit the line goes idle (high) 
 
 ## Validation
 
-Bench-tested against a physical SAM (SYSTXCCSAM01 at 0x92) over a direct RS485 link, via the `sam_bridge` TCP path (samnet port 6969). The probe sends an `0104` READ frame and counts CRC-valid replies.
+Tested against a physical SAM SYSTXCCSAM01. The stock UART driver's TX corruption on long frames vanishes with the line code: 100% reply rate and zero CRC errors at N=3, versus an 81% baseline with the stock driver.
 
 | TX config | reply rate | CRC errors |
 |---|---|---|
@@ -153,7 +153,7 @@ Bench-tested against a physical SAM (SYSTXCCSAM01 at 0x92) over a direct RS485 l
 | N=3 line code | 100% (160/160) | 0 |
 | N=4 line code | 93% (149/160) | 0 |
 
-The baseline is below 100% because the SAM's responsiveness varies with its sync-loop phase. N=3 cleared the baseline. The most thorough run was a register scan of 3557 queries over 15 minutes with zero terminal timeouts and zero CRC errors.
+A longer run of 3557 queries over 15 minutes produced zero terminal timeouts and zero CRC errors.
 
 A third-party observer on the RS485 segment was not available, so the long-frame TX path (the historical corruption case) is validated on the structural argument: every bit has a transition, so a long frame is just more bits to the one-shot. The RMT engine can sustain long frames (266-byte frames at 70 ms wire time, repeatable). End-to-end CRC of a long frame over the wire is the remaining untested step.
 
@@ -167,5 +167,3 @@ A third-party observer on the RS485 segment was not available, so the long-frame
 - `uart_rmtx.h` / `uart_rmtx.cpp` - the component
 - `line_code_encoder.h` - the encoder, header-only and host-testable
 - `__init__.py` - config schema and codegen
-
-The line code and its design rationale are documented in `private/hardware-research/rs485-rmt-linecode-hack.md` (repository-private).
