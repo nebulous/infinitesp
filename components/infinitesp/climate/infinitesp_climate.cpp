@@ -177,18 +177,40 @@ void InfinitESPClimate::set_pending_setpoint_(uint8_t heat, uint8_t cool) {
 }
 
 bool InfinitESPClimate::compute_action_() {
-  // stage>0 means the ODU has demand for a mode (Carrier SAM spec). The mode
-  // nibble carries direction during stage>0. Gate per-zone on the damper: a
-  // closed damper means this zone isn't receiving conditioned air even while
-  // the system runs. With no zone controller, zone_damper_open() is always
-  // true (single-zone system, action tracks the system 1:1).
+  // stage>0 means the system has active demand (Carrier SAM spec). Gate
+  // per-zone on the damper: a closed damper means this zone isn't receiving
+  // conditioned air even while the system runs. With no zone controller,
+  // zone_damper_open() is always true (single-zone system, action tracks
+  // the system 1:1).
+  //
+  // Direction (two-layer design):
+  //  1. mode nibble HEAT/COOL/EHEAT → trust it. This covers furnace heating
+  //     (a gas furnace is conventional 2-stage → nibble flips to HEAT during
+  //     active heat). No inference needed.
+  //  2. mode nibble AUTO → infer from THIS zone's demand vs its own setpoints
+  //     (temp > cool_sp → COOLING, temp < heat_sp → HEATING). Uses the same
+  //     inputs the thermostat uses; system-type-agnostic (AC/HP/furnace).
+  //     On variable-speed systems the nibble stays AUTO during active operation,
+  //     so this is the path that resolves the old "always IDLE" bug.
+  //  3. else (deadband) → IDLE. Never guess.
   climate::ClimateAction action = climate::CLIMATE_ACTION_IDLE;
   if (last_stage_ > 0 && parent_->zone_damper_open(zone_)) {
     switch (last_mode_) {
       case SYSMODE_HEAT:  action = climate::CLIMATE_ACTION_HEATING; break;
       case SYSMODE_COOL:  action = climate::CLIMATE_ACTION_COOLING; break;
       case SYSMODE_EHEAT: action = climate::CLIMATE_ACTION_HEATING; break;
-      default: break;  // AUTO during stage>0: direction unknown (issue #7)
+      case SYSMODE_AUTO:
+        // Demand of this zone (the one being served, damper open). Bus-fresh
+        // cached values from 3B02/3B03, not HA-side attributes. Use >= / <= not
+        // strict > / <: the thermostat cools AT cool_sp (hysteresis) — observed
+        // temp==cool_sp while actively cooling — so strict > would read deadband
+        // and misreport IDLE. Deadband is heat_sp < temp < cool_sp.
+        if (current_temp_ >= parent_->setpoint_to_celsius(cool_sp_))
+          action = climate::CLIMATE_ACTION_COOLING;
+        else if (current_temp_ <= parent_->setpoint_to_celsius(heat_sp_))
+          action = climate::CLIMATE_ACTION_HEATING;
+        break;  // deadband → IDLE
+      default: break;
     }
   }
   if (action != current_action_) {
