@@ -264,16 +264,16 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
 
       // Mode update logic:
       // - When stage==0 (idle): mode nibble is the true requested mode. Always trust it.
-      // - When stage>0 (active): mode nibble shows active direction (heat/cool) even if
-      //   the requested mode is AUTO. So only trust it for non-AUTO modes.
-      //   On first boot (sys_mode_==0xFF), accept any reading to avoid staying stuck
-      //   at CLIMATE_MODE_OFF.
+      // - When stage>0 (active): the mode nibble shows active direction (heat/cool).
+      //   On conventional gear it flips AUTO→HEAT/COOL during operation, so a nibble
+      //   of AUTO during stage>0 is the variable-speed case (issue #7) and IS the real
+      //   requested mode — trust it too. EHEAT is excluded so the mode label stays
+      //   plain HEAT rather than reflecting the emergency-heat nibble mid-cycle.
+      //   On first boot (sys_mode_==0xFF), accept any reading to unstick from OFF.
       bool can_update_mode = false;
       if (stage == 0) {
         can_update_mode = true;
-      } else if (mode != SYSMODE_AUTO && mode != SYSMODE_EHEAT) {
-        // Actively heating or cooling — mode nibble is correct for heat/cool/off.
-        // Don't update from AUTO (stage>0 can't be AUTO on the bus anyway).
+      } else if (mode != SYSMODE_EHEAT) {
         can_update_mode = true;
       }
       // On first boot, accept any mode reading to unstick from OFF
