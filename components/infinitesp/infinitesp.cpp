@@ -1331,8 +1331,12 @@ void InfinitESPComponent::set_system_mode(uint8_t mode) {
   std::vector<uint8_t> data = *state_data;
   uint8_t old_stagmode = data[22];
 
-  // stagmode at offset 22: high nibble=stage, low nibble=mode
-  data[22] = (data[22] & 0xF0) | (mode & 0x0F);
+  // stagmode at offset 22: high nibble=stage, low nibble=mode. Clear the stage
+  // nibble (write 0), matching Infinitude's set_system_mode: a mode-change
+  // command with the running stage still asserted (e.g. 0x42) is contradictory
+  // and the thermostat rejects it — observed 0x41 bus not flipping to AUTO
+  // after a 0x42 write. Stage 0 ("mode change, system idle") is accepted.
+  data[22] = mode & 0x0F;
 
   // Update local 3B02 cache so we can serve it when thermostat READs us
   mirror_to_sam_(REG_SAM_STATE, data);
