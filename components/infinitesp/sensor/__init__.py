@@ -17,7 +17,7 @@ SENSOR_TYPES = {
     "vacation_max_temp": {"key": "vacation_max_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 0},
     # IDU sensors — device class 4
     "blower_rpm": {"key": "blower_rpm", "unit": "RPM", "bus_class": 4},
-    "airflow_cfm": {"key": "airflow_cfm", "unit": "CFM", "bus_class": 4},
+    "airflow_cfm": {"key": "airflow_cfm", "unit": "ft³/min", "bus_class": 4},
     # ODU sensors — device class 5
     # bare = actual (measured) RPM [2..3] (the original `compressor_rpm` read
     # [0..1] = target; re-pointed to actual). target_compressor_rpm [0..1] is
@@ -44,7 +44,7 @@ SENSOR_TYPES = {
     "odu_outdoor_temp": {"key": "odu_outdoor_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_coil_temp": {"key": "odu_coil_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_suction_temp": {"key": "odu_suction_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
-    "odu_subcooling_degf_int": {"key": "odu_subcooling_degf_int", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
+    "odu_suction_superheat": {"key": "odu_suction_superheat", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_indoor_ambient": {"key": "odu_indoor_ambient", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_discharge_temp": {"key": "odu_discharge_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     # ZC register 0302 (device class 6 = 0x60>>4). 24-byte TLV [tag,id,hi,lo],

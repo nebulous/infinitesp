@@ -176,12 +176,13 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
 
   // ODU register 0302: int16 BE / 16, always native °F. Convert to °C.
   // Field idx via accessor odu_status1_meas_f_(idx): 0=outdoor 1=coil 2=suction
-  // 3=subcooling(ΔT) 4=indoor_amb 5=discharge. idx 3 is a delta (no -32).
+  // 3=suction_superheat(ΔT) 4=indoor_amb 5=discharge. idx 3 is a delta (no -32);
+  //   confirmed superheat (matches thermostat 16<->17°F display; 56-40=16°F).
   if (register_key == REG_ODU_STATUS1) {
     struct Field { const char *suffix; uint8_t idx; bool delta; };
     static const Field fields[] = {
         {"odu_outdoor_temp", 0, false}, {"odu_coil_temp", 1, false},
-        {"odu_suction_temp", 2, false}, {"odu_subcooling_degf_int", 3, true},
+        {"odu_suction_temp", 2, false}, {"odu_suction_superheat", 3, true},
         {"odu_indoor_ambient", 4, false}, {"odu_discharge_temp", 5, false},
     };
     for (const auto &fld : fields) {

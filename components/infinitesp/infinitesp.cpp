@@ -516,7 +516,7 @@ void InfinitESPComponent::handle_passive_frame_() {
       // Alternating (threshold, measurement): offsets 0,4,8,12,16,20 = constants;
       // offsets 2,6,10,14,18,22 = dynamic measurements (accessor idx 0..5).
       if (src_class == 5 && reg_key == REG_ODU_STATUS1 && data.size() >= 24) {
-        ESP_LOGD("InfinitESP", "ODU 0302: outdoor=%.1f coil=%.1f suction=%.1f liquid=%.1f indoor_amb=%.1f discharge=%.1f",
+        ESP_LOGD("InfinitESP", "ODU 0302: outdoor=%.1f coil=%.1f suction=%.1f superheat=%.1f indoor_amb=%.1f discharge=%.1f",
                  odu_status1_meas_f_(data, 0), odu_status1_meas_f_(data, 1),
                  odu_status1_meas_f_(data, 2), odu_status1_meas_f_(data, 3),
                  odu_status1_meas_f_(data, 4), odu_status1_meas_f_(data, 5));

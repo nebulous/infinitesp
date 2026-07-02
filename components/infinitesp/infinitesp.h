@@ -611,8 +611,12 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     return decode_f32_be_(data, 1 + (idx - 1) * 4);
   }
   // ODU register 0302 (REG_ODU_STATUS1): measurement slot idx 0..5 at offset 2+idx*4.
-  //   idx 0=outdoor 1=coil 2=suction 3=subcooling(ΔT) 4=indoor_amb 5=discharge
+  //   idx 0=outdoor 1=coil 2=suction 3=suction_superheat(ΔT) 4=indoor_amb 5=discharge
   // Native °F via decode_int16_f_. idx 3 is a delta (caller skips the -32).
+  //   idx 3 confirmed = suction superheat (oscillates 16<->17°F, matching the
+  //   thermostat display; sat_temp(118psig R410A)~40°F, 56-40=16°F). NOT subcooling;
+  //   the real subcooling is the 061F float (REG_ODU_FLOATS), which the tstat
+  //   does not poll passively.
   static float odu_status1_meas_f_(const std::vector<uint8_t> &data, uint8_t idx) {
     return decode_int16_f_(data, 2 + idx * 4);
   }

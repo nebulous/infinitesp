@@ -427,10 +427,10 @@ sensor:
     entity_category: diagnostic
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
-    name: "ODU Subcooling"
-    type: odu_subcooling_degf_int
+    name: "ODU Suction Superheat"
+    type: odu_suction_superheat
     accuracy_decimals: 1
-    icon: "mdi:thermometer-chevron-down"
+    icon: "mdi:thermometer-lines"
     entity_category: diagnostic
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
