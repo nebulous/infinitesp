@@ -296,6 +296,11 @@ class InfinitESPComponent;
 class InfinitESPEntity {
  public:
   virtual void on_register_update(uint8_t device_addr, uint16_t register_key) = 0;
+  // System mode is global (one ODU, one stagmode). Called when ANY source
+  // commands a mode change (HA climate control() or ASCII MODE!) so every
+  // entity reflects it in lockstep without waiting for the lagging bus confirm.
+  // Default no-op; climate entities override to update their HA mode.
+  virtual void on_system_mode_commanded(uint8_t sys) {}
   void set_parent(InfinitESPComponent *parent) { parent_ = parent; }
   void set_zone(uint8_t zone) { zone_ = zone; }
   uint8_t get_zone() const { return zone_; }

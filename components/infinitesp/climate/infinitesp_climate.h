@@ -20,12 +20,18 @@ static const uint8_t NO_ACTIVITY = 0xFF;
 
 // How long to suppress stale poll data after a setpoint write (ms)
 static const uint32_t PENDING_SETPOINT_WINDOW_MS = 8000;
+// How long to hold a COMMANDED system mode against a lagging bus frame (ms).
+// The bus confirm lags 1-2 poll cycles; during that window a stale
+// AUTO-direction nibble (stage>0 on variable-speed gear) would otherwise
+// revert a just-commanded heat/cool via the mode-trust branch.
+static const uint32_t PENDING_MODE_WINDOW_MS = 8000;
 
 class InfinitESPClimate : public climate::Climate, public InfinitESPEntity {
  public:
   void control(const climate::ClimateCall &call) override;
   climate::ClimateTraits traits() override;
   virtual void on_register_update(uint8_t device_addr, uint16_t register_key) override;
+  void on_system_mode_commanded(uint8_t sys) override;
 
   void set_pending_setpoint_(uint8_t heat, uint8_t cool);
   // Recompute climate action from cached stage/mode + current damper state.
@@ -54,6 +60,12 @@ class InfinitESPClimate : public climate::Climate, public InfinitESPEntity {
   uint8_t pending_heat_{0};        // the setpoint we just wrote
   uint8_t pending_cool_{0};        // the setpoint we just wrote
   bool pending_active_{false};     // whether we have a pending overlay
+
+  // Pending system-mode overlay — holds a commanded mode until the bus confirms,
+  // so a stale AUTO-direction nibble can't revert it. See PENDING_MODE_WINDOW_MS.
+  uint32_t pending_mode_until_ms_{0};
+  uint8_t pending_mode_{0};
+  bool pending_mode_active_{false};
 };
 
 } // namespace infinitesp

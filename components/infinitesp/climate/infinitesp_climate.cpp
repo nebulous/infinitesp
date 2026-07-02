@@ -65,8 +65,9 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
       case climate::CLIMATE_MODE_OFF:       sys = SYSMODE_OFF; break;
       default: break;
     }
-    parent_->set_system_mode(sys);
-    sys_mode_ = sys;
+    sys_mode_ = sys;                 // set before set_system_mode so the
+                                     // broadcast's self-call is idempotent
+    parent_->set_system_mode(sys);    // propagates to all sibling zones
   }
 
   // Handle setpoint changes. HA sends target_temperature in heat/cool modes,
@@ -167,6 +168,39 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
   publish_state();
 }
 
+void InfinitESPClimate::on_system_mode_commanded(uint8_t sys) {
+  // Called by the parent's set_system_mode() when ANY source (this zone's
+  // control(), another zone's, or ASCII MODE!) changes the global system mode.
+  // The commanding zone already set sys_mode_ in control(), so the assignment
+  // below is a no-op for it; for sibling zones it updates mode + setpoints in
+  // lockstep rather than waiting for the lagging bus confirm (which the
+  // can_update_mode gate would defer until the next idle frame).
+  //
+  // Always arm the pending-mode window — even for the commanding zone — so a
+  // stale AUTO-direction nibble arriving before the bus confirms can't revert
+  // the just-commanded mode via the mode-trust branch.
+  pending_mode_ = sys;
+  pending_mode_active_ = true;
+  pending_mode_until_ms_ = millis() + PENDING_MODE_WINDOW_MS;
+  if (sys == sys_mode_)
+    return;
+  sys_mode_ = sys;
+  switch (sys) {
+    case SYSMODE_HEAT:  this->mode = climate::CLIMATE_MODE_HEAT; break;
+    case SYSMODE_COOL:  this->mode = climate::CLIMATE_MODE_COOL; break;
+    case SYSMODE_AUTO:  this->mode = climate::CLIMATE_MODE_HEAT_COOL; break;
+    case SYSMODE_EHEAT: this->mode = climate::CLIMATE_MODE_HEAT; break;
+    case SYSMODE_OFF:
+    default:            this->mode = climate::CLIMATE_MODE_OFF; break;
+  }
+  // Two-point entity: low/high are the source of truth (never the
+  // target_temperature union alias of low). Each zone uses its own setpoints.
+  this->target_temperature_low = parent_->setpoint_to_celsius(heat_sp_);
+  this->target_temperature_high = parent_->setpoint_to_celsius(cool_sp_);
+  ESP_LOGD("InfinitESP", "Zone %d: system mode broadcast -> %d", zone_, sys);
+  publish_state();
+}
+
 void InfinitESPClimate::set_pending_setpoint_(uint8_t heat, uint8_t cool) {
   pending_heat_ = heat;
   pending_cool_ = cool;
@@ -262,23 +296,34 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       if (compute_action_())
         changed = true;
 
-      // Mode update logic:
-      // - When stage==0 (idle): mode nibble is the true requested mode. Always trust it.
-      // - When stage>0 (active): the mode nibble shows active direction (heat/cool).
-      //   On conventional gear it flips AUTO→HEAT/COOL during operation, so a nibble
-      //   of AUTO during stage>0 is the variable-speed case (issue #7) and IS the real
-      //   requested mode — trust it too. EHEAT is excluded so the mode label stays
-      //   plain HEAT rather than reflecting the emergency-heat nibble mid-cycle.
-      //   On first boot (sys_mode_==0xFF), accept any reading to unstick from OFF.
+      // Mode update logic — when can we copy the bus mode nibble into the HA
+      // `mode` (the user's requested POLICY: heat/cool/heat_cool/off)? The stagmode
+      // nibble is overloaded: at stage==0 it's the requested policy, at stage>0 it's
+      // the active DIRECTION (heat/cool). Direction and policy only DIVERGE for an
+      // AUTO-policy system mid-cycle (AUTO at idle → COOL/HEAT while running); for
+      // every other policy the stage>0 nibble equals the policy. So we trust the
+      // nibble except in the ONE case where trusting it would flap mode
+      // heat_cool→cool→heat_cool: an already-established AUTO policy seeing a
+      // HEAT/COOL direction nibble. Trusting direction when policy isn't (yet)
+      // known AUTO is correct and avoids holding a stale idle value (e.g. OFF
+      // shown while cooling) across the whole cycle.
+      //   - stage==0: always trust (nibble == policy)
+      //   - stage>0 + AUTO nibble: trust (variable-speed, issue #7; unambiguous)
+      //   - stage>0 + HEAT/COOL/OFF nibble, sys_mode_ != AUTO: trust (direction==policy)
+      //   - stage>0 + HEAT/COOL nibble, sys_mode_ == AUTO: suppress (would flap)
+      //   First boot (sys_mode_==0xFF): covered by the !=AUTO branch; best-guess
+      //   that self-corrects at the next idle frame.
       bool can_update_mode = false;
-      if (stage == 0) {
-        can_update_mode = true;
-      } else if (mode != SYSMODE_EHEAT) {
-        can_update_mode = true;
+      if (pending_mode_active_ && millis() < pending_mode_until_ms_) {
+        // Hold the commanded mode: the bus hasn't confirmed it yet, and a stale
+        // AUTO-direction nibble (stage>0) would otherwise revert it via the
+        // AUTO-trust branch below. sys_mode_ already == pending_mode_. Window
+        // expires on confirm or timeout, then normal bus-trust resumes.
+      } else {
+        pending_mode_active_ = false;
+        if (stage == 0 || mode == SYSMODE_AUTO || sys_mode_ != SYSMODE_AUTO)
+          can_update_mode = true;
       }
-      // On first boot, accept any mode reading to unstick from OFF
-      if (!can_update_mode && sys_mode_ == 0xFF)
-        can_update_mode = true;
 
       if (can_update_mode && mode != sys_mode_) {
         sys_mode_ = mode;

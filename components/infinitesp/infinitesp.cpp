@@ -1363,6 +1363,13 @@ void InfinitESPComponent::set_system_mode(uint8_t mode) {
     payload_3b02.insert(payload_3b02.end(), data.begin() + 3, data.end());
     send_write_frame_(ADDR_THERMOSTAT, 0x01, payload_3b02);
   }
+
+  // System mode is global (one ODU, one stagmode). Propagate the commanded
+  // change to every entity immediately so all zones reflect it in lockstep;
+  // the bus confirm lags, and the per-zone can_update_mode gate would otherwise
+  // leave non-commanding zones on the stale mode until the next idle frame.
+  for (auto *e : entities_)
+    e->on_system_mode_commanded(mode);
 }
 
 // --- Default Register Initialization ---
