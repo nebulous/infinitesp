@@ -11,6 +11,7 @@ static const char *const PRESET_WAKE = "Wake";
 static const char *const PRESET_HOLD_PERM = "Hold Indefinitely";
 static const char *const PRESET_HOLD_TIMED = "Hold Timer";
 static const char *const PRESET_SCHEDULE = "Per Schedule";
+static const char *const PRESET_VACATION = "Vacation";
 
 // Map from comfort profile activity index to HA preset for readback.
 // Since the bus doesn't carry activity info, we track what WE set.
