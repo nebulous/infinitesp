@@ -56,7 +56,7 @@ static const uint16_t REG_DEVICE_INFO = 0x0104;
 static const uint16_t REG_SAM_STATUS = 0x030D;
 static const uint16_t REG_SAM_STATE = 0x3B02;
 static const uint16_t REG_SAM_ZONES = 0x3B03;
-static const uint16_t REG_SAM_VACATION = 0x3B04;
+// 0x3B04 = SAM vacation — NOT stored as a register (pushed as a change-frame; see REG3B04_FLAG_*).
 static const uint16_t REG_SAM_ACCESSORIES = 0x3B05;
 static const uint16_t REG_SAM_DEALER = 0x3B06;
 static const uint16_t REG_SAM_ACTIVITY = 0x3B0E;
@@ -158,23 +158,27 @@ static const uint8_t REG3B03_HOLD_DURATIONS = 38;     // hold_duration[8], uint1
 static const uint8_t REG3B03_ZONE_NAMES = 54;         // zone_names[8], 12 chars each
 static const uint8_t REG3B03_SIZE = 150;
 
-// Register 3B04 (REG_SAM_VACATION) layout — vacation settings (11 bytes)
-// NOTE on provenance: these offsets are inherited from Infinitude's CarBus::SAM
-// 3B04 parser, which is our own reverse-engineering — NOT a Carrier source. Only
-// the metric_units flag at byte 1 has live-test backing (it flips on an F/C
-// toggle); the rest (min/max temp at 5/6, humidity at 7/8, fan at 9) is a current
-// best guess, unconfirmed against real hardware. The vacation days/hours field
-// lives somewhere in the padding region (bytes 2-4) but its exact offset/unit is
-// unknown (Infinitude saw "hours region all 0x00" during its verification), so
-// VACDAYS is not decoded.
-static const uint8_t REG3B04_ACTIVE = 0;        // 0=off, nonzero=on
-static const uint8_t REG3B04_METRIC_UNITS = 1;  // 0=English, 1=Metric (shared 0x3B flag)
-static const uint8_t REG3B04_MIN_TEMP = 5;       // °F or °C per metric_units
-static const uint8_t REG3B04_MAX_TEMP = 6;
-static const uint8_t REG3B04_MIN_HUMIDITY = 7;   // 0 = NONE
-static const uint8_t REG3B04_MAX_HUMIDITY = 8;   // 100 = NONE
-static const uint8_t REG3B04_FAN_MODE = 9;       // 0=auto .. 3=high
-static const uint8_t REG3B04_SIZE = 11;
+// SAM register 0x3B04 — vacation push frame (11 data bytes).
+// DECIPHERED 2026-07-09 from a real SAM bridged to the live bus, then verified
+// from InfinitESP: this is NOT a flat config register. It is a change-
+// notification frame the SAM WRITES to the thermostat. data[2] is a bitmask of
+// which fields this frame updates; the field value sits at a fixed byte (only
+// flagged bytes are applied, the rest are 0xFF). The thermostat NEVER reads 3B04
+// from the SAM (confirmed by snoop), so InfinitESP stores vacation config in
+// dedicated members (vacation_*) and pushes one change-frame per setter.
+//   data[2] bit 0x02 -> hours remaining, uint16 BE at data[4..5]  (verified)
+//   data[2] bit 0x04 -> min_temp °F/C at data[6]                   (verified)
+//   data[2] bit 0x08 -> max_temp °F/C at data[7]                   (verified)
+//   data[2] bit 0x10 -> min_humidity at data[8]   (pattern-implied; AC-only sys can't observe)
+//   data[2] bit 0x20 -> max_humidity at data[9]   (pattern-implied; AC-only sys can't observe)
+//   data[2] bit 0x40 -> fan mode 0..3 at data[10]                  (verified)
+static const uint8_t REG3B04_DATA_BYTES = 11;
+static const uint8_t REG3B04_FLAG_HOURS = 0x02;       // data[4..5] = hours BE
+static const uint8_t REG3B04_FLAG_MIN_TEMP = 0x04;    // data[6]
+static const uint8_t REG3B04_FLAG_MAX_TEMP = 0x08;    // data[7]
+static const uint8_t REG3B04_FLAG_MIN_HUM = 0x10;     // data[8]
+static const uint8_t REG3B04_FLAG_MAX_HUM = 0x20;     // data[9]
+static const uint8_t REG3B04_FLAG_FAN = 0x40;         // data[10]
 
 // Register 3B05 (REG_SAM_ACCESSORIES) layout — accessory life & reminders (11 bytes)
 // NOTE on provenance: inherited from Infinitude's CarBus::SAM 3B05 parser (our
@@ -408,6 +412,16 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zone_hold(uint8_t zone, uint16_t duration_minutes);
   void set_system_mode(uint8_t mode);
 
+  // --- Vacation (SAM 3B04) ASCII domain methods ---
+  // Each setter updates the vacation_* member (the source of truth for sam_ascii
+  // reads) AND pushes a SAM.0x3B04 change-frame to the thermostat so the value
+  // propagates to the enforced vacation setpoints/fan (verified 2026-07-09; see
+  // the REG3B04_FLAG_* constants). VACDAYS>0 marks vacation active.
+  void set_vacation_days(uint16_t days);
+  void set_vacation_temp(bool is_min, uint8_t temp);
+  void set_vacation_humidity(bool is_min, uint8_t value);
+  void set_vacation_fan(uint8_t fan_mode);
+
   // RS485 transmit enable pin
 #ifdef USE_INFINITESP_FLOW_CONTROL_PIN
   void set_flow_control_pin(GPIOPin *pin) { flow_control_pin_ = pin; }
@@ -484,6 +498,15 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   static constexpr uint16_t HOLD_PERMANENT = 0xFFFF;
   uint16_t get_zone_hold_duration(uint8_t zone) const;
 
+  // Vacation config (source of truth for sam_ascii reads; pushed to the
+  // thermostat as 3B04 change-frames). days remaining is not auto-counted-down.
+  uint16_t get_vacation_days() const { return vacation_days_; }
+  uint8_t get_vacation_min_temp() const { return vacation_min_temp_; }
+  uint8_t get_vacation_max_temp() const { return vacation_max_temp_; }
+  uint8_t get_vacation_min_humidity() const { return vacation_min_humidity_; }
+  uint8_t get_vacation_max_humidity() const { return vacation_max_humidity_; }
+  uint8_t get_vacation_fan() const { return vacation_fan_; }
+
   // Format a hold's end time as "HH:MM AP" from the current bus clock (3B02)
   // plus hold_minutes. Returns empty string if the bus clock isn't available yet.
   std::string format_hold_end(uint16_t hold_minutes) const;
@@ -505,6 +528,20 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   //   duration >= HOLD_PERMANENT     → permanent  (0x02, bit set  → tstat adopts dur 0xFFFF)
   // Must match the reader get_zone_hold_duration().
   uint8_t encode_hold_(uint16_t duration, uint8_t idx, std::vector<uint8_t> &data) const;
+
+  // Push a SAM.0x3B04 change-frame to the thermostat: data[2]=flag, data[off]=val,
+  // all other bytes 0xFF (header data[0..1]=0). Used by the single-byte vacation
+  // setters (hours is 2 bytes and inlined in set_vacation_days).
+  void push_vacation_frame_(uint8_t flag, uint8_t off, uint8_t val);
+
+  // Vacation config (source of truth). Pushed to the thermostat as 3B04
+  // change-frames; the thermostat never reads 3B04 from the SAM.
+  uint16_t vacation_days_{0};        // VACDAYS remaining (0 = inactive)
+  uint8_t vacation_min_temp_{60};    // °F or °C per bus unit
+  uint8_t vacation_max_temp_{85};
+  uint8_t vacation_min_humidity_{0};   // 0 = NONE
+  uint8_t vacation_max_humidity_{100}; // 100 = NONE
+  uint8_t vacation_fan_{0};          // 0=auto .. 3=high
 
   // Decode big-endian IEEE754 float32 from byte vector
   static float decode_f32_be_(const std::vector<uint8_t> &data, size_t offset) {

@@ -1220,6 +1220,65 @@ void InfinitESPComponent::set_zone_fan(uint8_t zone, uint8_t fan_mode) {
   ESP_LOGI("InfinitESP", "Set zone %d fan=%d", zone, fan_mode);
 }
 
+// --- Vacation (SAM 3B04) domain methods ---
+// Each setter updates the vacation_* member (source of truth for reads) and
+// pushes a SAM.0x3B04 change-frame to the thermostat so the value propagates to
+// the enforced vacation setpoints/fan (deciphered + verified 2026-07-09; see the
+// REG3B04_FLAG_* constants in the header). The thermostat never reads 3B04.
+
+void InfinitESPComponent::push_vacation_frame_(uint8_t flag, uint8_t off, uint8_t val) {
+  std::vector<uint8_t> data(REG3B04_DATA_BYTES, 0xFF);
+  data[0] = 0;
+  data[1] = 0;
+  data[2] = flag;
+  data[off] = val;
+  std::vector<uint8_t> payload = {0x00, 0x3B, 0x04};
+  payload.insert(payload.end(), data.begin(), data.end());
+  send_write_frame_(ADDR_THERMOSTAT, 0x01, payload);
+}
+
+void InfinitESPComponent::set_vacation_days(uint16_t days) {
+  if (days > 365)
+    days = 365;
+  vacation_days_ = days;
+  // hours remaining is a 16-bit BE field at data[4..5] (flag 0x02).
+  uint16_t hours = (uint16_t) days * 24;
+  std::vector<uint8_t> data(REG3B04_DATA_BYTES, 0xFF);
+  data[0] = 0;
+  data[1] = 0;
+  data[2] = REG3B04_FLAG_HOURS;
+  data[4] = (uint8_t)(hours >> 8);
+  data[5] = (uint8_t)(hours & 0xFF);
+  std::vector<uint8_t> payload = {0x00, 0x3B, 0x04};
+  payload.insert(payload.end(), data.begin(), data.end());
+  send_write_frame_(ADDR_THERMOSTAT, 0x01, payload);
+  ESP_LOGI("InfinitESP", "Vacation days=%u (hours=%u) active=%d", days, hours, days > 0);
+}
+
+void InfinitESPComponent::set_vacation_temp(bool is_min, uint8_t temp) {
+  if (is_min)
+    vacation_min_temp_ = temp;
+  else
+    vacation_max_temp_ = temp;
+  push_vacation_frame_(is_min ? REG3B04_FLAG_MIN_TEMP : REG3B04_FLAG_MAX_TEMP, is_min ? 6 : 7, temp);
+  ESP_LOGI("InfinitESP", "Vacation %s temp=%u", is_min ? "min" : "max", temp);
+}
+
+void InfinitESPComponent::set_vacation_humidity(bool is_min, uint8_t value) {
+  if (is_min)
+    vacation_min_humidity_ = value;
+  else
+    vacation_max_humidity_ = value;
+  push_vacation_frame_(is_min ? REG3B04_FLAG_MIN_HUM : REG3B04_FLAG_MAX_HUM, is_min ? 8 : 9, value);
+  ESP_LOGI("InfinitESP", "Vacation %s humidity=%u", is_min ? "min" : "max", value);
+}
+
+void InfinitESPComponent::set_vacation_fan(uint8_t fan_mode) {
+  vacation_fan_ = fan_mode;
+  push_vacation_frame_(REG3B04_FLAG_FAN, 10, fan_mode);
+  ESP_LOGI("InfinitESP", "Vacation fan=%u", fan_mode);
+}
+
 uint8_t InfinitESPComponent::encode_hold_(uint16_t duration, uint8_t idx,
                                           std::vector<uint8_t> &data) const {
   // 3B03 hold encoding — three EXCLUSIVE intents (verified 2026-06-30, ROADMAP #6).
@@ -1439,24 +1498,10 @@ void InfinitESPComponent::initialize_defaults_() {
       store_register_(sam_address_, REG_SAM_ZONES, data);
     }
 
-    // Register 3B04 - Vacation settings (11 bytes)
-    // Seed values follow Infinitude's current CarBus::SAM 3B04 guess (our own RE,
-    // not a Carrier source): byte 1 metric_units, min/max temp at 5/6, humidity
-    // at 7/8, fan at 9. Only byte 1 is live-confirmed; the field-to-offset
-    // mapping for the rest is unverified. The prior seed wrote min/max temp at
-    // 3/4 (an older guess) — this just brings the seed in line with the current
-    // guess so VACMINT/VACMAXT reads aren't obviously wrong.
-    {
-      std::vector<uint8_t> data(REG3B04_SIZE, 0);
-      data[REG3B04_ACTIVE] = 0;         // vacation off
-      data[REG3B04_METRIC_UNITS] = 0;   // English (matches 3B06 default)
-      data[REG3B04_MIN_TEMP] = 60;      // °F
-      data[REG3B04_MAX_TEMP] = 85;      // °F
-      data[REG3B04_MIN_HUMIDITY] = 0;   // NONE
-      data[REG3B04_MAX_HUMIDITY] = 100; // NONE
-      data[REG3B04_FAN_MODE] = 0;       // auto
-      store_register_(sam_address_, REG_SAM_VACATION, data);
-    }
+    // SAM register 0x3B04 is NOT seeded: the thermostat never reads it from the
+    // SAM (confirmed by snoop), and 3B04 is a change-notification frame format,
+    // not a flat config (see REG3B04_FLAG_* in the header).
+    // Vacation config lives in the vacation_* members and is pushed on demand.
 
     // Register 3B05 - Accessories (11 bytes)
     {

@@ -153,8 +153,8 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     respond_(prefix, "COMMANDS: MODE RT RH HTSP CLSP FAN HOLD OAT TIME DAY ZONE NAME BLIGHT CFGEM REPORT");
     respond_(prefix, "ZONE: Z#RT Z#RH Z#HTSP Z#CLSP Z#FAN Z#HOLD Z#UNOCC Z#RHTG Z#OVR Z#OTMR Z#NAME");
     respond_(prefix, "ACCESSORY: FILTRLVL UVLVL HUMLVL VENTLVL FILTRRMD UVRMD HUMRMD VENTRMD");
-    respond_(prefix, "VACATION: VACAT VACMINT VACMAXT VACMINH VACMAXH VACFAN  CONFIG: CFGDEAD CFGCPH CFGPER CFGPGM DEALER DEALERPH");
-    respond_(prefix, "SET: MODE!<mode> Z#HTSP!<temp> Z#CLSP!<temp> Z#FAN!<mode> Z#HOLD!<on|off|minutes>");
+    respond_(prefix, "VACATION: VACAT VACDAYS VACMINT VACMAXT VACMINH VACMAXH VACFAN  CONFIG: CFGDEAD CFGCPH CFGPER CFGPGM DEALER DEALERPH");
+    respond_(prefix, "SET: MODE!<mode> Z#HTSP!<temp> Z#CLSP!<temp> Z#FAN!<mode> Z#HOLD!<on|off|minutes> VACDAYS!<days> VACMINT!<temp> VACMAXT!<temp> VACFAN!<mode>");
     return;
   }
 
@@ -199,9 +199,9 @@ void SamAsciiComponent::process_line_(const std::string &line) {
   // Get register data pointers (SAM registers stored under SAM address)
   auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);     // 3B02
   auto *zones_data = parent_->get_register(parent_->get_sam_address(), REG_SAM_ZONES);      // 3B03
-  auto *vacation = parent_->get_register(parent_->get_sam_address(), REG_SAM_VACATION);   // 3B04
   auto *accessories = parent_->get_register(parent_->get_sam_address(), REG_SAM_ACCESSORIES);  // 3B05
   auto *dealer = parent_->get_register(parent_->get_sam_address(), REG_SAM_DEALER);    // 3B06
+  // (3B04 vacation is not a cached register — see vacation_* getters below.)
 
   // ---- Write commands (! separator) ----
   size_t bang = body.find('!');
@@ -261,6 +261,41 @@ void SamAsciiComponent::process_line_(const std::string &line) {
         if (minutes <= 0) { respond_nak_(prefix, "VAL"); return; }
         parent_->set_zone_hold(zone, (uint16_t) minutes);
       }
+      respond_(prefix, "ACK");
+      return;
+    }
+
+    // ---- Vacation writes (3B04) ----
+    if (write_cmd == "VACDAYS") {
+      int days = atoi(write_val.c_str());
+      if (days < 0 || days > 365) { respond_nak_(prefix, "VAL"); return; }
+      parent_->set_vacation_days((uint16_t) days);
+      respond_(prefix, "ACK");
+      return;
+    }
+    if (write_cmd == "VACMINT" || write_cmd == "VACMAXT") {
+      int t = atoi(write_val.c_str());
+      int lo = parent_->bus_uses_celsius() ? 4 : 40;
+      int hi = parent_->bus_uses_celsius() ? 37 : 99;
+      if (t < lo || t > hi) { respond_nak_(prefix, "VAL"); return; }
+      parent_->set_vacation_temp(write_cmd == "VACMINT", (uint8_t) t);
+      respond_(prefix, "ACK");
+      return;
+    }
+    if (write_cmd == "VACMINH" || write_cmd == "VACMAXH") {
+      int h = atoi(write_val.c_str());
+      if (h < 0 || h > 100) { respond_nak_(prefix, "VAL"); return; }
+      parent_->set_vacation_humidity(write_cmd == "VACMINH", (uint8_t) h);
+      respond_(prefix, "ACK");
+      return;
+    }
+    if (write_cmd == "VACFAN") {
+      uint8_t fan = 0xFF;
+      for (uint8_t i = 0; i < FAN_COUNT; i++) {
+        if (write_val == FAN_NAMES[i]) { fan = i; break; }
+      }
+      if (fan == 0xFF) { respond_nak_(prefix, "VAL"); return; }
+      parent_->set_vacation_fan(fan);
       respond_(prefix, "ACK");
       return;
     }
@@ -456,27 +491,26 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     if (!accessories || accessories->size() <= off) { respond_nak_(prefix, ""); return; }
     respond_(prefix, (*accessories)[off] ? "ON" : "OFF");
 
-  // ---- Vacation (3B04) ----
-  // Offsets follow Infinitude's current guess (our own RE, not a Carrier source);
-  // only byte 1 is live-confirmed. VACDAYS is not served because its offset/unit
-  // in 3B04 is unknown (Infinitude saw the hours region all 0x00), and InfinitESP
-  // never activates vacation.
+  // ---- Vacation ----
+  // Config lives in InfinitESP vacation_* members and is pushed to the
+  // thermostat as SAM.0x3B04 change-frames (see REG3B04_FLAG_* in the header).
+  // VACAT is derived from days-remaining (>0 = active).
   } else if (body == "VACAT") {
-    if (!vacation || vacation->size() <= REG3B04_ACTIVE) { respond_nak_(prefix, ""); return; }
-    respond_(prefix, (*vacation)[REG3B04_ACTIVE] ? "ON" : "OFF");
-  } else if (body == "VACMINT" || body == "VACMAXT") {
-    uint8_t off = (body == "VACMINT") ? REG3B04_MIN_TEMP : REG3B04_MAX_TEMP;
-    if (!vacation || vacation->size() <= off) { respond_nak_(prefix, ""); return; }
-    respond_(prefix, format_temp_((*vacation)[off]));
-  } else if (body == "VACMINH" || body == "VACMAXH") {
-    uint8_t off = (body == "VACMINH") ? REG3B04_MIN_HUMIDITY : REG3B04_MAX_HUMIDITY;
-    if (!vacation || vacation->size() <= off) { respond_nak_(prefix, ""); return; }
+    respond_(prefix, parent_->get_vacation_days() > 0 ? "ON" : "OFF");
+  } else if (body == "VACDAYS") {
     char buf[8];
-    snprintf(buf, sizeof(buf), "%03d%%", (*vacation)[off]);
+    snprintf(buf, sizeof(buf), "%03u", parent_->get_vacation_days());
+    respond_(prefix, buf);
+  } else if (body == "VACMINT" || body == "VACMAXT") {
+    uint8_t t = (body == "VACMINT") ? parent_->get_vacation_min_temp() : parent_->get_vacation_max_temp();
+    respond_(prefix, format_temp_(t));
+  } else if (body == "VACMINH" || body == "VACMAXH") {
+    uint8_t h = (body == "VACMINH") ? parent_->get_vacation_min_humidity() : parent_->get_vacation_max_humidity();
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%03d%%", h);
     respond_(prefix, buf);
   } else if (body == "VACFAN") {
-    if (!vacation || vacation->size() <= REG3B04_FAN_MODE) { respond_nak_(prefix, ""); return; }
-    uint8_t fan = (*vacation)[REG3B04_FAN_MODE];
+    uint8_t fan = parent_->get_vacation_fan();
     respond_(prefix, (fan < FAN_COUNT) ? FAN_NAMES[fan] : "UNKNOWN");
 
   // ---- Configuration (3B06) ----
