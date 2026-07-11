@@ -297,15 +297,14 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       // requested mode and action is IDLE regardless.
       last_stage_ = stage;
       last_mode_ = mode;
-      // On conventional 2-stage equipment (stage 1-2), the thermostat rewrites
-      // the mode nibble to heat/cool during active operation, so AUTO while
-      // stage>0 is genuinely unexpected - log it. On variable-speed equipment
-      // (stage 3+), the mode nibble can stay AUTO during active operation
-      // (issue #7), so suppress the warning there. compute_action_() handles
-      // the AUTO case independently (falls through to IDLE).
-      if (mode == SYSMODE_AUTO && stage > 0 && stage <= 2) {
-        ESP_LOGW("infinitesp", "Unexpected: stage=%d but mode=AUTO", stage);
-      }
+      // Note: the mode nibble during stage>0 does NOT reliably indicate
+      // direction across controls. The Touch control rewrites it to heat/cool
+      // during active 2-stage operation, but variable-speed gear keeps AUTO
+      // mid-cycle (issue #7) and legacy UIZ controls also keep AUTO mid-cycle
+      // on conventional 2-stage equipment (issue #11). So we never treat a
+      // stage>0 AUTO nibble as anomalous. compute_action_() resolves the
+      // heating/cooling direction for the AUTO case via per-zone demand
+      // inference, independent of the nibble.
       if (compute_action_())
         changed = true;
 
