@@ -68,8 +68,8 @@ time:
 
 external_components:
   - source:
-      type: local
-      path: ../esphome-uart-link/components
+      type: git
+      url: https://github.com/nebulous/esphome-uart-link
   - source:
       type: local
       path: components
@@ -116,22 +116,28 @@ uart:
 #   rx_buffer_size: 4096
 #   reconnect_interval: 5s
 
-# --- Optional: SAM ASCII protocol server ---
-# Provides a text-based interface to the bus via telnet:
+# --- SAM ASCII protocol server ---
+# A text interface to the bus, enabled by default. Works in passive mode too —
+# no SAM emulation required. Connect interactively with telnet/netcat:
 #   nc infinitesp.local 23
-# Requires a uart_tcp_server or usb_cdc_acm interface.
+# then type commands like REPORT?, MODE?, Z1RT? (see the SAM ASCII section of
+# the README). To grab a diagnostic snapshot as a clean JSON file, run:
+#   python3 -c "import socket;s=socket.create_connection(('infinitesp.local',23),5);s.sendall(b'REPORT?\r\n');open('report.json','wb').write(next(l for l in s.makefile('rb') if l.startswith(b'{')))"
+# (Use `python` instead of `python3` on Windows.) See Reporting Issues in the
+# README for what to include and a note on device serials in the output.
 #
-# uart_tcp_server:
-#   - id: ascii_uart
-#     port: 23
-#     max_clients: 4
-#     client_mode: fanout
-#     idle_timeout: 300s
-#
-# sam_ascii:
-#   id: sam_ascii_server
-#   infinitesp_id: infinitesp_hub
-#   uart_id: ascii_uart
+# Backed by a uart_tcp_server. Comment this block out to disable the server.
+uart_tcp_server:
+  - id: ascii_uart
+    port: 23
+    max_clients: 4
+    client_mode: fanout
+    idle_timeout: 300s
+
+sam_ascii:
+  id: sam_ascii_server
+  infinitesp_id: infinitesp_hub
+  uart_id: ascii_uart
 
 # --- Optional: Raw bus monitor via TCP ---
 # Mirrors ABCD traffic to a TCP port for external tools:

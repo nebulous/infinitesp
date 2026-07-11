@@ -642,14 +642,21 @@ esphome logs infinitesp.yaml --device infinitesp.local
 
 30 seconds of output is usually plenty. The `STATS` line printed every 5 seconds contains bus health diagnostics (`crc_fail`, `reply_exp`, `reply_got`, etc.).
 
-**The REPORT? command** provides a quick bus snapshot and often eliminates the need for full logs. If you can reach the device over the network, connect to the SAM ASCII interface (TCP port 23 in the default config) and run `REPORT?`. For example:
+**The REPORT? command** provides a quick bus snapshot and often eliminates the need for full logs. It produces a JSON dump of all observed bus traffic, device info, cached registers, and diagnostic counters — a self-contained snapshot of the bus state.
+
+To save a clean snapshot to `report.json`, run this one-liner from any machine that can reach the device (Python ships with the ESPHome toolchain; use `python` instead of `python3` on Windows):
+
+```bash
+python3 -c "import socket;s=socket.create_connection(('infinitesp.local',23),5);s.sendall(b'REPORT?\r\n');open('report.json','wb').write(next(l for l in s.makefile('rb') if l.startswith(b'{')))"
+```
+
+Attach `report.json` to your issue. To explore interactively instead (querying live values like `MODE?`, `Z1RT?`), connect with netcat and type commands:
 
 ```bash
 nc infinitesp.local 23
-REPORT?
 ```
 
-This produces a JSON dump of all observed bus traffic, device info, cached registers, and diagnostic counters: a self-contained snapshot of the bus state.
+> **Privacy note:** the REPORT output includes device serial numbers (in the `dev` array) and dealer information (in the register dump). WiFi credentials are excluded automatically. If posting the file publicly, open it and remove the `serial` fields first, or share it privately with the maintainer.
 
 **Hardware details** help narrow down firmware-specific issues:
 
@@ -673,6 +680,7 @@ components/
 │   ├── binary_sensor/       # Bus status, compressor, electric heat
 │   ├── select/              # System mode, fan mode selects
 │   └── text_sensor/         # Zone names, WiFi info, dealer info, profiles
+├── uart_rmtx/              # RMT-line-code UART driver (RS485 auto-direction error workaround)
 └── sam_ascii/               # SAM ASCII serial CLI (REPORT?, setpoints, etc.)
 #
 # Transport components (uart_tcp_client, usb_cdc_acm, uart_tcp_server,
