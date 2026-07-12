@@ -1065,6 +1065,25 @@ const std::vector<uint8_t> *InfinitESPComponent::get_register(uint8_t addr, uint
   return nullptr;
 }
 
+bool InfinitESPComponent::has_active_fault() const {
+  // Thermostat fault history 0x4202: 10 entries × 7 bytes
+  // (code, source, hour, minute, days_be16, status). status bit 7 = 0 means
+  // the fault is currently ACTIVE. Skip empty slots (code=source=days=0).
+  const auto *data = get_register(ADDR_THERMOSTAT, REG_TSTAT_FAULTS);
+  if (!data || data->size() < 70)
+    return false;
+  for (uint8_t i = 0; i < 10; i++) {
+    uint8_t base = i * 7;
+    uint8_t code = (*data)[base], source = (*data)[base + 1];
+    uint16_t days = ((uint16_t) (*data)[base + 4] << 8) | (*data)[base + 5];
+    if (code == 0 && source == 0 && days == 0)
+      continue;  // empty slot
+    if (!((*data)[base + 6] & 0x80))
+      return true;  // active
+  }
+  return false;
+}
+
 uint8_t InfinitESPComponent::get_zone_count() const {
   auto *state = get_register(sam_address_, REG_SAM_STATE);
   if (state && !state->empty())
@@ -1281,7 +1300,7 @@ void InfinitESPComponent::set_vacation_fan(uint8_t fan_mode) {
 
 uint8_t InfinitESPComponent::encode_hold_(uint16_t duration, uint8_t idx,
                                           std::vector<uint8_t> &data) const {
-  // 3B03 hold encoding — three EXCLUSIVE intents (verified 2026-06-30, ROADMAP #6).
+  // 3B03 hold encoding — three EXCLUSIVE intents (verified 2026-06-30).
   // The thermostat honors flag 0x02 writes to zones_holding: setting the bit
   // registers a permanent hold (it adopts duration 0xFFFF itself); clearing the
   // bit cancels the hold entirely (it zeroes its own countdown timer). Flag 0x80
@@ -1339,9 +1358,9 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
   // Convert comfort bytes to the 3B03 setpoint encoding via the shared helpers
   // (comfort_byte_to_celsius → celsius_to_setpoint) — single source of truth for
   // the comfort→setpoint transform. Byte-identical to the previous inline branch.
-  // NOTE: comfort_byte_to_celsius() is itself tracked as buggy in °C mode (ROADMAP
-  // bug #1: 400A is always °F, not C*2); routing through it here means a future
-  // fix to that helper propagates to apply_activity too.
+  // NOTE: comfort_byte_to_celsius() is itself buggy in °C mode (400A is always
+  // °F, not C*2); routing through it here means a future fix to that helper
+  // propagates to apply_activity too.
   uint8_t htsp_bus = celsius_to_setpoint(comfort_byte_to_celsius(htsp_raw));
   uint8_t clsp_bus = celsius_to_setpoint(comfort_byte_to_celsius(clsp_raw));
 
