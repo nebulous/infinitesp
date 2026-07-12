@@ -459,6 +459,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zc_hpt_staleness(uint32_t ms) { zc_hpt_.staleness_timeout_ms = ms; }
 
   const std::vector<uint8_t> *get_register(uint8_t addr, uint16_t key) const;
+  // True if any thermostat fault-history (0x4202) entry has the active bit set.
+  bool has_active_fault() const;
   uint8_t get_zone_count() const;
   bool is_bus_online() const { return bus_online_; }
   bool has_real_state() const { return sam_state_received_; }
@@ -521,7 +523,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void mirror_to_sam_(uint16_t reg_key, const std::vector<uint8_t> &data);
 
   // Encode a logical hold into a 3B03 register buffer; returns the change_flags
-  // bit to set. Verified 2026-06-30 (ROADMAP #6). The thermostat honors flag 0x02
+  // bit to set. Verified 2026-06-30. The thermostat honors flag 0x02
   // writes to zones_holding; flag 0x80 (override_timer) is IGNORED by it.
   //   duration == 0                  → cancel     (0x02, bit clear → tstat zeroes timer)
   //   0 < duration < HOLD_PERMANENT  → timed      (0x80; NOTE: tstat ignores, won't register)

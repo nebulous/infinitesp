@@ -29,6 +29,23 @@ void InfinitESPBinarySensor::on_register_update(uint8_t device_addr, uint16_t re
         publish_state(rpm != 0);
     }
   }
+
+  // Per-zone occupancy from SAM 3B02 offset 21 (zones_unoccupied bitmask):
+  // bit (zone-1) set = UNOCCUPIED (away / hold-permanent). Publish occupied =
+  // bit clear. NOTE this is the thermostat's occupied/away schedule state, not
+  // a motion/presence sensor (not carried on the ABCD bus).
+  if (sensor_type_ == "occupancy" && register_key == REG_SAM_STATE) {
+    if (zone_ >= 1) {
+      auto *data = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
+      if (data && data->size() > REG3B02_UNOCCUPIED)
+        publish_state(!((*data)[REG3B02_UNOCCUPIED] & (1 << (zone_ - 1))));
+    }
+  }
+
+  // Active fault: ON when any thermostat fault-history (0x4202) entry has the
+  // active bit set. Primary "something failed right now" alert.
+  if (sensor_type_ == "active_fault" && register_key == REG_TSTAT_FAULTS)
+    publish_state(parent_->has_active_fault());
 }
 
 } // namespace infinitesp

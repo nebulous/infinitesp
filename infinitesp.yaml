@@ -487,6 +487,19 @@ binary_sensor:
     type: electric_heat
     icon: "mdi:fire"
     entity_category: diagnostic
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Active Fault"
+    type: active_fault
+    icon: "mdi:alert"
+    entity_category: diagnostic
+  # Per-zone occupancy (occupied = not in the thermostat's away/unoccupied
+  # state). NOTE: this is the schedule/away state, NOT a motion/presence sensor.
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Zone 1 Occupancy"
+    type: occupancy
+    zone: 1
   - platform: status
     name: "Status"
 

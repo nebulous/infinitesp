@@ -15,7 +15,7 @@ InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address 
 | **Climate** | Per-zone thermostat with heat/cool/auto/off modes, dual heat+cool setpoints, fan control, and preset support (per schedule, home, away, sleep, wake, hold timer, hold indefinitely) |
 | **Covers** | Per-zone damper position (0–100%) from the zone controller(either an emulated or a real physical zone controller) |
 | **Sensors** | Zone temperature, zone humidity, outdoor air temp, blower RPM, airflow CFM, compressor RPM, ODU demand/stage/modulation, expansion valve position, superheat/subcooling targets & actuals, ODU temperatures (outdoor/coil/suction/discharge) plus suction superheat, vacation min/max temps |
-| **Binary Sensors** | Bus online/offline status, compressor running, electric heat active |
+| **Binary Sensors** | Bus online/offline status, compressor running, electric heat active, active fault, per-zone occupancy |
 | **Selects** | System mode (heat/cool/auto/off/emergency heat), per-zone fan speed (auto/low/med/high) |
 | **Text Sensors** | Zone names, hold state, thermostat WiFi SSID/hostname/MAC, proxy server, dealer info, comfort profile dump |
 
@@ -419,7 +419,16 @@ binary_sensor:
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Bus Status"
-    type: bus_status       # bus_status, compressor_running, electric_heat
+    type: bus_status       # bus_status, compressor_running, electric_heat, active_fault
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Active Fault"
+    type: active_fault     # ON while any thermostat fault (0x4202) is currently active
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Zone 1 Occupancy"
+    type: occupancy        # per-zone: occupied vs the thermostat's away state (not motion)
+    zone: 1
 ```
 
 ### Selects

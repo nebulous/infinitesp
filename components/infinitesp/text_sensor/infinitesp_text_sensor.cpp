@@ -4,6 +4,20 @@
 namespace esphome {
 namespace infinitesp {
 
+// Fault source byte is the device bus address; the high nibble is the device
+// class (0x2x thermostat/UI, 0x4x IDU/furnace, 0x5x ODU). Matches Infinitude
+// (0x20=UI, 0x40=furnace, 0x52=AC) and the device-class convention, robust to
+// other instances (0x21 stat, 0x53 ODU). Confirmed against live 4202 data
+// where every entry is src=0x20 (thermostat).
+static const char *fault_source_name(uint8_t source) {
+  switch (source >> 4) {
+    case 0x2: return "UI";   // thermostat
+    case 0x4: return "IDU";  // indoor unit / furnace
+    case 0x5: return "ODU";  // outdoor unit
+    default:  return "?";
+  }
+}
+
 void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t register_key) {
   // Hold state display: "until HH:MM PM", "Permanent", or "Schedule"
   if (sensor_type_ == "hold_state") {
@@ -195,13 +209,10 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
     if (!data || data->size() < 70)
       return;
 
-    const char *source_names[] = {"?", "?", "UI", "?", "?", "?", "?", "?",
-                                  "?", "?", "?", "?", "?", "?", "?", "?",
-                                  "?", "?", "?", "?", "?", "?", "?", "?",
-                                  "?", "?", "?", "?", "?", "?", "?", "?",
-                                  "IDU", "?", "?", "?", "?", "?", "?", "?",
-                                  "?", "?", "?", "?", "?", "?", "?", "?",
-                                  "?", "?", "ODU"};
+    // Source label: fault_source_name() (device-class high nibble of the bus
+    // address). Fault codes are shown as decimal numbers. Human-readable
+    // descriptions require a verified Carrier Infinity / Bryant Evolution
+    // fault-code reference, which is not available here; add one when found.
     std::string result;
     for (int i = 0; i < 10; i++) {
       uint8_t base = i * 7;
@@ -250,9 +261,7 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
       uint8_t day = (uint8_t) total_days + 1;
       month++;  // 1-indexed
 
-      const char *src_name = (source < sizeof(source_names) / sizeof(source_names[0]))
-                                 ? source_names[source]
-                                 : "?";
+      const char *src_name = fault_source_name(source);
       char buf[80];
       snprintf(buf, sizeof(buf), "%s code=%02d src=%s %02d:%02d %04d-%02d-%02d occ=%d%s",
                active ? "ACT" : "CLR", code, src_name, hour, minute, year, month, day,
