@@ -29,6 +29,26 @@ static const uint32_t SLOW_POLL_INTERVAL_MS = 31000;  // poll every 31s (prime, 
 static const uint32_t DISCOVERY_POLL_INTERVAL_MS = 3500;
 static const uint8_t TABLEDEF_ROW = 0x01;  // every table's self-describing register is at row 01
 
+// Install-discovery holdoff. The thermostat transmits as ADDR_DISCOVERY
+// (0x1F) only while running system discovery/commissioning. In steady state
+// that address never appears: across init captures it shows as a single ~10s
+// burst and nothing else. The discovery sequence that follows the burst
+// (thermostat-driven 3405 presence probing and 041e smart-sensor scans) is
+// timing-sensitive. Unsolicited bus traffic from this component (polls,
+// retransmits, discovery and metric probes) can corrupt it and make device
+// detection fail (issue #8), so all five initiated-TX paths pause for this
+// window after the last 0x1F frame. Reactive handling (READ/WRITE addressed to
+// the emulated SAM/ZC) and passive snooping keep running, so the emulated
+// devices stay discoverable.
+//
+// Discovery outlasts the 0x1F burst. Two init captures show the full discovery
+// tail ending about 41s and 105s after the last 0x1F frame, so the holdoff
+// must cover that tail. 180s covers both with margin. The spread between the
+// two is the argument for a future refinement that re-arms the holdoff on
+// observed 3405 presence frames instead of a fixed window. The constant lives
+// in the header (DISCOVERY_HOLDOFF_MS) so the inline
+// commissioning_holdoff_active_() helper can see it.
+
 // Write retransmit delay. Each WRITE is re-sent once after this interval to
 // ride through sporadic drops. Must stay <= PENDING_SETPOINT_WINDOW_MS/2
 // (climate entity overlay) so a retransmit lands inside the newest change's
@@ -198,10 +218,22 @@ void InfinitESPComponent::loop() {
   // This is tighter than the old 200ms byte-gap but still conservative.
   const uint32_t bus_idle_ms = diag_last_frame_time_ ? (now - diag_last_frame_time_) : 1000;
 
+  // Install-discovery holdoff (issue #8). Pause all five initiated-TX paths
+  // while the thermostat runs discovery/commissioning (ADDR_DISCOVERY 0x1F
+  // seen recently), to avoid corrupting its timing-sensitive zone and
+  // smart-sensor presence probing. Reactive READ/WRITE handling and snooping
+  // are not gated: the emulated SAM/ZC must stay discoverable. See
+  // dispatch_frame_() for the stamp and DISCOVERY_HOLDOFF_MS for the window.
+  const bool discovery_holdoff = commissioning_holdoff_active_();
+  if (!discovery_holdoff && discovery_holdoff_engaged_) {
+    discovery_holdoff_engaged_ = false;
+    ESP_LOGI("InfinitESP", "Install discovery holdoff expired - resuming initiated bus TX");
+  }
+
   // Drain due write retransmit (one per iteration, bus-idle gated). Suppresses
   // the fast/slow polls this iteration to avoid back-to-back TX to the thermostat.
   bool retransmit_sent = false;
-  if (!pending_retransmits_.empty() && bus_idle_ms > 50 &&
+  if (!discovery_holdoff && !pending_retransmits_.empty() && bus_idle_ms > 50 &&
       (int32_t) (pending_retransmits_.front().fire_ms - now) <= 0) {
     auto &r = pending_retransmits_.front();
     uint16_t rk = r.payload.size() >= 3 ? (uint16_t) ((r.payload[1] << 8) | r.payload[2]) : 0;
@@ -213,7 +245,7 @@ void InfinitESPComponent::loop() {
   }
 
   bool fast_poll_sent = false;
-  if (sam_enabled() && !retransmit_sent && (now - last_poll_time_ > 3000) && bus_idle_ms > 50) {
+  if (!discovery_holdoff && sam_enabled() && !retransmit_sent && (now - last_poll_time_ > 3000) && bus_idle_ms > 50) {
     poll_thermostat_();
     last_poll_time_ = now;
     fast_poll_sent = true;
@@ -223,7 +255,7 @@ void InfinitESPComponent::loop() {
   // MUST NOT fire in the same loop iteration as the fast poll — sending
   // two READ frames to the same thermostat back-to-back causes the echo
   // drain to eat one of the replies (observed 44% poll timeout rate).
-  if (sam_enabled() && !fast_poll_sent && !retransmit_sent && bus_online_ &&
+  if (!discovery_holdoff && sam_enabled() && !fast_poll_sent && !retransmit_sent && bus_online_ &&
       (now - last_slow_poll_time_ >= SLOW_POLL_INTERVAL_MS) && bus_idle_ms > 50) {
     const auto &sreg = SLOW_POLL_REGS[slow_poll_index_ % SLOW_POLL_REG_COUNT];
     uint16_t sreg_key = (sreg[0] << 8) | sreg[1];
@@ -247,7 +279,7 @@ void InfinitESPComponent::loop() {
   // Table-name discovery: probe one observed device's 0xNN01 register from
   // ADDR_FAKESAM (0x93) when 0x93 is free (not our SAM address). One query
   // per cycle, never in the same iteration as a thermostat poll.
-  if (sam_address_ != ADDR_FAKESAM && bus_online_ &&
+  if (!discovery_holdoff && sam_address_ != ADDR_FAKESAM && bus_online_ &&
       !fast_poll_sent && !retransmit_sent &&
       (now - last_discovery_poll_ms_ >= DISCOVERY_POLL_INTERVAL_MS) && bus_idle_ms > 50) {
     poll_discovery_();
@@ -262,7 +294,7 @@ void InfinitESPComponent::loop() {
   // flag only flips for replies addressed to us, which never happens in a
   // pure-passive (no-emulation) config.
   bool bus_active = (now - last_rx_time_) < 5000;
-  if (temperature_unit_ == TemperatureUnit::AUTO && !sam_enabled() &&
+  if (!discovery_holdoff && temperature_unit_ == TemperatureUnit::AUTO && !sam_enabled() &&
       sam_address_ != ADDR_FAKESAM && bus_active &&
       !fast_poll_sent && !retransmit_sent && bus_idle_ms > 50 &&
       (!metric_units_known_ || (now - last_unit_poll_ms_) > 300000) &&
@@ -389,6 +421,20 @@ void InfinitESPComponent::dispatch_frame_() {
            current_frame_.dst, current_frame_.dst_bus,
            func_name, current_frame_.length, current_frame_.payload.size(),
            payload_hex, current_frame_.payload.size() > 32 ? "..." : "");
+
+  // The thermostat transmits as ADDR_DISCOVERY (0x1F) only during system
+  // discovery/commissioning. Stamp it so loop() can pause initiated TX for
+  // the holdoff window (issue #8). Reactive handling below is unaffected: the
+  // emulated SAM/ZC stays discoverable.
+  if (current_frame_.src == ADDR_DISCOVERY || current_frame_.dst == ADDR_DISCOVERY) {
+    discovery_seen_ = true;
+    last_discovery_ms_ = millis();
+    if (!discovery_holdoff_engaged_) {
+      discovery_holdoff_engaged_ = true;
+      ESP_LOGI("InfinitESP", "Install discovery (0x1F) observed - pausing initiated bus TX for %us",
+               (unsigned) (DISCOVERY_HOLDOFF_MS / 1000));
+    }
+  }
 
   // Check if addressed to us (SAM or optional zone controller)
   bool to_us = (sam_enabled() && current_frame_.dst == sam_address_);

@@ -694,6 +694,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 
   void poll_thermostat_();
   void poll_discovery_();
+  // True when install/commissioning discovery (ADDR_DISCOVERY 0x1F) was seen
+  // recently and initiated bus TX should be paused (issue #8). Reactive
+  // handling (READ/WRITE) is not gated. Returns false until the first 0x1F
+  // frame is observed (discovery_seen_), so a steady-state boot pays no
+  // polling penalty.
+  bool commissioning_holdoff_active_() const {
+    return discovery_seen_ && (millis() - last_discovery_ms_ < DISCOVERY_HOLDOFF_MS);
+  }
   void initialize_defaults_();
   void update_zc_zone_temp_(uint8_t zone, float temp_f);
   void write_zc_zone_temp_entry_(uint8_t zone, float temp_f, bool present);
@@ -755,6 +763,17 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   std::map<std::pair<uint8_t, uint8_t>, std::string> table_names_;
   std::map<std::pair<uint8_t, uint8_t>, uint32_t> discovery_query_ms_;  // last query ts (retry backoff)
   uint32_t last_discovery_poll_ms_{0};
+
+  // Install-discovery holdoff (issue #8). last_discovery_ms_ is stamped on
+  // any frame with src/dst == ADDR_DISCOVERY (0x1F); discovery_seen_ gates the
+  // holdoff arithmetic so a never-commissioned bus pays no polling penalty
+  // (last_discovery_ms_ defaults to 0, which millis()-from-zero would falsely
+  // read as "recent"). discovery_holdoff_engaged_ tracks the logged state for
+  // one-shot engage/disengage logging.
+  static constexpr uint32_t DISCOVERY_HOLDOFF_MS = 180000;
+  uint32_t last_discovery_ms_{0};
+  bool discovery_seen_{false};
+  bool discovery_holdoff_engaged_{false};
 
   std::vector<uint8_t> rx_buffer_;
   std::vector<uint8_t> rx_hex_log_;
