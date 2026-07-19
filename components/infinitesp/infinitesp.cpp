@@ -1112,7 +1112,18 @@ std::string InfinitESPComponent::format_hold_end(uint16_t hold_minutes) const {
   uint16_t now_min = ((uint16_t) state->at(REG3B02_MINUTES) << 8) |
                      state->at(REG3B02_MINUTES + 1);
   uint16_t end_min = now_min + hold_minutes;
-  if (end_min >= 1440) end_min -= 1440;
+  // The bus carries the hold as minutes-remaining (SAM 3B03) and the clock
+  // separately (SAM 3B02). They are sampled at different instants. Right after
+  // a minute rollover the remaining timer has decremented but the clock has
+  // not, so the sum reads one minute low for a few seconds and the "Hold
+  // until" time flaps once a minute.
+  //
+  // The thermostat pins timed-hold end times to quarter-hour boundaries, so
+  // snapping the sum to the nearest 15 min recovers the true value. The skew
+  // is ±1 min; the snap tolerates ±7. 1440 is a multiple of 15, so the
+  // same-day wrap is preserved.
+  end_min = ((end_min + 7) / 15) * 15;
+  end_min %= 1440;
   uint8_t hr24 = end_min / 60;
   uint8_t mn = end_min % 60;
   uint8_t hr12 = hr24 % 12;
