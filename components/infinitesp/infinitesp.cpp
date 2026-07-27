@@ -162,12 +162,19 @@ void InfinitESPComponent::loop() {
     }
     diag_poll_purged_ += purged;
 
+    // CRC pass rate over all complete frames (parsed / (parsed + failed)).
+    // Inverts crc_fail into a quality metric where higher is better, and gives
+    // the raw counter a denominator (issue #17: crc_fail=4118 looked alarming
+    // on its own). 100% until the first frame arrives.
+    uint32_t total_frames = diag_frames_parsed_ + diag_crc_fail_;
+    float crc_ok = total_frames ? (100.0f * diag_frames_parsed_ / total_frames) : 100.0f;
+
     ESP_LOGI("InfinitESP", "STATS rx_bytes=%u tx_bytes=%u rx_frames=%u tx_frames=%u "
-             "crc_fail=%u stale=%u uart_hwm=%u overflow_evts=%u "
+             "crc_fail=%u crc_ok=%.2f%% stale=%u uart_hwm=%u overflow_evts=%u "
              "reply_exp=%u reply_got=%u reply_timeout=%u poll_pending=%u "
              "tx_flush_max=%ums loop_max=%ums inter_frame=%u..%ums",
              diag_total_rx_bytes_, diag_total_tx_bytes_, diag_frames_parsed_, diag_tx_seq_,
-             diag_crc_fail_, diag_stale_discard_, diag_uart_hwm_, diag_uart_overflow_events_,
+             diag_crc_fail_, crc_ok, diag_stale_discard_, diag_uart_hwm_, diag_uart_overflow_events_,
              diag_reply_expected_, diag_reply_received_, diag_reply_timeout_,
              (uint32_t) pending_polls_.size(),
              diag_tx_flush_max_ms_, diag_loop_max_ms_,
