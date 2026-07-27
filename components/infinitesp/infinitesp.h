@@ -38,12 +38,19 @@ namespace infinitesp {
 // thermostat's discovery concept with our table-name probing.
 static const uint8_t ADDR_DISCOVERY = 0x1F;
 static const uint8_t ADDR_THERMOSTAT = 0x20;
-static const uint8_t ADDR_INDOOR_UNIT = 0x40;
-static const uint8_t ADDR_OUTDOOR_UNIT = 0x50;
 static const uint8_t ADDR_SAM = 0x92;
 static const uint8_t ADDR_FAKESAM = 0x93;
-static const uint8_t ADDR_ZONE_CTRL = 0x60;
+static const uint8_t ADDR_ZONE_CTRL = 0x60;  // primary controller; 0x61 is secondary
 static const uint8_t ADDR_BROADCAST = 0xF1;
+
+// Device classes: the upper nibble of a bus address. The low nibble is the
+// instance, which varies by install (ODU is class 5: 0x50 on some systems,
+// 0x52 on others). Match with (addr >> 4) == CLASS_*; do not compare the full
+// address for class filtering.
+static const uint8_t CLASS_THERMOSTAT   = 0x2;  // UI / master
+static const uint8_t CLASS_INDOOR_UNIT  = 0x4;  // furnace / air handler
+static const uint8_t CLASS_OUTDOOR_UNIT = 0x5;  // condenser / heat pump / AC
+static const uint8_t CLASS_ZONE_CTRL    = 0x6;  // zone controller
 
 // Function codes
 static const uint8_t FUNC_READ = 0x0B;

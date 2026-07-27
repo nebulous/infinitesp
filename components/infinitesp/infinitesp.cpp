@@ -12,9 +12,11 @@ static const uint8_t POLL_REGS[][2] = {
 };
 static const uint8_t POLL_REG_COUNT = 2;
 
-// Slow-poll thermostat registers (0x4xxx tables, polled less frequently)
-// These are thermostat-internal config tables, not SAM registers.
+// Slow-poll thermostat registers, polled less frequently than the 3B02/3B03
+// fast poll. Mix of the device info block (0x0104) and thermostat-internal
+// config tables (0x4xxx).
 static const uint8_t SLOW_POLL_REGS[][2] = {
+    {0x01, 0x04},  // device info: model, serial (manufacture date source)
     {0x40, 0x0A},  // comfort profiles (home/away/sleep/wake/manual setpoints+fan)
     {0x40, 0x12},  // vacation settings (min/max temp, fan)
     {0x42, 0x02},  // fault history (10 entries × 7 bytes)
@@ -22,7 +24,7 @@ static const uint8_t SLOW_POLL_REGS[][2] = {
     {0x46, 0x09},  // Cloud: host, device IP
     {0x46, 0x0A},  // dealer info: name, brand, URL
 };
-static const uint8_t SLOW_POLL_REG_COUNT = 6;
+static const uint8_t SLOW_POLL_REG_COUNT = 7;
 static const uint32_t SLOW_POLL_INTERVAL_MS = 31000;  // poll every 31s (prime, avoids beating with other timers)
 // Table-name discovery: probe one observed (device, table) 0xNN01 per cycle.
 // Conservative cadence to stay off the thermostat's bus schedule.
@@ -506,8 +508,7 @@ void InfinitESPComponent::handle_passive_frame_() {
   // that the thermostat polls. We observe but don't initiate these transactions.
   if (current_frame_.func == FUNC_REPLY && current_frame_.payload.size() > 3) {
     uint8_t src_class = current_frame_.src >> 4;
-    // Class 4 = Indoor Unit, Class 5 = Outdoor Unit
-    if (src_class == 4 || src_class == 5) {
+    if (src_class == CLASS_INDOOR_UNIT || src_class == CLASS_OUTDOOR_UNIT) {
       uint8_t table = current_frame_.payload[1];
       uint8_t row = current_frame_.payload[2];
       uint16_t reg_key = (table << 8) | row;
@@ -515,12 +516,12 @@ void InfinitESPComponent::handle_passive_frame_() {
       store_register_(current_frame_.src, reg_key, data);
 
       // Log decoded IDU data via accessors (single source of truth for offsets)
-      if (src_class == 4 && reg_key == REG_IDU_STATUS) {
+      if (src_class == CLASS_INDOOR_UNIT && reg_key == REG_IDU_STATUS) {
         float blower_rpm = idu_blower_rpm_(data);
         if (!std::isnan(blower_rpm))
           ESP_LOGD("InfinitESP", "IDU 0306: blower_rpm=%u", (unsigned) blower_rpm);
       }
-      if (src_class == 4 && reg_key == REG_IDU_CONFIG) {
+      if (src_class == CLASS_INDOOR_UNIT && reg_key == REG_IDU_CONFIG) {
         float airflow_cfm = idu_airflow_cfm_(data);
         if (!std::isnan(airflow_cfm))
           ESP_LOGD("InfinitESP", "IDU 0316: airflow_cfm=%u elec_heat=%d",
@@ -528,30 +529,30 @@ void InfinitESPComponent::handle_passive_frame_() {
       }
 
       // Log decoded ODU data
-      if (src_class == 5 && reg_key == REG_ODU_STATUS2 && data.size() >= 1) {
+      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_STATUS2 && data.size() >= 1) {
         ESP_LOGD("InfinitESP", "ODU 0303: stage=%u raw=[%02X %02X %02X %02X]",
                  data[0] >> 1, data[0], data.size() > 1 ? data[1] : 0,
                  data.size() > 2 ? data[2] : 0, data.size() > 3 ? data[3] : 0);
       }
-      if (src_class == 5 && reg_key == REG_ODU_COMP_SPEED) {
+      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_COMP_SPEED) {
         float target = odu_compressor_target_rpm_(data);
         float actual = odu_compressor_actual_rpm_(data);
         if (!std::isnan(target) && !std::isnan(actual))
           ESP_LOGD("InfinitESP", "ODU 0604: target_rpm=%u actual_rpm=%u (%u bytes)",
                    (unsigned) target, (unsigned) actual, data.size());
       }
-      if (src_class == 5 && reg_key == REG_ODU_DEMAND && data.size() >= 7) {
+      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_DEMAND && data.size() >= 7) {
         ESP_LOGD("InfinitESP", "ODU 0608: compressor_frequency=%.1f Hz expansion_valve=%.0f%% raw=[%02X %02X %02X %02X %02X %02X %02X]",
                  odu_compressor_frequency_(data),
                  odu_expansion_valve_(data),
                  data[0], data[1], data[2], data[3], data[4], data[5], data[6]);
       }
-      if (src_class == 5 && reg_key == REG_ODU_STAGE_INFO && data.size() >= 1) {
+      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_STAGE_INFO && data.size() >= 1) {
         ESP_LOGD("InfinitESP", "ODU 060e: stage=%u raw=[%02X]",
                  (unsigned) odu_stage_(data), data[0]);
       }
 
-      if (src_class == 5 && reg_key == REG_ODU_FLOATS && data.size() >= 25) {
+      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_FLOATS && data.size() >= 25) {
         ESP_LOGI("InfinitESP", "ODU 061f: sh_tgt=%.1f sh_act=%.1f sc_tgt=%.1f sc_act=%.1f dyn=%.1f unk=%.3f",
                  odu_float_(data, 1), odu_float_(data, 2),
                  odu_float_(data, 3), odu_float_(data, 4),
@@ -561,7 +562,7 @@ void InfinitESPComponent::handle_passive_frame_() {
       // ODU register 0302: temperatures and thresholds (24 bytes = 12 int16 BE / 16)
       // Alternating (threshold, measurement): offsets 0,4,8,12,16,20 = constants;
       // offsets 2,6,10,14,18,22 = dynamic measurements (accessor idx 0..5).
-      if (src_class == 5 && reg_key == REG_ODU_STATUS1 && data.size() >= 24) {
+      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_STATUS1 && data.size() >= 24) {
         ESP_LOGD("InfinitESP", "ODU 0302: outdoor=%.1f coil=%.1f suction=%.1f superheat=%.1f indoor_amb=%.1f discharge=%.1f",
                  odu_status1_meas_f_(data, 0), odu_status1_meas_f_(data, 1),
                  odu_status1_meas_f_(data, 2), odu_status1_meas_f_(data, 3),
@@ -578,7 +579,7 @@ void InfinitESPComponent::handle_passive_frame_() {
     // for real physical ZCs. Multi-ZC: capture each controller under its real
     // source address (0x60 serves zones 1-4, 0x61 serves zones 5-8) so the
     // per-zone cover/climate/sensor entities read the correct register.
-    if (!zc_enabled() && src_class == 6) {
+    if (!zc_enabled() && src_class == CLASS_ZONE_CTRL) {
       uint8_t table = current_frame_.payload[1];
       uint8_t row = current_frame_.payload[2];
       uint16_t zc_key = (table << 8) | row;
@@ -610,7 +611,7 @@ void InfinitESPComponent::handle_passive_frame_() {
     // fires for real hardware. 0308 is an 8-byte system-wide payload (see
     // zc_system_byte_for_zone_); store the full payload under the destination
     // controller's address.
-    if (!zc_enabled() && (current_frame_.dst >> 4) == 6 &&
+    if (!zc_enabled() && (current_frame_.dst >> 4) == CLASS_ZONE_CTRL &&
         reg_key == REG_ZC_DAMPER_CMD) {
       if (current_frame_.payload.size() > 3) {
         std::vector<uint8_t> damper(current_frame_.payload.begin() + 3,
@@ -642,7 +643,7 @@ void InfinitESPComponent::handle_passive_frame_() {
     // capture is the only source. Stored under dst (ODU address) so ODU sensors
     // match on bus_class 5. Write rows (0x0605/060b/0610/0612/061a/061d/061e)
     // do not collide with reply rows (0x0602/0604/0608/060a/060e/061f/0625).
-    if (current_frame_.dst >> 4 == 5 && current_frame_.src == ADDR_THERMOSTAT &&
+    if (current_frame_.dst >> 4 == CLASS_OUTDOOR_UNIT && current_frame_.src == ADDR_THERMOSTAT &&
         current_frame_.payload.size() > 3) {
       std::vector<uint8_t> odu_data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
       store_register_(current_frame_.dst, reg_key, odu_data);

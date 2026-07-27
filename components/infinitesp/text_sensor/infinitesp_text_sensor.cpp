@@ -11,9 +11,9 @@ namespace infinitesp {
 // where every entry is src=0x20 (thermostat).
 static const char *fault_source_name(uint8_t source) {
   switch (source >> 4) {
-    case 0x2: return "UI";   // thermostat
-    case 0x4: return "IDU";  // indoor unit / furnace
-    case 0x5: return "ODU";  // outdoor unit
+    case CLASS_THERMOSTAT:   return "UI";   // thermostat
+    case CLASS_INDOOR_UNIT:  return "IDU";  // indoor unit / furnace
+    case CLASS_OUTDOOR_UNIT: return "ODU";  // outdoor unit
     default:  return "?";
   }
 }
@@ -278,11 +278,15 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
 
   // Manufacture date derived from 0104 serial number
   // Carrier serial format: first 2 digits = week (01-52), next 2 digits = year (00-99)
-  // Requires device_address to be set — each physical device needs its own sensor
+  // device_address matches on the upper nibble (device class), not the full
+  // address: a class can sit at different low-nibble values across installs
+  // (ODU is class 5, seen at 0x50 on some systems and 0x52 on others). One
+  // sensor per class; any value in the class works (0x50, 0x40, 0x20).
   if (sensor_type_ == "manufacture_date") {
     if (register_key != REG_DEVICE_INFO)
       return;
-    if (target_device_addr_ != 0 && device_addr != target_device_addr_)
+    // Match on class; 0 means accept any device class.
+    if (target_device_addr_ != 0 && (device_addr >> 4) != (target_device_addr_ >> 4))
       return;
     auto *data = parent_->get_register(device_addr, REG_DEVICE_INFO);
     if (!data || data->size() < 100)
