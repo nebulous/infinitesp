@@ -1052,7 +1052,10 @@ void InfinitESPComponent::handle_discovery_reply_() {
     return;
   }
 
-  // Name lives at [2..9] of the tabledef register (row 0x01).
+  // Name lives at [2..9] of the tabledef register (row 0x01), NUL/space padded. Trim
+  // trailing padding; a NUL inside the field ends the name at emit time (c_str()).
+  // Any remaining non-printable bytes (a binary field with no real name) are escaped
+  // by emit_json_string_ at emit, so they cannot break the JSON.
   if (row == TABLEDEF_ROW && data.size() >= 10) {
     std::string name(data.begin() + 2, data.begin() + 10);
     while (!name.empty() && (name.back() == '\0' || name.back() == ' '))
@@ -2014,6 +2017,43 @@ void InfinitESPComponent::log_traffic_(uint8_t src, uint8_t dst, uint8_t func, u
   }
 }
 
+// Emit a JSON string literal (with surrounding quotes) via write_fn, escaping every byte
+// that would break the JSON or the transport: ", \, control chars, and any non-ASCII
+// byte. Non-ASCII bytes (including 0xFF, which is telnet IAC on the ASCII socket) become
+// \u00XX, so the output is pure ASCII and always valid JSON. Batched through a small
+// stack buffer. No heap allocation.
+static void emit_json_string_(void (*write_fn)(const uint8_t *, size_t, void *), void *ctx, const char *s) {
+  char esc[40];
+  size_t m = 0;
+  auto flush = [&]() { if (m) { write_fn((const uint8_t *) esc, m, ctx); m = 0; } };
+  auto put = [&](char c) {
+    if (m == sizeof(esc)) flush();
+    esc[m++] = c;
+  };
+
+  write_fn((const uint8_t *) "\"", 1, ctx);
+  if (s) {
+    for (; *s; ++s) {
+      unsigned char c = (unsigned char) *s;
+      if (c == '"' || c == '\\') {
+        put('\\');
+        put((char) c);
+      } else if (c < 0x20 || c >= 0x7f) {
+        put('\\');
+        put('u');
+        put('0');
+        put('0');
+        put("0123456789ABCDEF"[c >> 4]);
+        put("0123456789ABCDEF"[c & 0x0F]);
+      } else {
+        put((char) c);
+      }
+    }
+  }
+  flush();
+  write_fn((const uint8_t *) "\"", 1, ctx);
+}
+
 void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, size_t, void *), void *ctx) {
   // Stream a JSON diagnostic report via a write callback (UART/TCP socket).
   // Uses only a 256-byte stack buffer — no heap allocation regardless of report size.
@@ -2054,9 +2094,14 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
     for (int i=23; i>=0 && name[i]==' '; i--) name[i]=0;
     for (int i=19; i>=0 && model[i]==' '; i--) model[i]=0;
     for (int i=23; i>=0 && serial[i]==' '; i--) serial[i]=0;
-    n = snprintf(buf, sizeof(buf), "%s{\"address\":\"%02X\",\"name\":\"%s\",\"model\":\"%s\",\"serial\":\"%s\"}",
-             first?"":",", akv.first, name, model, serial);
+    n = snprintf(buf, sizeof(buf), "%s{\"address\":\"%02X\",\"name\":", first?"":",", akv.first);
     write_fn((const uint8_t *)buf, n, ctx);
+    emit_json_string_(write_fn, ctx, name);
+    emit(",\"model\":");
+    emit_json_string_(write_fn, ctx, model);
+    emit(",\"serial\":");
+    emit_json_string_(write_fn, ctx, serial);
+    emit("}");
     first = false;
   }
   emit("]");
@@ -2079,9 +2124,11 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
   emit(",\"tables\":[");
   first = true;
   for (const auto &kv : table_names_) {
-    n = snprintf(buf, sizeof(buf), "%s{\"address\":\"%02X\",\"table\":\"%02X\",\"name\":\"%s\"}",
-             first ? "" : ",", kv.first.first, kv.first.second, kv.second.c_str());
+    n = snprintf(buf, sizeof(buf), "%s{\"address\":\"%02X\",\"table\":\"%02X\",\"name\":",
+             first ? "" : ",", kv.first.first, kv.first.second);
     write_fn((const uint8_t *) buf, n, ctx);
+    emit_json_string_(write_fn, ctx, kv.second.c_str());
+    emit("}");
     first = false;
   }
   emit("]");
