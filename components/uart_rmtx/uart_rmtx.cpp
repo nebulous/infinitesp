@@ -14,14 +14,14 @@ namespace esphome::uart_rmtx {
 static const char *const TAG = "uart.rmtx";
 
 void RmtTxUARTComponent::setup() {
-  // 1) Bring up the hardware UART RX-only. We intentionally do NOT forward a
-  //    tx_pin to the base (set_tx_pin is never called), so IDFUARTComponent's
+  // 1) Bring up the contained hardware UART RX-only. We intentionally do NOT
+  //    forward a tx_pin to idf_rx_ (set_tx_pin is never called), so its
   //    load_settings() passes tx=-1 (UART_PIN_NO_CHANGE) and opens the HW UART
-  //    RX-only. RMT then owns the TX GPIO. (rx_full_threshold is set by
-  //    codegen — see AGENTS.md "Subclassing IDFUARTComponent" for why a 0
-  //    default silently fails the component.)
-  uart::IDFUARTComponent::setup();
-  if (this->is_failed())
+  //    RX-only. RMT then owns the TX GPIO. (rx_full_threshold is set by codegen
+  //    and forwarded to idf_rx_ — see AGENTS.md for why a 0 default silently
+  //    fails the component.)
+  idf_rx_.setup();
+  if (idf_rx_.is_failed())
     return;
 
   if (this->rmt_tx_pin_ == nullptr) {
@@ -151,7 +151,7 @@ uart::UARTFlushResult RmtTxUARTComponent::flush() {
 
 void RmtTxUARTComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "uart_rmtx (RMT-TX + HW-RX):");
-  ESP_LOGCONFIG(TAG, "  HW UART %u (RX only)", this->get_hw_serial_number());
+  ESP_LOGCONFIG(TAG, "  HW UART %u (RX only)", this->idf_rx_.get_hw_serial_number());
   LOG_PIN("  RMT TX Pin: ", this->rmt_tx_pin_);
   ESP_LOGCONFIG(TAG,
                 "  Baud Rate: %" PRIu32 "\n"

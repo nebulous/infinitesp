@@ -28,7 +28,7 @@ CONF_RMT_MEM_SYMBOLS = "rmt_mem_symbols"
 
 uart_rmtx_ns = cg.esphome_ns.namespace("uart_rmtx")
 RmtTxUARTComponent = uart_rmtx_ns.class_(
-    "RmtTxUARTComponent", uart.IDFUARTComponent
+    "RmtTxUARTComponent", cg.Component, uart.UARTComponent
 )
 
 CONFIG_SCHEMA = cv.All(
