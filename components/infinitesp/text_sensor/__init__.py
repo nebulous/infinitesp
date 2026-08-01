@@ -23,6 +23,7 @@ TEXT_SENSOR_TYPES = {
     "comfort_profile": "comfort_profile",
     "fault_history": "fault_history",
     "manufacture_date": "manufacture_date",
+    "version": "version",
 }
 
 CONFIG_SCHEMA = text_sensor.text_sensor_schema(InfinitESPTextSensor).extend(
@@ -42,3 +43,6 @@ async def to_code(config):
     if CONF_DEVICE_ADDRESS in config:
         cg.add(var.set_device_address(config[CONF_DEVICE_ADDRESS]))
     await register_infinitesp_entity(var, config)
+    if TEXT_SENSOR_TYPES[config[CONF_TYPE]] == "version":
+        parent = await cg.get_variable(config[CONF_INFINITESP_ID])
+        cg.add(parent.set_version_text_sensor(var))

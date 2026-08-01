@@ -1,4 +1,5 @@
 #include "infinitesp.h"
+#include "version.h"
 #include "esphome/components/sensor/sensor.h"
 
 namespace esphome {
@@ -59,7 +60,7 @@ static const uint8_t TABLEDEF_ROW = 0x01;  // every table's self-describing regi
 static const uint32_t RETRANSMIT_DELAY_MS = 4000;
 
 void InfinitESPComponent::setup() {
-  ESP_LOGI("InfinitESP", "InfinitESP v0.1.0 build %s %s", __DATE__, __TIME__);
+  ESP_LOGI("InfinitESP", "InfinitESP v%s build %s %s", INFINITESP_VERSION, __DATE__, __TIME__);
   ESP_LOGI("InfinitESP", "SAM Address=0x%02X", sam_address_);
   if (zc_enabled())
     ESP_LOGI("InfinitESP", "Zone Controller emulation at 0x%02X", zc_address_);
@@ -113,6 +114,12 @@ void InfinitESPComponent::setup() {
 }
 
 void InfinitESPComponent::loop() {
+  // Publish the firmware version to the (optional) version text sensor once.
+  if (version_text_sensor_ != nullptr && !version_published_) {
+    version_text_sensor_->publish_state(INFINITESP_VERSION);
+    version_published_ = true;
+  }
+
   uint32_t loop_start = millis();
 
   // NOTE: no echo suppression needed. RS485 auto-direction transceivers disable
@@ -2064,12 +2071,12 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
 
   // Report metadata
   n = snprintf(buf, sizeof(buf),
-    "{\"fw\":\"InfinitESP 0.1\",\"up\":%u,\"bus\":\"%s\","
+    "{\"fw\":\"InfinitESP 0.1\",\"ver\":\"%s\",\"up\":%u,\"bus\":\"%s\","
     "\"sam\":\"%02X\",\"zc\":\"%02X\","
     "\"temp_unit\":\"%s\",\"temp_cfg\":\"%s\","
     "\"rx\":%u,\"tx\":%u,\"crc\":%u,\"exp\":%u,\"got\":%u,\"to\":%u,"
     "\"hwm\":%u,\"ovf\":%u,\"prg\":%u,\"pp\":%u",
-    (unsigned)(millis()/1000), bus_online_?"on":"off",
+    INFINITESP_VERSION, (unsigned)(millis()/1000), bus_online_?"on":"off",
     sam_address_, zc_address_,
     bus_uses_celsius() ? "C" : "F",
     temperature_unit_ == TemperatureUnit::AUTO ? "auto" : temperature_unit_ == TemperatureUnit::CELSIUS ? "C" : "F",

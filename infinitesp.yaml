@@ -24,7 +24,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: infinitesp.esp32-s3-relay-6ch
-    version: 0.1.0
+    version: 2026.8.0
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -534,6 +534,13 @@ select:
 # ──────────────────────────────────────────────
 
 text_sensor:
+  # Firmware version (diagnostic) - shows the running build's CalVer (e.g. 2026.7.0)
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "InfinitESP Version"
+    type: version
+    entity_category: diagnostic
+    icon: "mdi:tag"
   # Zone info - add zone_name for each active zone
   - platform: infinitesp
     infinitesp_id: infinitesp_hub

@@ -4,6 +4,7 @@
 #include "esphome/core/preferences.h"
 #include "esphome/core/gpio.h"
 #include "esphome/components/uart/uart.h"
+#include "esphome/components/text_sensor/text_sensor.h"
 #ifdef USE_WIFI
 #include "esphome/components/wifi/wifi_component.h"
 #endif
@@ -405,6 +406,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_temperature_unit(TemperatureUnit unit) { temperature_unit_ = unit; }
   TemperatureUnit get_temperature_unit() const { return temperature_unit_; }
   void register_entity(InfinitESPEntity *entity) { entities_.push_back(entity); }
+  // Optional version text sensor: parent publishes INFINITESP_VERSION to it once.
+  void set_version_text_sensor(text_sensor::TextSensor *s) { version_text_sensor_ = s; }
 
   // Status LED configuration
 #ifdef USE_INFINITESP_STATUS_LED_PIN
@@ -786,6 +789,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   std::vector<uint8_t> rx_hex_log_;
   InfinitESPFrame current_frame_;
   std::vector<InfinitESPEntity *> entities_;
+  text_sensor::TextSensor *version_text_sensor_{nullptr};
+  bool version_published_{false};
   uint8_t sam_address_{ADDR_FAKESAM};
   uint8_t zc_address_{0};  // 0 = zone controller emulation disabled
   ZCZoneConfig zc_zones_[9];  // index 0=unused, 1-8=zones (2-8 may have external sensors)
