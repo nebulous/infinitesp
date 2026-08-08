@@ -7,6 +7,70 @@ namespace infinitesp {
 void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register_key) {
   float value = NAN;
 
+  // Generic raw_register sensor: match the user-configured device+register exactly,
+  // then decode per datatype/scale (or a full-frame lambda). Surfaces arbitrary bus
+  // fields the curated sensors don't cover (e.g. older/cooling-only ODU families).
+  if (sensor_type_ == "raw_register") {
+    if (device_addr != raw_device_ || register_key != raw_register_)
+      return;
+    const auto *data = parent_->get_register(raw_device_, raw_register_);
+    if (data == nullptr)
+      return;
+
+    if (raw_lambda_) {
+      value = raw_lambda_(*data);
+    } else if (!raw_datatype_.empty()) {
+      size_t o = raw_offset_;
+      if (o >= data->size())
+        return;
+      auto be16 = [&](size_t i) -> uint16_t {
+        return (uint16_t) (((*data)[i] << 8) | (*data)[i + 1]);
+      };
+      auto be32 = [&](size_t i) -> uint32_t {
+        return ((uint32_t) (*data)[i] << 24) | ((uint32_t) (*data)[i + 1] << 16) |
+               ((uint32_t) (*data)[i + 2] << 8) | (uint32_t) (*data)[i + 3];
+      };
+      if (raw_datatype_ == "uint8") {
+        value = (float) (*data)[o];
+      } else if (raw_datatype_ == "int8") {
+        value = (float) (int8_t) (*data)[o];
+      } else if (raw_datatype_ == "uint16_be") {
+        if (o + 1 >= data->size())
+          return;
+        value = (float) be16(o);
+      } else if (raw_datatype_ == "int16_be") {
+        if (o + 1 >= data->size())
+          return;
+        value = (float) (int16_t) be16(o);
+      } else if (raw_datatype_ == "uint32_be") {
+        if (o + 3 >= data->size())
+          return;
+        value = (float) be32(o);
+      } else if (raw_datatype_ == "int32_be") {
+        if (o + 3 >= data->size())
+          return;
+        value = (float) (int32_t) be32(o);
+      } else if (raw_datatype_ == "f32_be") {
+        if (o + 3 >= data->size())
+          return;
+        uint32_t u = be32(o);
+        float f;
+        memcpy(&f, &u, sizeof(f));
+        value = f;
+      } else {
+        return;  // unknown datatype
+      }
+      value *= raw_scale_;
+    } else {
+      return;  // no datatype and no lambda (config validation should prevent this)
+    }
+
+    if (raw_has_range_ && (value < raw_min_ || value > raw_max_))
+      return;  // out of plausibility range (guards the unpopulated-register footgun)
+    publish_state(value);
+    return;
+  }
+
   // SAM state registers (3B02): temperature, humidity, outdoor temp
   if (register_key == REG_SAM_STATE) {
     auto *data = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);

@@ -24,7 +24,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: infinitesp.esp32-s3-relay-6ch
-    version: 2026.8.1
+    version: 2026.8.2
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -276,6 +276,61 @@ cover:
 # ──────────────────────────────────────────────
 
 sensor:
+  # Generic bus-field sensor: decode any field by device/register/offset. Different
+  # HVAC families expose the same property at different addresses. Use this to test and
+  # validate a field for your own system, then contribute the confirmed
+  # (device, register, decode) to the curated sensor list so every install gets it.
+  # Decode via datatype + scale, or a full-frame lambda for anything that needs custom
+  # code (`data` is the register's raw bytes). The examples below cover the 24ANA1-family
+  # (2-stage AC + gas furnace), decoded as in lurgh's infinitive fork:
+  #   - ODU outside/coil temps are high-res int16 / 16 in register 0x3e01
+  #   - ODU cool stage is a bitfield in 0x3e02 (data[0] >> 1)
+  #   - IDU heat stage is a byte in 0x0316
+  # Confirm the device_address via REPORT? (the `dev` array): the 24ANA1-family ODU is
+  # at 0x50/0x51, the variable-speed ODU observed at 0x52 has been reference thusfar.
+  # Add value_min/value_max to suppress implausible values on an unpopulated register.
+  #
+  # - platform: infinitesp          # ODU outside air temp
+  #   infinitesp_id: infinitesp_hub
+  #   type: raw_register
+  #   name: "ODU Outside Temp (0x3e01)"
+  #   device_address: 0x50
+  #   register: 0x3e01
+  #   offset: 0
+  #   datatype: int16_be            # uint8|int8|uint16_be|int16_be|uint32_be|int32_be|f32_be
+  #   scale: 0.0625                 # 1/16, high-res °F
+  #   unit_of_measurement: "°F"
+  #   device_class: temperature
+  #   value_min: -40
+  #   value_max: 250
+  # - platform: infinitesp          # ODU coil temp
+  #   infinitesp_id: infinitesp_hub
+  #   type: raw_register
+  #   name: "ODU Coil Temp (0x3e01)"
+  #   device_address: 0x50
+  #   register: 0x3e01
+  #   offset: 2
+  #   datatype: int16_be
+  #   scale: 0.0625
+  #   unit_of_measurement: "°F"
+  #   device_class: temperature
+  #   value_min: -40
+  #   value_max: 250
+  # - platform: infinitesp          # ODU cool stage: bitfield data[0] >> 1, so use a lambda
+  #   infinitesp_id: infinitesp_hub
+  #   type: raw_register
+  #   name: "ODU Cool Stage (0x3e02)"
+  #   device_address: 0x50
+  #   register: 0x3e02
+  #   lambda: "return data[0] >> 1;"
+  # - platform: infinitesp          # IDU (furnace) heat stage: the byte at 0x0316 offset 0
+  #   infinitesp_id: infinitesp_hub
+  #   type: raw_register
+  #   name: "IDU Heat Stage (0x0316)"
+  #   device_address: 0x40
+  #   register: 0x0316
+  #   offset: 0
+  #   datatype: uint8
   # Zone environment - add temperature + humidity for each active zone
   - platform: infinitesp
     infinitesp_id: infinitesp_hub

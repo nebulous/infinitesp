@@ -6,6 +6,17 @@ from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_inf
 
 CONF_ZONE = "zone"
 
+# raw_register (generic bus-field sensor) config keys and datatypes.
+CONF_DEVICE_ADDRESS = "device_address"
+CONF_REGISTER = "register"
+CONF_OFFSET = "offset"
+CONF_DATATYPE = "datatype"
+CONF_SCALE = "scale"
+CONF_VALUE_MIN = "value_min"
+CONF_VALUE_MAX = "value_max"
+CONF_LAMBDA = "lambda"
+RAW_DATATYPES = ["uint8", "int8", "uint16_be", "int16_be", "uint32_be", "int32_be", "f32_be"]
+
 InfinitESPSensor = infinitesp_ns.class_("InfinitESPSensor", sensor.Sensor, InfinitESPEntity)
 
 SENSOR_TYPES = {
@@ -76,16 +87,42 @@ SENSOR_TYPES = {
     "odu_cool_hours": {"key": "odu_cool_hours", "unit": "h", "bus_class": 5},
     "odu_defrost_hours": {"key": "odu_defrost_hours", "unit": "h", "bus_class": 5},
     "odu_poweron_hours": {"key": "odu_poweron_hours", "unit": "h", "bus_class": 5},
+    # Generic bus-field sensor: user specifies device/register/offset/datatype/scale
+    # (decode mode) or a full-frame lambda. bus_class is derived from device_address.
+    "raw_register": {"key": "raw_register", "bus_class": 0},
 }
 
 def _apply_sensor_type(config):
     """Inject unit/device_class from SENSOR_TYPES and force disabled_by_default
-    for sensor types that opt into it (e.g. zc_lat/zc_hpt)."""
+    for sensor types that opt into it (e.g. zc_lat/zc_hpt). raw_register supplies
+    its own unit/device_class from yaml, so it is skipped here."""
+    if config[CONF_TYPE] == "raw_register":
+        return config
     info = SENSOR_TYPES[config[CONF_TYPE]]
     config[sensor.CONF_UNIT_OF_MEASUREMENT] = info["unit"]
     config[sensor.CONF_DEVICE_CLASS] = info.get("device_class", "")
     if info.get("disabled_by_default"):
         config[CONF_DISABLED_BY_DEFAULT] = True
+    return config
+
+
+def _validate_raw_register(config):
+    """raw_register needs device_address + register, and either datatype (decode
+    mode) or lambda (full-frame decode), mutually exclusive."""
+    if config[CONF_TYPE] != "raw_register":
+        return config
+    if CONF_DEVICE_ADDRESS not in config:
+        raise cv.Invalid("raw_register requires 'device_address'")
+    if CONF_REGISTER not in config:
+        raise cv.Invalid("raw_register requires 'register'")
+    has_lambda = CONF_LAMBDA in config
+    has_datatype = CONF_DATATYPE in config
+    if has_lambda and has_datatype:
+        raise cv.Invalid("raw_register: 'lambda' and 'datatype' are mutually exclusive")
+    if not has_lambda and not has_datatype:
+        raise cv.Invalid("raw_register: requires either 'datatype' or 'lambda'")
+    if (CONF_VALUE_MIN in config) != (CONF_VALUE_MAX in config):
+        raise cv.Invalid("raw_register: 'value_min' and 'value_max' must be set together")
     return config
 
 
@@ -99,9 +136,19 @@ CONFIG_SCHEMA = cv.All(
             {
                 cv.GenerateID(CONF_INFINITESP_ID): cv.use_id(CONF_INFINITESP_ID),
                 cv.Optional(CONF_ZONE, default=1): cv.int_range(min=1, max=8),
+                # raw_register extras (ignored by other sensor types):
+                cv.Optional(CONF_DEVICE_ADDRESS): cv.hex_uint8_t,
+                cv.Optional(CONF_REGISTER): cv.hex_uint16_t,
+                cv.Optional(CONF_OFFSET, default=0): cv.int_range(min=0, max=250),
+                cv.Optional(CONF_DATATYPE): cv.one_of(*RAW_DATATYPES, lower=True),
+                cv.Optional(CONF_SCALE, default=1.0): cv.float_,
+                cv.Optional(CONF_VALUE_MIN): cv.float_,
+                cv.Optional(CONF_VALUE_MAX): cv.float_,
+                cv.Optional(CONF_LAMBDA): cv.lambda_,
             }
         )
     ),
+    _validate_raw_register,
     _apply_sensor_type,
 )
 
@@ -113,5 +160,23 @@ async def to_code(config):
     await sensor.register_sensor(var, config)
     cg.add(var.set_zone(config[CONF_ZONE]))
     cg.add(var.set_sensor_type(info["key"]))
-    cg.add(var.set_bus_class(info.get("bus_class", 0)))
+    if stype == "raw_register":
+        dev = config[CONF_DEVICE_ADDRESS]
+        cg.add(var.set_bus_class(dev >> 4))
+        cg.add(var.set_raw_target(dev, config[CONF_REGISTER]))
+        cg.add(var.set_raw_offset(config[CONF_OFFSET]))
+        cg.add(var.set_raw_scale(config[CONF_SCALE]))
+        if CONF_DATATYPE in config:
+            cg.add(var.set_raw_datatype(config[CONF_DATATYPE]))
+        if CONF_VALUE_MIN in config:
+            cg.add(var.set_raw_value_range(config[CONF_VALUE_MIN], config[CONF_VALUE_MAX]))
+        if CONF_LAMBDA in config:
+            lam = await cg.process_lambda(
+                config[CONF_LAMBDA],
+                [(cg.std_vector.template(cg.uint8).operator("const").operator("ref"), "data")],
+                return_type=cg.float_,
+            )
+            cg.add(var.set_raw_lambda(lam))
+    else:
+        cg.add(var.set_bus_class(info.get("bus_class", 0)))
     await register_infinitesp_entity(var, config)
