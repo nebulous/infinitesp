@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
-from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_VOLTAGE
+from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, STATE_CLASS_TOTAL_INCREASING, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_VOLTAGE, DEVICE_CLASS_DURATION, CONF_ACCURACY_DECIMALS, CONF_STATE_CLASS
 from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
 CONF_ZONE = "zone"
@@ -18,6 +18,13 @@ CONF_LAMBDA = "lambda"
 RAW_DATATYPES = ["uint8", "int8", "uint16_be", "int16_be", "uint32_be", "int32_be", "f32_be"]
 
 InfinitESPSensor = infinitesp_ns.class_("InfinitESPSensor", sensor.Sensor, InfinitESPEntity)
+
+# Monotonic counters (register 0310 cycles / 0311 hours): state_class=total_increasing
+# so HA treats them as utility-meter-able totals (not stair-step measurement graphs),
+# with integer precision.
+_HOURS = {"unit": "h", "device_class": DEVICE_CLASS_DURATION,
+          "state_class": STATE_CLASS_TOTAL_INCREASING, "accuracy_decimals": 0}
+_CYCLES = {"unit": "cycles", "state_class": STATE_CLASS_TOTAL_INCREASING, "accuracy_decimals": 0}
 
 SENSOR_TYPES = {
     # SAM/thermostat sensors — device_class 0 (any), they gate on register_key
@@ -44,18 +51,23 @@ SENSOR_TYPES = {
     "odu_mode": {"key": "odu_operating_mode", "unit": "", "bus_class": 5},
     # ODU line voltage from register 0304 byte 7 (whole volts, state-independent)
     "odu_line_voltage": {"key": "odu_line_voltage", "unit": "V", "device_class": DEVICE_CLASS_VOLTAGE, "bus_class": 5},
-    # ODU IEEE754 float32 values from register 061f
-    "odu_float_1": {"key": "odu_float_1", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
-    "odu_float_2": {"key": "odu_float_2", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
-    "odu_float_3": {"key": "odu_float_3", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
-    "odu_float_4": {"key": "odu_float_4", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
-    "odu_float_5": {"key": "odu_float_5", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
+    # ODU IEEE754 float32 values from register 061f. idx 1..5 are DELTAS
+    # (superheat/subcooling/control \u0394T) published in NATIVE \u00b0F with NO
+    # device_class: HA's temperature conversion applies a +32 offset that corrupts
+    # deltas (3\u00b0F -> 1.67\u00b0C -> displayed as 35\u00b0F). idx 6 is dimensionless.
+    "odu_float_1": {"key": "odu_float_1", "unit": "\u00b0F", "bus_class": 5},
+    "odu_float_2": {"key": "odu_float_2", "unit": "\u00b0F", "bus_class": 5},
+    "odu_float_3": {"key": "odu_float_3", "unit": "\u00b0F", "bus_class": 5},
+    "odu_float_4": {"key": "odu_float_4", "unit": "\u00b0F", "bus_class": 5},
+    "odu_float_5": {"key": "odu_float_5", "unit": "\u00b0F", "bus_class": 5},
     "odu_float_6": {"key": "odu_float_6", "unit": "", "bus_class": 5},
     # ODU register 0302 temperature measurements
     "odu_outdoor_temp": {"key": "odu_outdoor_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_coil_temp": {"key": "odu_coil_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_suction_temp": {"key": "odu_suction_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
-    "odu_suction_superheat": {"key": "odu_suction_superheat", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
+    # \u0394T (delta): published native \u00b0F, no device_class (HA's temp conversion
+    # adds +32, corrupting deltas). Matches the thermostat's \u00b0F superheat display.
+    "odu_suction_superheat": {"key": "odu_suction_superheat", "unit": "\u00b0F", "bus_class": 5},
     "odu_indoor_ambient": {"key": "odu_indoor_ambient", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_discharge_temp": {"key": "odu_discharge_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     # ZC register 0302 (device class 6 = 0x60>>4). 24-byte TLV [tag,id,hi,lo],
@@ -66,41 +78,43 @@ SENSOR_TYPES = {
     "zc_lat": {"key": "zc_lat", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 6, "disabled_by_default": True},
     "zc_hpt": {"key": "zc_hpt", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 6, "disabled_by_default": True},
     # IDU cycle counters (register 0310, 4-byte key-value entries) — device class 4
-    "idu_low_heat_cycles": {"key": "idu_low_heat_cycles", "unit": "cycles", "bus_class": 4},
-    "idu_high_heat_cycles": {"key": "idu_high_heat_cycles", "unit": "cycles", "bus_class": 4},
-    "idu_med_heat_cycles": {"key": "idu_med_heat_cycles", "unit": "cycles", "bus_class": 4},
-    "idu_blower_cycles": {"key": "idu_blower_cycles", "unit": "cycles", "bus_class": 4},
-    "idu_poweron_cycles": {"key": "idu_poweron_cycles", "unit": "cycles", "bus_class": 4},
+    "idu_low_heat_cycles": {"key": "idu_low_heat_cycles", "bus_class": 4, **_CYCLES},
+    "idu_high_heat_cycles": {"key": "idu_high_heat_cycles", "bus_class": 4, **_CYCLES},
+    "idu_med_heat_cycles": {"key": "idu_med_heat_cycles", "bus_class": 4, **_CYCLES},
+    "idu_blower_cycles": {"key": "idu_blower_cycles", "bus_class": 4, **_CYCLES},
+    "idu_poweron_cycles": {"key": "idu_poweron_cycles", "bus_class": 4, **_CYCLES},
     # IDU runtime hours (register 0311, 4-byte key-value entries) — device class 4
-    "idu_low_heat_hours": {"key": "idu_low_heat_hours", "unit": "h", "bus_class": 4},
-    "idu_high_heat_hours": {"key": "idu_high_heat_hours", "unit": "h", "bus_class": 4},
-    "idu_med_heat_hours": {"key": "idu_med_heat_hours", "unit": "h", "bus_class": 4},
-    "idu_blower_hours": {"key": "idu_blower_hours", "unit": "h", "bus_class": 4},
-    "idu_poweron_hours": {"key": "idu_poweron_hours", "unit": "h", "bus_class": 4},
+    "idu_low_heat_hours": {"key": "idu_low_heat_hours", "bus_class": 4, **_HOURS},
+    "idu_high_heat_hours": {"key": "idu_high_heat_hours", "bus_class": 4, **_HOURS},
+    "idu_med_heat_hours": {"key": "idu_med_heat_hours", "bus_class": 4, **_HOURS},
+    "idu_blower_hours": {"key": "idu_blower_hours", "bus_class": 4, **_HOURS},
+    "idu_poweron_hours": {"key": "idu_poweron_hours", "bus_class": 4, **_HOURS},
     # ODU cycle counters (register 0310) — device class 5
-    "odu_heat_cycles": {"key": "odu_heat_cycles", "unit": "cycles", "bus_class": 5},
-    "odu_cool_cycles": {"key": "odu_cool_cycles", "unit": "cycles", "bus_class": 5},
-    "odu_defrost_cycles": {"key": "odu_defrost_cycles", "unit": "cycles", "bus_class": 5},
-    "odu_poweron_cycles": {"key": "odu_poweron_cycles", "unit": "cycles", "bus_class": 5},
+    "odu_heat_cycles": {"key": "odu_heat_cycles", "bus_class": 5, **_CYCLES},
+    "odu_cool_cycles": {"key": "odu_cool_cycles", "bus_class": 5, **_CYCLES},
+    "odu_defrost_cycles": {"key": "odu_defrost_cycles", "bus_class": 5, **_CYCLES},
+    "odu_poweron_cycles": {"key": "odu_poweron_cycles", "bus_class": 5, **_CYCLES},
     # ODU runtime hours (register 0311) — device class 5
-    "odu_heat_hours": {"key": "odu_heat_hours", "unit": "h", "bus_class": 5},
-    "odu_cool_hours": {"key": "odu_cool_hours", "unit": "h", "bus_class": 5},
-    "odu_defrost_hours": {"key": "odu_defrost_hours", "unit": "h", "bus_class": 5},
-    "odu_poweron_hours": {"key": "odu_poweron_hours", "unit": "h", "bus_class": 5},
+    "odu_heat_hours": {"key": "odu_heat_hours", "bus_class": 5, **_HOURS},
+    "odu_cool_hours": {"key": "odu_cool_hours", "bus_class": 5, **_HOURS},
+    "odu_defrost_hours": {"key": "odu_defrost_hours", "bus_class": 5, **_HOURS},
+    "odu_poweron_hours": {"key": "odu_poweron_hours", "bus_class": 5, **_HOURS},
     # Generic bus-field sensor: user specifies device/register/offset/datatype/scale
     # (decode mode) or a full-frame lambda. bus_class is derived from device_address.
     "raw_register": {"key": "raw_register", "bus_class": 0},
 }
 
 def _apply_sensor_type(config):
-    """Inject unit/device_class from SENSOR_TYPES and force disabled_by_default
-    for sensor types that opt into it (e.g. zc_lat/zc_hpt). raw_register supplies
-    its own unit/device_class from yaml, so it is skipped here."""
+    """Inject unit/device_class/accuracy_decimals/state_class from SENSOR_TYPES,
+    and force disabled_by_default for sensor types that opt into it (e.g.
+    zc_lat/zc_hpt). raw_register supplies its own from yaml, so it is skipped."""
     if config[CONF_TYPE] == "raw_register":
         return config
     info = SENSOR_TYPES[config[CONF_TYPE]]
     config[sensor.CONF_UNIT_OF_MEASUREMENT] = info["unit"]
     config[sensor.CONF_DEVICE_CLASS] = info.get("device_class", "")
+    config[CONF_ACCURACY_DECIMALS] = info.get("accuracy_decimals", 1)
+    config[CONF_STATE_CLASS] = sensor.validate_state_class(info.get("state_class", STATE_CLASS_MEASUREMENT))
     if info.get("disabled_by_default"):
         config[CONF_DISABLED_BY_DEFAULT] = True
     return config

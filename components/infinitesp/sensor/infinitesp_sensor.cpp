@@ -212,9 +212,11 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
-  // ODU IEEE754 float32 values from register 061f. Native °F for idx 1..5,
-  // but 1..5 are DELTAS (superheat/subcooling ΔT), so convert ΔF→ΔC (×5/9,
-  // no -32 offset). idx 6 is dimensionless, passed through.
+  // ODU IEEE754 float32 values from register 061f. idx 1..5 are DELTAS
+  // (superheat/subcooling/control ΔT), published in NATIVE °F (no conversion).
+  // These sensors have no device_class in yaml: HA's temperature conversion applies
+  // a +32 offset that corrupts deltas (3°F → 1.67°C → displayed 35°F).
+  // idx 6 is dimensionless.
   // Layout via accessor odu_float_(idx): idx 1..6 at offset 1+(idx-1)*4.
   //   1: superheat target  2: superheat actual  3: subcooling target
   //   4: subcooling actual 5: discharge-related control delta (NOT discharge superheat -
@@ -228,20 +230,18 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
       int idx = sensor_type_[10] - '0';  // odu_float_N → N
       if (idx >= 1 && idx <= 6) {
         float fval = parent_->odu_float_(*data, idx);
-        if (!std::isnan(fval)) {
-          if (idx <= 5)
-            value = fval * (5.0f / 9.0f);  // °F delta → °C delta (superheat/subcooling are ΔT, not absolute)
-          else
-            value = fval;  // float 6 is dimensionless
-        }
+        if (!std::isnan(fval))
+          value = fval;  // idx 1..5 = native °F delta, idx 6 = dimensionless (no conversion)
       }
     }
   }
 
-  // ODU register 0302: int16 BE / 16, always native °F. Convert to °C.
+  // ODU register 0302: int16 BE / 16, always native °F. Absolute temps convert
+  // to °C; the superheat delta (idx 3) is published in native °F with no
+  // device_class (HA's temp conversion adds +32, corrupting deltas).
   // Field idx via accessor odu_status1_meas_f_(idx): 0=outdoor 1=coil 2=suction
-  // 3=suction_superheat(ΔT) 4=indoor_amb 5=discharge. idx 3 is a delta (no -32);
-  //   confirmed superheat (matches thermostat 16<->17°F display; 56-40=16°F).
+  // 3=suction_superheat(ΔT) 4=indoor_amb 5=discharge. idx 3 confirmed superheat
+  //   (matches thermostat display, e.g. 16-17°F or 3.0°F depending on state).
   if (register_key == REG_ODU_STATUS1) {
     struct Field { const char *suffix; uint8_t idx; bool delta; };
     static const Field fields[] = {
@@ -256,7 +256,7 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
       if (data) {
         float f = parent_->odu_status1_meas_f_(*data, fld.idx);
         if (!std::isnan(f))
-          value = fld.delta ? (f * (5.0f / 9.0f))            // ΔF → ΔC
+          value = fld.delta ? f                               // ΔF published raw (no device_class)
                             : ((f - 32.0f) * (5.0f / 9.0f));  // °F → °C
       }
       break;  // at most one suffix matches
