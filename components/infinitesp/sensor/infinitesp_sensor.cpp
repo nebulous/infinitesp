@@ -254,12 +254,53 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
         continue;
       auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);
       if (data) {
-        float f = parent_->odu_status1_meas_f_(*data, fld.idx);
-        if (!std::isnan(f))
-          value = fld.delta ? f                               // ΔF published raw (no device_class)
-                            : ((f - 32.0f) * (5.0f / 9.0f));  // °F → °C
+        // Unpopulated-register guard: some systems serve 0302 with all bytes
+        // zero (documented footgun: slot0 then decodes 0.0 °F = -17.8 °C). A
+        // populated register always has non-zero threshold constants around
+        // the measurements, so all-zero means "not populated", not "very cold".
+        bool any_nonzero = false;
+        for (uint8_t b : *data) {
+          if (b) { any_nonzero = true; break; }
+        }
+        if (any_nonzero) {
+          float f = parent_->odu_status1_meas_f_(*data, fld.idx);
+          if (!std::isnan(f))
+            value = fld.delta ? f                               // ΔF published raw (no device_class)
+                              : ((f - 32.0f) * (5.0f / 9.0f));  // °F → °C
+        }
       }
       break;  // at most one suffix matches
+    }
+  }
+
+  // ODU register 3E01 (REG_ODU_3E_TEMPS, 2-stage/two-capacity family): int16
+  // BE /16 °F slots. slot0 = outdoor ambient, slot1 = coil temp. Unpopulated
+  // slots read 0x03FF and are rejected inside odu_3e_meas_f_. Absolute °F → °C.
+  // On variable-speed units this register never arrives (FUNC 0x15 refused),
+  // so this block is inert there and the table-03 block above feeds the same
+  // sensors. Panel-validated on a 24ANA160A (issue #21).
+  if (register_key == REG_ODU_3E_TEMPS) {
+    if (sensor_type_ == "odu_outdoor_temp" || sensor_type_ == "odu_coil_temp") {
+      uint8_t slot = (sensor_type_ == "odu_outdoor_temp") ? 0 : 1;
+      auto *data = parent_->get_register(device_addr, REG_ODU_3E_TEMPS);
+      if (data) {
+        float f = parent_->odu_3e_meas_f_(*data, slot);
+        if (!std::isnan(f))
+          value = (f - 32.0f) * (5.0f / 9.0f);
+      }
+    }
+  }
+
+  // ODU register 3E02 (REG_ODU_3E_STAGE, 2-stage/two-capacity family): stage
+  // byte >>1 → 0=off/1=low/2=high. The store holds both the thermostat's
+  // commanded write (00/02/04) and the ODU's read reply (01/02/04); both
+  // decode identically after >>1, so no write/read split is needed.
+  if (register_key == REG_ODU_3E_STAGE && sensor_type_ == "odu_stage") {
+    auto *data = parent_->get_register(device_addr, REG_ODU_3E_STAGE);
+    if (data) {
+      float s = parent_->odu_3e_stage_(*data);
+      if (!std::isnan(s))
+        value = s;
     }
   }
 

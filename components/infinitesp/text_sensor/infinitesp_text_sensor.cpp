@@ -283,17 +283,29 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
   // (ODU is class 5, seen at 0x50 on some systems and 0x52 on others). One
   // sensor per class; any value in the class works (0x50, 0x40, 0x20).
   if (sensor_type_ == "manufacture_date") {
-    if (register_key != REG_DEVICE_INFO)
+    // Two disjoint identity sources, same duck-typed pattern as the ODU sensors:
+    // register 0x0104 (offset 96) on families whose thermostat polls device
+    // info, or register 3E09 (offset 0) on the 2-stage/two-capacity family
+    // whose thermostat never polls the ODU's 0104 (issue #21). Both carry the
+    // Carrier WWYY serial prefix. Only one family's register ever arrives, so
+    // there is no precedence conflict. Class-matched either way (ODU is class
+    // 5: 0x50 on some systems, 0x52 on others).
+    if (register_key != REG_DEVICE_INFO && register_key != REG_ODU_3E_SERIAL)
       return;
     // Match on class; 0 means accept any device class.
     if (target_device_addr_ != 0 && (device_addr >> 4) != (target_device_addr_ >> 4))
       return;
-    auto *data = parent_->get_register(device_addr, REG_DEVICE_INFO);
-    if (!data || data->size() < 100)
+    const bool from_3e = (register_key == REG_ODU_3E_SERIAL);
+    auto *data = parent_->get_register(device_addr, register_key);
+    if (!data)
+      return;
+    if (!from_3e && data->size() < 100)
+      return;  // 0104 serial lives at offset 96
+    if (from_3e && data->size() < 4)
       return;
 
-    // Serial starts at offset 96, extract first 4 digits
-    const uint8_t *serial = data->data() + 96;
+    // Serial starts at offset 96 (0104) or offset 0 (3E09); extract first 4 digits
+    const uint8_t *serial = data->data() + (from_3e ? 0 : 96);
     if (!std::isdigit(serial[0]) || !std::isdigit(serial[1]) ||
         !std::isdigit(serial[2]) || !std::isdigit(serial[3]))
       return;

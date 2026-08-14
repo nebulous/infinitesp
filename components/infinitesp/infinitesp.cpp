@@ -2,6 +2,8 @@
 #include "version.h"
 #include "esphome/components/sensor/sensor.h"
 
+#include <algorithm>
+
 namespace esphome {
 namespace infinitesp {
 
@@ -27,6 +29,17 @@ static const uint8_t SLOW_POLL_REGS[][2] = {
 };
 static const uint8_t SLOW_POLL_REG_COUNT = 7;
 static const uint32_t SLOW_POLL_INTERVAL_MS = 31000;  // poll every 31s (prime, avoids beating with other timers)
+
+// ODU slow-poll union set: registers consumed by curated odu_* sensors that at
+// least one equipment family never receives passively. 0304 (line voltage) is
+// polled by some thermostats only while their status screen is open (issue #21);
+// 3E01/3E02 (2-stage/two-capacity temps + stage) and 3E08 (identity) are not
+// polled at all by some thermostats. One register per 31s cycle per observed
+// class-5 device. Variable-speed units refuse the 3E entries with FUNC 0x15
+// (probed live on a 24VNA9); refusals are blacklisted for the session.
+static const uint16_t ODU_SLOW_POLL_REGS[] = {0x0304, 0x3E01, 0x3E02, 0x3E08};
+static const uint8_t ODU_SLOW_POLL_REG_COUNT = 4;
+static const uint32_t ODU_SLOW_POLL_INTERVAL_MS = 31000;
 // Table-name discovery: probe one observed (device, table) 0xNN01 per cycle.
 // Conservative cadence to stay off the thermostat's bus schedule.
 static const uint32_t DISCOVERY_POLL_INTERVAL_MS = 3500;
@@ -271,6 +284,7 @@ void InfinitESPComponent::loop() {
   // MUST NOT fire in the same loop iteration as the fast poll — sending
   // two READ frames to the same thermostat back-to-back causes the echo
   // drain to eat one of the replies (observed 44% poll timeout rate).
+  bool tstat_slow_sent = false;
   if (!discovery_holdoff && sam_enabled() && !fast_poll_sent && !retransmit_sent && bus_online_ &&
       (now - last_slow_poll_time_ >= SLOW_POLL_INTERVAL_MS) && bus_idle_ms > 50) {
     const auto &sreg = SLOW_POLL_REGS[slow_poll_index_ % SLOW_POLL_REG_COUNT];
@@ -290,6 +304,17 @@ void InfinitESPComponent::loop() {
 
     slow_poll_index_++;
     last_slow_poll_time_ = now;
+    tstat_slow_sent = true;
+  }
+
+  // ODU slow poll: acquisition backstop for registers the local thermostat
+  // never polls (or polls only while its status screen is open). Same one-TX-
+  // per-iteration rule; phase-shifted half a cycle from the thermostat slow
+  // poll (see last_odu_slow_poll_time_) so they never share an iteration.
+  if (!discovery_holdoff && sam_enabled() && !fast_poll_sent && !retransmit_sent && !tstat_slow_sent &&
+      bus_online_ && (now - last_odu_slow_poll_time_ >= ODU_SLOW_POLL_INTERVAL_MS) && bus_idle_ms > 50) {
+    poll_odu_slow_();
+    last_odu_slow_poll_time_ = now;
   }
 
   // Table-name discovery: probe one observed device's 0xNN01 register from
@@ -487,14 +512,16 @@ void InfinitESPComponent::dispatch_frame_() {
   // snooping path only checked the else branch. Thermostat may also send
   // replies addressed to us or to broadcast. Discovery replies (dst=0x93)
   // are handled separately below, so exclude them here.
+  bool reply_handled = false;
   if (current_frame_.src == ADDR_THERMOSTAT && current_frame_.func == FUNC_REPLY &&
       current_frame_.dst != ADDR_FAKESAM) {
     handle_reply_();
+    reply_handled = true;
   }
 
   if (current_frame_.func == FUNC_REPLY && current_frame_.dst == ADDR_FAKESAM) {
     handle_discovery_reply_();
-  } else if (to_us || to_zc) {
+  } else if (!reply_handled && (to_us || to_zc)) {
     switch (current_frame_.func) {
       case FUNC_READ:
         handle_read_request_();
@@ -502,10 +529,22 @@ void InfinitESPComponent::dispatch_frame_() {
       case FUNC_WRITE:
         handle_write_request_();
         break;
+      case FUNC_REPLY:
+        // Reply to OUR poll from a non-thermostat device (ODU slow poll). Same
+        // path as thermostat replies: store under the reply's source address
+        // and notify, so actively-polled ODU registers behave identically to
+        // passively-snooped ones.
+        handle_reply_();
+        break;
+      case FUNC_EXCEPTION:
+        // 0x15: the device refuses the register (e.g. variable-speed ODU has
+        // no table 3E). Match the pending poll and blacklist the pair.
+        handle_exception_();
+        break;
       default:
         break;
     }
-  } else {
+  } else if (!reply_handled) {
     handle_passive_frame_();
   }
 
@@ -1001,6 +1040,71 @@ void InfinitESPComponent::poll_thermostat_() {
   poll_index_++;
 }
 
+void InfinitESPComponent::poll_odu_slow_() {
+  // Rotate over (observed class-5 device, union register) pairs, skipping
+  // entries blacklisted by a FUNC 0x15 refusal this session. "Observed" = any
+  // stored register from that address; passive snooping populates this within
+  // seconds of boot. The flat index is taken modulo the recomputed pair count,
+  // so devices appearing mid-session are picked up and vanished ones drop out.
+  // If every non-blacklisted slot is skipped, the loop just advances the index
+  // with no TX (on a variable-speed unit this settles to 0304-only, i.e. one
+  // frame per 31s).
+  std::vector<uint8_t> odus;
+  for (const auto &akv : device_registers_) {
+    if ((akv.first >> 4) == CLASS_OUTDOOR_UNIT && akv.first != sam_address_)
+      odus.push_back(akv.first);
+  }
+  if (odus.empty())
+    return;  // no ODU observed yet; retry next cycle
+  std::sort(odus.begin(), odus.end());
+  size_t total = odus.size() * ODU_SLOW_POLL_REG_COUNT;
+  for (size_t attempt = 0; attempt < total; attempt++) {
+    size_t slot = odu_slow_poll_index_++ % total;
+    uint8_t addr = odus[slot / ODU_SLOW_POLL_REG_COUNT];
+    uint16_t reg = ODU_SLOW_POLL_REGS[slot % ODU_SLOW_POLL_REG_COUNT];
+    if (odu_unsupported_.count({addr, reg}))
+      continue;  // refused with 0x15 earlier this session
+    ESP_LOGI("InfinitESP", "SLOW POLL ODU %02X for %04X", addr, reg);
+    PendingPoll pp;
+    pp.sent_ms = millis();
+    pp.dest = addr;
+    pp.reg_key = reg;
+    pending_polls_.push_back(pp);
+    diag_reply_expected_++;
+    std::vector<uint8_t> payload = {0x00, (uint8_t) (reg >> 8), (uint8_t) (reg & 0xFF)};
+    send_frame_(addr, 0x01, FUNC_READ, payload);
+    pending_polls_.back().tx_seq = diag_tx_seq_;
+    return;
+  }
+}
+
+void InfinitESPComponent::handle_exception_() {
+  // FUNC 0x15 addressed to us: the device refuses the register. Match the
+  // pending poll by dest + recency — the exception payload is a bare code
+  // (observed 0x04 on a 24VNA9 across 3E01/3E02/3E08/0502) with no register
+  // echo, so register-level matching is impossible. Unambiguous in practice:
+  // only one poll per destination is outstanding (fast poll -> thermostat,
+  // slow polls -> one target per cycle).
+  // Counted as an answered poll (diag_reply_received_) so STATS keeps the
+  // invariant expected = received + timeout; no POLL TIMEOUT warn fires and
+  // reply_timeout stays clean, because the pending is erased here.
+  diag_reply_received_++;
+  for (auto it = pending_polls_.rbegin(); it != pending_polls_.rend(); ++it) {
+    if (it->dest == current_frame_.src) {
+      auto fwd = std::prev(it.base());
+      uint16_t rk = fwd->reg_key;
+      pending_polls_.erase(fwd);
+      if (odu_unsupported_.insert({current_frame_.src, rk}).second) {
+        ESP_LOGI("InfinitESP", "ODU %02X register %04X unsupported (FUNC 0x15) - removed from slow poll",
+                 current_frame_.src, rk);
+      }
+      return;
+    }
+  }
+  ESP_LOGD("InfinitESP", "Unmatched FUNC 0x15 from %02X (pending=%u)",
+           current_frame_.src, (uint32_t) pending_polls_.size());
+}
+
 void InfinitESPComponent::poll_discovery_() {
   // Probe one observed (device, table) for its 0xNN01 table definition, sent
   // from ADDR_FAKESAM (0x93). Picks the queryable pair missing a cached name
@@ -1020,6 +1124,8 @@ void InfinitESPComponent::poll_discovery_() {
       auto key = std::make_pair(addr, table);
       if (table_names_.count(key))
         continue;  // already learned
+      if (no_tabledef_.count(key))
+        continue;  // probed once; row 01 is not a tabledef
       auto it = discovery_query_ms_.find(key);
       uint32_t ts = (it == discovery_query_ms_.end()) ? 0 : it->second;
       if (ts < best_ts) {
@@ -1061,12 +1167,28 @@ void InfinitESPComponent::handle_discovery_reply_() {
 
   // Name lives at [2..9] of the tabledef register (row 0x01), NUL/space padded. Trim
   // trailing padding; a NUL inside the field ends the name at emit time (c_str()).
-  // Any remaining non-printable bytes (a binary field with no real name) are escaped
-  // by emit_json_string_ at emit, so they cannot break the JSON.
+  // Printable check: a table whose 0xNN01 probe returns non-printable bytes has
+  // no self-describing row (table 3E serves live register data there on the
+  // 2-stage/two-capacity family — probes returned temperature bytes that decoded
+  // to garbage names in two user REPORTs). Store no name and remember the pair
+  // so the discovery poller stops retrying it.
   if (row == TABLEDEF_ROW && data.size() >= 10) {
     std::string name(data.begin() + 2, data.begin() + 10);
     while (!name.empty() && (name.back() == '\0' || name.back() == ' '))
       name.pop_back();
+    bool printable = !name.empty();
+    for (char c : name) {
+      if ((uint8_t) c < 0x20 || (uint8_t) c > 0x7E) {
+        printable = false;
+        break;
+      }
+    }
+    if (!printable) {
+      no_tabledef_.insert({current_frame_.src, table});
+      ESP_LOGI("InfinitESP", "DISCOVERY: %02X table %02X row 01 is not a tabledef - skipping name",
+               current_frame_.src, table);
+      return;
+    }
     table_names_[{current_frame_.src, table}] = name;
     ESP_LOGI("InfinitESP", "DISCOVERY: %02X table %02X = '%s' (alloc=%u, rows=%u)",
              current_frame_.src, table, name.c_str(),
@@ -2092,7 +2214,33 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
   bool first = true;
   for (auto &akv : device_registers_) {
     auto it = akv.second.find(REG_DEVICE_INFO);
-    if (it == akv.second.end()) continue;
+    if (it == akv.second.end()) {
+      // Identity fallback: some thermostats never poll the ODU's 0104 (issue
+      // #21 — the ODU vanished from REPORT dev); the 3E family serves model
+      // and serial at 3E08/3E09 instead. Synthesize the entry so the ODU is
+      // visible with model+serial. Name "ODU" distinguishes it from 0104
+      // device names (e.g. "VAR SPD COMP VERSION").
+      if ((akv.first >> 4) != CLASS_OUTDOOR_UNIT)
+        continue;
+      auto m = akv.second.find(REG_ODU_3E_MODEL);
+      auto s = akv.second.find(REG_ODU_3E_SERIAL);
+      if (m == akv.second.end() || s == akv.second.end())
+        continue;
+      char model[17] = {}, serial[17] = {};
+      memcpy(model, m->second.data(), std::min((size_t) 16, m->second.size()));
+      memcpy(serial, s->second.data(), std::min((size_t) 16, s->second.size()));
+      for (int i = 15; i >= 0 && (model[i] == ' ' || model[i] == 0); i--) model[i] = 0;
+      for (int i = 15; i >= 0 && (serial[i] == ' ' || serial[i] == 0); i--) serial[i] = 0;
+      n = snprintf(buf, sizeof(buf), "%s{\"address\":\"%02X\",\"name\":\"ODU\",\"model\":",
+                   first ? "" : ",", akv.first);
+      write_fn((const uint8_t *) buf, n, ctx);
+      emit_json_string_(write_fn, ctx, model);
+      emit(",\"serial\":");
+      emit_json_string_(write_fn, ctx, serial);
+      emit("}");
+      first = false;
+      continue;
+    }
     auto &d = it->second;
     char name[25] = {}, model[21] = {}, serial[25] = {};
     memcpy(name, d.data(), std::min((size_t)24, d.size()));

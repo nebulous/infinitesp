@@ -17,6 +17,7 @@
 #include <deque>
 #include <string>
 #include <map>
+#include <set>
 #include <vector>
 
 // Temperature unit configuration
@@ -264,6 +265,16 @@ static const uint16_t REG_ODU_CMD_STAGE = 0x0605;  // Commanded compressor stage
 static const uint16_t REG_ODU_STAGE_INFO = 0x060E;  // Actual stage index (byte 0: 0=off, 1..5=stage)
 static const uint16_t REG_ODU_SETPOINT = 0x060B;   // Target value at byte[2], native °F (label TBD; not confirmed a cooling setpoint)
 static const uint16_t REG_ODU_FLOATS = 0x061F;     // IEEE754 float32 array (superheat, subcooling, etc.)
+//
+// Table 0x3E — 2-stage / two-capacity ODU family (24ANA1, 24ANB7, 25HNB5...).
+// Variable-speed units answer reads in this table with FUNC 0x15 (probed live
+// on a 24VNA9: 3E01/3E02/3E08 all refused, payload=04), so decoders keyed here
+// are inert on them. The two families are disjoint; no discriminator is needed.
+// Issue #21 (24ANA160A), panel-validated 2026-08-14.
+static const uint16_t REG_ODU_3E_TEMPS = 0x3E01;   // int16 BE /16 °F slots: 0=outdoor, 1=coil, 2-3=sensors-if-fitted
+static const uint16_t REG_ODU_3E_STAGE = 0x3E02;   // Stage byte (see odu_3e_stage_)
+static const uint16_t REG_ODU_3E_MODEL = 0x3E08;   // Model string, 16 chars
+static const uint16_t REG_ODU_3E_SERIAL = 0x3E09;  // Serial string, 16 chars (Carrier WWYY prefix)
 
 // Frame constants
 static const uint8_t FRAME_HEADER_SIZE = 8;
@@ -674,6 +685,32 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   static float odu_status1_meas_f_(const std::vector<uint8_t> &data, uint8_t idx) {
     return decode_int16_f_(data, 2 + idx * 4);
   }
+  // ODU register 3E01 (REG_ODU_3E_TEMPS), 2-stage/two-capacity family: int16 BE
+  // /16 °F slots at slot*2. slot 0 = outdoor ambient, slot 1 = coil temp
+  // (panel-validated on a 24ANA160A: coil tracked 79/80/81 °F with no offset).
+  // A slot with no fitted sensor reads 0x03FF (10-bit max sentinel = 63.9 °F —
+  // plausible-looking garbage; rejected, same footgun class as table-03 zeros).
+  static float odu_3e_meas_f_(const std::vector<uint8_t> &data, uint8_t slot) {
+    size_t off = (size_t) slot * 2;
+    if (off + 1 >= data.size())
+      return NAN;
+    uint16_t raw = ((uint16_t) data[off] << 8) | data[off + 1];
+    if (raw == 0x03FF)
+      return NAN;  // unpopulated sensor slot
+    return (float) raw / 16.0f;
+  }
+  // ODU register 3E02 (REG_ODU_3E_STAGE), 2-stage/two-capacity family: stage
+  // byte. The thermostat writes the commanded stage (00=off, 02=low, 04=high)
+  // and the ODU answers reads with the actual stage (01=off, 02, 04); both
+  // encodings map to 0=off/1=low/2=high after >>1, so the register store can
+  // hold either without a write/read split. Transitions panel-validated on a
+  // 24ANA160A (LOW at 18:20:28, HIGH at 18:22:19, matching the panel readings).
+  // Raw > 0x07 is not an observed stage value; rejected.
+  static float odu_3e_stage_(const std::vector<uint8_t> &data) {
+    if (data.empty() || data[0] > 0x07)
+      return NAN;
+    return (float) (data[0] >> 1);
+  }
 
  protected:
   void parse_byte_(uint8_t byte);
@@ -704,6 +741,16 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 
   void poll_thermostat_();
   void poll_discovery_();
+  // Slow-poll the observed class-5 (ODU) devices for the union register set
+  // (table 03 + table 3E) so curated odu_* sensors work regardless of which
+  // registers the local thermostat polls. Entries refused with FUNC 0x15 are
+  // blacklisted for the session (see handle_exception_).
+  void poll_odu_slow_();
+  // FUNC 0x15 (exception) addressed to us: match the pending poll by dest+
+  // recency (the payload is a bare code, no register echo), blacklist the
+  // (addr, reg) pair, and avoid the 5s POLL TIMEOUT warn + reply_timeout
+  // inflation that an unmatched refusal would otherwise cause.
+  void handle_exception_();
   // True when install/commissioning discovery (ADDR_DISCOVERY 0x1F) was seen
   // recently and initiated bus TX should be paused (issue #8). Reactive
   // handling (READ/WRITE) is not gated. Returns false until the first 0x1F
@@ -772,6 +819,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // register as ADDR_FAKESAM (0x93). Keyed by (device addr, table number).
   std::map<std::pair<uint8_t, uint8_t>, std::string> table_names_;
   std::map<std::pair<uint8_t, uint8_t>, uint32_t> discovery_query_ms_;  // last query ts (retry backoff)
+  // (device, table) pairs whose 0xNN01 probe returned non-printable data: the
+  // table has no self-describing row 01 (e.g. table 3E serves live register
+  // data there). Remembered so the discovery poller stops retrying them.
+  std::set<std::pair<uint8_t, uint8_t>> no_tabledef_;
+  // (addr, reg) pairs answered with FUNC 0x15 this session. Consulted by the
+  // ODU slow poll; RAM-only so a reboot re-probes (bounded: one frame per
+  // unsupported register per boot).
+  std::set<std::pair<uint8_t, uint16_t>> odu_unsupported_;
   uint32_t last_discovery_poll_ms_{0};
 
   // Install-discovery holdoff (issue #8). last_discovery_ms_ is stamped on
@@ -802,6 +857,12 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint8_t poll_index_{0};
   uint8_t slow_poll_index_{0};
   uint32_t last_slow_poll_time_{0};
+  uint8_t odu_slow_poll_index_{0};
+  // Init UINT32_MAX - 15500: with the 31s interval, the first ODU slow poll
+  // comes due at t≈15.5s — half a cycle out of phase with the thermostat slow
+  // poll (first due at t≈31s), so the two rotations never share a loop
+  // iteration and never collide with each other's in-flight replies.
+  uint32_t last_odu_slow_poll_time_{UINT32_MAX - 15500};
   bool bus_online_{false};
   bool sam_state_received_{false};
   uint32_t last_reply_time_{0};
