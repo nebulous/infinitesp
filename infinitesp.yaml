@@ -24,7 +24,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: infinitesp.esp32-s3-relay-6ch
-    version: 2026.8.4
+    version: 2026.8.5
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -616,7 +616,9 @@ text_sensor:
     icon: "mdi:alert-circle-outline"
     entity_category: diagnostic
 
-  # Comfort profiles (home/away/sleep/wake setpoints + fan)
+  # Comfort profiles (home/away/sleep/wake setpoints + fan). Per-zone: omit
+  # zone for zone 1's table (register 400A), or set `zone: N` for zone N's
+  # (400A+N-1). Rows arrive via the SAM slow poll when emulating.
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Comfort Profiles"

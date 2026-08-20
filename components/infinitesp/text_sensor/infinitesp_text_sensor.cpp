@@ -167,11 +167,13 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
     return;
   }
 
-  // Comfort profile summary from 400A
+  // Comfort profile summary from this zone's table-40 row (400A+zone-1).
+  // Zone 1 reads 400A; a `zone: N` sensor reads zone N's row.
   if (sensor_type_ == "comfort_profile") {
-    if (register_key != REG_TSTAT_COMFORT)
+    uint16_t comfort_reg = comfort_reg_for_zone(zone_);
+    if (register_key != comfort_reg)
       return;
-    auto *data = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_COMFORT);
+    auto *data = parent_->get_register(ADDR_THERMOSTAT, comfort_reg);
     if (!data || data->size() < COMFORT_ACTIVITY_COUNT * COMFORT_ENTRY_SIZE)
       return;
 

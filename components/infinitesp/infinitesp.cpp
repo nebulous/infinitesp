@@ -20,14 +20,14 @@ static const uint8_t POLL_REG_COUNT = 2;
 // config tables (0x4xxx).
 static const uint8_t SLOW_POLL_REGS[][2] = {
     {0x01, 0x04},  // device info: model, serial (manufacture date source)
-    {0x40, 0x0A},  // comfort profiles (home/away/sleep/wake/manual setpoints+fan)
+    // Comfort rows 400A+zone-1 are polled per active zone (see slow-poll block)
     {0x40, 0x12},  // vacation settings (min/max temp, fan)
     {0x42, 0x02},  // fault history (10 entries × 7 bytes)
     {0x46, 0x08},  // WiFi: SSID, password, hostname
     {0x46, 0x09},  // Cloud: host, device IP
     {0x46, 0x0A},  // dealer info: name, brand, URL
 };
-static const uint8_t SLOW_POLL_REG_COUNT = 7;
+static const uint8_t SLOW_POLL_REG_COUNT = 6;
 static const uint32_t SLOW_POLL_INTERVAL_MS = 31000;  // poll every 31s (prime, avoids beating with other timers)
 
 // ODU slow-poll union set: registers consumed by curated odu_* sensors that at
@@ -287,9 +287,39 @@ void InfinitESPComponent::loop() {
   bool tstat_slow_sent = false;
   if (!discovery_holdoff && sam_enabled() && !fast_poll_sent && !retransmit_sent && bus_online_ &&
       (now - last_slow_poll_time_ >= SLOW_POLL_INTERVAL_MS) && bus_idle_ms > 50) {
-    const auto &sreg = SLOW_POLL_REGS[slow_poll_index_ % SLOW_POLL_REG_COUNT];
-    uint16_t sreg_key = (sreg[0] << 8) | sreg[1];
-    ESP_LOGI("InfinitESP", "SLOW POLL thermostat for %02X%02X", sreg[0], sreg[1]);
+    // Rotation: one comfort row per set bit in the 3B02 active-zones mask
+    // (400A for zone 1, 400B for zone 2, ...) first, then the fixed registers.
+    // Comfort-first keeps zone 1's 400A in the first slot after boot (the
+    // preset matcher needs it) and picks up extra zones one slot later each.
+    // The mask is re-read each rotation, so a re-commissioned zone count takes
+    // effect without a reboot. Mask unreadable (early boot) degrades to zone
+    // 1's row only, which is what a single-zone system needs anyway.
+    uint8_t active = get_zone_active_mask();
+    uint8_t n_active = 0;
+    for (uint8_t b = 0; b < 8; b++)
+      n_active += (active >> b) & 1;
+    if (n_active == 0) {
+      active = 0x01;
+      n_active = 1;
+    }
+    uint16_t idx = slow_poll_index_ % (SLOW_POLL_REG_COUNT + n_active);
+    uint16_t sreg_key;
+    if (idx < n_active) {
+      uint8_t want = idx;  // nth set bit
+      uint8_t seen = 0, zone = 1;
+      for (; zone <= 8; zone++) {
+        if (active & (1 << (zone - 1))) {
+          if (seen == want)
+            break;
+          seen++;
+        }
+      }
+      sreg_key = comfort_reg_for_zone(zone);
+    } else {
+      const auto &sreg = SLOW_POLL_REGS[idx - n_active];
+      sreg_key = (sreg[0] << 8) | sreg[1];
+    }
+    ESP_LOGI("InfinitESP", "SLOW POLL thermostat for %04X", sreg_key);
 
     PendingPoll spp;
     spp.sent_ms = millis();
@@ -298,7 +328,7 @@ void InfinitESPComponent::loop() {
     pending_polls_.push_back(spp);
     diag_reply_expected_++;
 
-    std::vector<uint8_t> spayload = {0x00, sreg[0], sreg[1]};
+    std::vector<uint8_t> spayload = {0x00, (uint8_t) (sreg_key >> 8), (uint8_t) (sreg_key & 0xFF)};
     send_frame_(ADDR_THERMOSTAT, 0x01, FUNC_READ, spayload);
     pending_polls_.back().tx_seq = diag_tx_seq_;
 
@@ -968,8 +998,10 @@ void InfinitESPComponent::handle_reply_() {
     }
 
     // Log parsed 0x4xxx register contents
-    if (reg_key == REG_TSTAT_COMFORT && data.size() >= 35) {
-      // Comfort profile: 5 activities x 7 bytes each (heat, cool, fan, 4x unknown)
+    if (reg_key >= REG_TSTAT_COMFORT && reg_key <= REG_TSTAT_COMFORT + 7 && data.size() >= 35) {
+      // Comfort profile: 5 activities x 7 bytes each (heat, cool, fan, 4x unknown).
+      // One row per zone (400A = zone 1).
+      uint8_t zone = reg_key - REG_TSTAT_COMFORT + 1;
       const char *names[] = {"home", "away", "sleep", "wake", "manual"};
       for (int i = 0; i < 5; i++) {
         uint8_t base = i * 7;
@@ -978,11 +1010,12 @@ void InfinitESPComponent::handle_reply_() {
         uint8_t fan = data[base + 2];
         uint8_t rhtg = data[base + 3] >> 4;
         uint8_t rclg = data[base + 3] & 0x0F;
-        const char *unit = bus_uses_celsius() ? "\xc2\xb0" "C" : "\xc2\xb0" "F";
+        // comfort_byte_to_celsius() returns Celsius regardless of the bus unit,
+        // so the label is always °C (the value, not the bus setting, picks it).
         float ht_disp = comfort_byte_to_celsius(htsp);
         float cl_disp = comfort_byte_to_celsius(clsp);
-        ESP_LOGI("InfinitESP", "COMFORT %s: heat=%.1f%s cool=%.1f%s fan=%d rclg=%d rhtg=%d hum_vent=0x%02X unk=[%02X %02X]",
-                 names[i], ht_disp, unit, cl_disp, unit, fan, rclg, rhtg, data[base + 4], data[base + 5], data[base + 6]);
+        ESP_LOGI("InfinitESP", "COMFORT zone=%d %s: heat=%.1f\xc2\xb0" "C cool=%.1f\xc2\xb0" "C fan=%d rclg=%d rhtg=%d hum_vent=0x%02X unk=[%02X %02X]",
+                 zone, names[i], ht_disp, cl_disp, fan, rclg, rhtg, data[base + 4], data[base + 5], data[base + 6]);
       }
     }
 
@@ -1270,10 +1303,10 @@ bool InfinitESPComponent::has_active_fault() const {
   return false;
 }
 
-uint8_t InfinitESPComponent::get_zone_count() const {
+uint8_t InfinitESPComponent::get_zone_active_mask() const {
   auto *state = get_register(sam_address_, REG_SAM_STATE);
-  if (state && !state->empty())
-    return state->at(0);  // active_zones bitmask
+  if (state && state->size() > REG3B02_ACTIVE_ZONES)
+    return state->at(REG3B02_ACTIVE_ZONES);
   return 0;
 }
 
@@ -1540,10 +1573,11 @@ void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes)
 }
 
 void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, uint16_t hold_duration) {
-  // Look up comfort profile from 400A register data (stored under thermostat address)
-  auto *comfort = get_register(ADDR_THERMOSTAT, REG_TSTAT_COMFORT);
+  // Look up the zone's comfort profile row (400A+zone-1, stored under the
+  // thermostat address). Zone 1's row is NOT substitutable: profiles are per-zone.
+  auto *comfort = get_register(ADDR_THERMOSTAT, comfort_reg_for_zone(zone));
   if (!comfort || comfort->size() < (activity_index + 1) * COMFORT_ENTRY_SIZE) {
-    ESP_LOGW("InfinitESP", "apply_activity: no comfort profile data for activity %d", activity_index);
+    ESP_LOGW("InfinitESP", "apply_activity: no comfort data for zone %d activity %d", zone, activity_index);
     return;
   }
 

@@ -72,17 +72,25 @@ static const uint16_t REG_SAM_ACTIVITY = 0x3B0E;
 
 // Thermostat 0x4xxx registers (polled from thermostat at 0x20)
 // These are thermostat-internal configuration tables, not SAM registers.
-static const uint16_t REG_TSTAT_SCHEDULE = 0x4002;      // Zone 1 schedule (35 bytes)
+// Table 0x40 (SCHEDULE) is per-zone: row + zone-1 serves zone N. Rows 4002-4009 are
+// 70-byte weekly schedules, 400A-4011 the 35-byte comfort profiles. Verified live
+// 2026-08-19 against every zone's 3B03 setpoints (research/thermostat-table-40-perzone).
+static const uint16_t REG_TSTAT_SCHEDULE = 0x4002;      // Zone 1 weekly schedule: 7 days × 5 periods of (min/15, activity) (70 bytes)
 static const uint16_t REG_TSTAT_COMFORT = 0x400A;       // Zone 1 comfort profiles: 5 activities × 7 bytes (35 bytes)
 static const uint16_t REG_TSTAT_VACATION = 0x4012;      // Zone 1 vacation settings (7 bytes)
 static const uint16_t REG_TSTAT_WIFI = 0x4608;          // SSID, password, hostname (~216 bytes)
+
+// Comfort-profile register for a zone (zone 1-8). 400A+zone-1.
+static inline uint16_t comfort_reg_for_zone(uint8_t zone) {
+  return REG_TSTAT_COMFORT + (zone - 1);
+}
 static const uint16_t REG_TSTAT_CLOUD = 0x4609;         // Cloud host, proxy server IP
 static const uint16_t REG_TSTAT_DEALER = 0x460A;        // Dealer name, brand, URL (120 bytes)
 static const uint16_t REG_TSTAT_FAULTS = 0x4202;        // Fault history (10 entries × 7 bytes = 70 bytes)
 static const uint16_t REG_TSTAT_WIFI_PROFILES = 0x460B; // WiFi profiles (4x 36 bytes)
 static const uint16_t REG_TSTAT_WIFI_SCAN = 0x460C;     // WiFi scan results (4x 36 bytes)
 
-// Comfort profile layout (register 400A, 35 bytes)
+// Comfort profile layout (registers 400A-4011, 35 bytes each; one per zone)
 // 5 activities × 7 bytes: [heat_sp(1), cool_sp(1), fan_mode(1), rclg_rhtg(1), hum_vent(1), unk5(1), unk6(1)]
 //   byte[3] = (rhtg << 4) | rclg — reheat heating/cooling dehumidify setpoint indices (nibbles)
 //   byte[4] = humidifier/ventilation mode flags (bitfield, exact mapping TBD)
@@ -448,7 +456,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_flow_control_pin(GPIOPin *pin) { flow_control_pin_ = pin; }
 #endif
 
-  // Apply a comfort profile activity: writes setpoints+fan from 400A and sets hold
+  // Apply a comfort profile activity: writes setpoints+fan from the zone's
+  // comfort row (400A+zone-1) and sets hold
   void apply_activity(uint8_t zone, uint8_t activity_index, uint16_t hold_duration);
 
   // One-shot poll of a specific thermostat register (for discovery / debugging)
@@ -482,7 +491,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   const std::vector<uint8_t> *get_register(uint8_t addr, uint16_t key) const;
   // True if any thermostat fault-history (0x4202) entry has the active bit set.
   bool has_active_fault() const;
-  uint8_t get_zone_count() const;
+  // 3B02 byte 0: bitmask of commissioned zones (bit zone-1). 0 when unreadable.
+  uint8_t get_zone_active_mask() const;
   bool is_bus_online() const { return bus_online_; }
   bool has_real_state() const { return sam_state_received_; }
 

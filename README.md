@@ -472,7 +472,9 @@ text_sensor:
   # tstat_ssid, tstat_hostname, tstat_wifi_mac,
   # tstat_cloud_host, tstat_proxy_server,
   # tstat_dealer_name, tstat_dealer_brand, tstat_dealer_url,
-  # comfort_profile, fault_history
+  # fault_history
+  # comfort_profile reads zone 1's comfort table by default; set
+  # `zone: N` (1-8) for another zone's (each zone has its own).
 ```
 
 ## SAM ASCII Interface

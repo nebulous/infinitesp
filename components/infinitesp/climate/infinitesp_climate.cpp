@@ -34,9 +34,10 @@ climate::ClimateTraits InfinitESPClimate::traits() {
   traits.add_supported_fan_mode(climate::CLIMATE_FAN_MEDIUM);
   traits.add_supported_fan_mode(climate::CLIMATE_FAN_HIGH);
 
-  // Standard presets map to comfort profile activities from thermostat register 400A.
+  // Standard presets map to comfort profile activities from the zone's comfort
+  // row (thermostat table 40, register 400A+zone-1).
   // NONE = cancel hold (resume schedule).
-  // HOME/AWAY/SLEEP/WAKE = apply that activity's setpoints+fan from 400A with a permanent hold.
+  // HOME/AWAY/SLEEP/WAKE = apply that activity's setpoints+fan with a permanent hold.
   // The thermostat stores 5 activities: home, away, sleep, wake, manual.
   traits.add_supported_preset(climate::CLIMATE_PRESET_HOME);
   traits.add_supported_preset(climate::CLIMATE_PRESET_AWAY);
@@ -124,7 +125,7 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     fan_mode_ = fm;
   }
 
-  // Handle standard presets — activity-based holds using comfort profiles from 400A
+  // Handle standard presets — activity-based holds using the zone's comfort row
   if (call.get_preset().has_value()) {
     auto preset = call.get_preset().value();
     switch (preset) {
@@ -471,10 +472,13 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
         }
       } else if (!vacation_active) {
         hold_end_time_.clear();
-        // No hold — match setpoints+fan against comfort profiles from register 400A.
-        auto *comfort = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_COMFORT);
-        ESP_LOGD("InfinitESP", "Zone %d preset match: heat=%d cool=%d fan=%d comfort=%p size=%d",
-                 zone_, new_heat, new_cool, new_fan,
+        // No hold — match setpoints+fan against this zone's comfort profile row
+        // (400A+zone-1). Table 40 is per-zone; matching against zone 1's row
+        // (issue #23) made every other zone fall through to "Per Schedule".
+        uint16_t comfort_reg = comfort_reg_for_zone(zone_);
+        auto *comfort = parent_->get_register(ADDR_THERMOSTAT, comfort_reg);
+        ESP_LOGD("InfinitESP", "Zone %d preset match (reg %04X): heat=%d cool=%d fan=%d comfort=%p size=%d",
+                 zone_, comfort_reg, new_heat, new_cool, new_fan,
                  comfort ? (void*)comfort : nullptr,
                  comfort ? (int)comfort->size() : -1);
         bool matched = false;
