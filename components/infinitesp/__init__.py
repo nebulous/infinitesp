@@ -192,11 +192,11 @@ async def to_code(config):
 
     temp_unit = config[CONF_TEMPERATURE_UNIT]
     if temp_unit == TEMP_UNIT_AUTO:
-        cg.add(var.set_temperature_unit(cg.RawExpression("TemperatureUnit::AUTO")))
+        cg.add(var.set_temperature_unit(cg.RawExpression("infinitesp::TemperatureUnit::AUTO")))
     elif temp_unit == TEMP_UNIT_FAHRENHEIT:
-        cg.add(var.set_temperature_unit(cg.RawExpression("TemperatureUnit::FAHRENHEIT")))
+        cg.add(var.set_temperature_unit(cg.RawExpression("infinitesp::TemperatureUnit::FAHRENHEIT")))
     elif temp_unit == TEMP_UNIT_CELSIUS:
-        cg.add(var.set_temperature_unit(cg.RawExpression("TemperatureUnit::CELSIUS")))
+        cg.add(var.set_temperature_unit(cg.RawExpression("infinitesp::TemperatureUnit::CELSIUS")))
 
     if CONF_STATUS_LED_PIN in config:
         pin = await cg.gpio_pin_expression(config[CONF_STATUS_LED_PIN])

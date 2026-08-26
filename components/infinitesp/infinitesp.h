@@ -20,18 +20,21 @@
 #include <set>
 #include <vector>
 
-// Temperature unit configuration
-enum class TemperatureUnit : uint8_t {
-  AUTO = 0,  // heuristic: zone temp <= 50 → °C
-  FAHRENHEIT,
-  CELSIUS,
-};
-
 namespace esphome {
 namespace sensor {
 class Sensor;
 }  // namespace sensor
 namespace infinitesp {
+
+// Temperature unit configuration for decoding bus register values. This is
+// a decode policy (AUTO = detect F/C from data), distinct from the entity-level
+// esphome::TemperatureUnit added in ESPHome 2026.8. Lives inside this
+// namespace so unqualified lookup can't find the esphome one.
+enum class TemperatureUnit : uint8_t {
+  AUTO = 0,  // heuristic: zone temp <= 50 → °C
+  FAHRENHEIT,
+  CELSIUS,
+};
 
 // Address constants
 // Thermostat install-discovery source address. Used by the thermostat itself
