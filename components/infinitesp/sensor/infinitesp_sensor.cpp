@@ -92,6 +92,72 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
+  // fault_timestamp: state = epoch time the newest fault-log entry was logged
+  // (observation lag applies: 4202 arrives via the slow-poll rotation, so a birth
+  // can be seen up to one rotation late; the VALUE is the true logging time).
+  // Age math is bus-relative (entry fields + day trailer + SAM 3B02 bus clock),
+  // then anchored to the ESPHome time source. No liveness exists on the bus; see
+  // the 0x4202 layout block in infinitesp.h (issue #22).
+  if (sensor_type_ == "fault_timestamp" && register_key == REG_TSTAT_FAULTS) {
+    auto *faults = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_FAULTS);
+    auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
+    if (faults && faults->size() >= FAULT_REG_SIZE && state &&
+        state->size() >= REG3B02_MINUTES + 2) {
+      uint16_t now_bus_min = ((uint16_t) state->at(REG3B02_MINUTES) << 8) |
+                             state->at(REG3B02_MINUTES + 1);
+      int32_t best_age = -1;
+      uint8_t best_code = 0, best_i = 0;
+      for (uint8_t i = 0; i < FAULT_ENTRY_COUNT; i++) {
+        if ((*faults)[i * FAULT_ENTRY_SIZE + FAULT_CODE] == 0 &&
+            (*faults)[i * FAULT_ENTRY_SIZE + FAULT_SOURCE] == 0)
+          continue;  // empty slot
+        if (!fault_entry_time_valid(*faults, i))
+          continue;  // garbage time fields (non-tstat source packing)
+        int32_t age = fault_entry_age_minutes(*faults, i, now_bus_min);
+        if (age < 0)
+          continue;
+        if (best_age < 0 || age < best_age) {
+          best_age = age;
+          best_code = (*faults)[i * FAULT_ENTRY_SIZE + FAULT_CODE];
+          best_i = i;
+        }
+      }
+      ESP_LOGD("InfinitESP", "fault_timestamp: newest entry code=%u age=%dmin", best_code,
+               best_age);
+      if (best_age >= 0) {
+        // Publish only when the newest entry changes: the value depends on the
+        // 3B02 clock sample, which drifts vs wall time between rotations.
+        uint8_t bb = best_i * FAULT_ENTRY_SIZE;
+        uint32_t sig = (uint32_t) best_code |
+                       ((uint32_t) (*faults)[bb + FAULT_HOUR] << 8) |
+                       ((uint32_t) (*faults)[bb + FAULT_MINUTE] << 13) |
+                       (((uint32_t) (((*faults)[bb + FAULT_DAYS_HI] << 8) |
+                                     (*faults)[bb + FAULT_DAYS_LO]) & 0x1FFF) << 19);
+        bool sig_changed = !fault_sig_valid_ || sig != fault_last_sig_;
+        if (sig_changed) {
+          fault_sig_valid_ = true;
+          fault_last_sig_ = sig;
+          if (time_source_ == nullptr) {
+            if (!fault_time_warned_) {
+              fault_time_warned_ = true;
+              ESP_LOGW("InfinitESP", "fault_timestamp: no time_id configured; cannot publish. "
+                                     "Set time_id on the sensor to your time source.");
+            }
+          } else {
+            auto now = time_source_->now();
+            if (now.is_valid()) {
+              publish_state((float) now.timestamp - (float) best_age * 60.0f);
+            } else if (!fault_time_warned_) {
+              fault_time_warned_ = true;
+              ESP_LOGW("InfinitESP", "fault_timestamp: time source not yet synced; publishing deferred");
+            }
+          }
+        }
+      }
+    }
+    return;  // handled; skip the generic publish below
+  }
+
   // Thermostat vacation settings (4012)
   if (register_key == REG_TSTAT_VACATION && sensor_type_ == "vacation_min_temp") {
     auto *data = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_VACATION);

@@ -42,10 +42,8 @@ void InfinitESPBinarySensor::on_register_update(uint8_t device_addr, uint16_t re
     }
   }
 
-  // Active fault: ON when any thermostat fault-history (0x4202) entry has the
-  // active bit set. Primary "something failed right now" alert.
-  if (sensor_type_ == "active_fault" && register_key == REG_TSTAT_FAULTS)
-    publish_state(parent_->has_active_fault());
+  // active_fault is deprecated (see binary_sensor/__init__.py): no fault-active
+  // state exists on the bus. The type stays config-valid but publishes nothing.
 }
 
 } // namespace infinitesp

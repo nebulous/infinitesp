@@ -1,5 +1,6 @@
 #pragma once
 #include "esphome/components/sensor/sensor.h"
+#include "esphome/components/time/real_time_clock.h"
 #include <cmath>
 #include <functional>
 #include <string>
@@ -30,6 +31,10 @@ class InfinitESPSensor : public sensor::Sensor, public InfinitESPEntity {
   }
   void set_raw_lambda(RawLambda &&fn) { raw_lambda_ = std::move(fn); }
 
+  // fault_timestamp: ESPHome time source used to render the bus-relative fault
+  // time as an epoch timestamp (optional; without it the sensor stays unavailable).
+  void set_time_source(time::RealTimeClock *clock) { time_source_ = clock; }
+
  private:
   std::string sensor_type_;
 
@@ -42,6 +47,16 @@ class InfinitESPSensor : public sensor::Sensor, public InfinitESPEntity {
   float raw_min_{0}, raw_max_{0};
   bool raw_has_range_{false};
   RawLambda raw_lambda_;  // set in lambda mode; full register data is passed in
+  time::RealTimeClock *time_source_{nullptr};
+  bool fault_time_warned_{false};  // one-shot warn when time source is missing/unsynced
+  // fault_timestamp: signature (code/hour/minute/days) of the last-published
+  // newest entry. The published value is computed once per new entry; the
+  // 3B02 bus clock's skew vs wall time drifts between rotations, so
+  // recomputing every poll would make the state wobble (and false-trigger
+  // state-change automations). Publishes once after boot to restore state
+  // (an OTA therefore causes one benign state-change event).
+  bool fault_sig_valid_{false};
+  uint32_t fault_last_sig_{0};
 };
 
 }  // namespace infinitesp

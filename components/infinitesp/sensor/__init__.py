@@ -1,10 +1,12 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
-from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, STATE_CLASS_TOTAL_INCREASING, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_VOLTAGE, DEVICE_CLASS_DURATION, CONF_ACCURACY_DECIMALS, CONF_STATE_CLASS
+from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, STATE_CLASS_NONE, STATE_CLASS_TOTAL_INCREASING, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_VOLTAGE, DEVICE_CLASS_DURATION, DEVICE_CLASS_TIMESTAMP, CONF_ACCURACY_DECIMALS, CONF_STATE_CLASS
+from esphome.components import time
 from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
 CONF_ZONE = "zone"
+CONF_TIME_ID = "time_id"
 
 # raw_register (generic bus-field sensor) config keys and datatypes.
 CONF_DEVICE_ADDRESS = "device_address"
@@ -99,6 +101,12 @@ SENSOR_TYPES = {
     "odu_cool_hours": {"key": "odu_cool_hours", "bus_class": 5, **_HOURS},
     "odu_defrost_hours": {"key": "odu_defrost_hours", "bus_class": 5, **_HOURS},
     "odu_poweron_hours": {"key": "odu_poweron_hours", "bus_class": 5, **_HOURS},
+    # Timestamp (epoch seconds) of the most recent thermostat fault-log entry
+    # (register 0x4202). Age is bus-derived; anchored to the ESPHome time source
+    # given by the sensor's `time_id`. No fault liveness exists on the bus.
+    # Timestamp sensors must carry NO state class (HA rejects the entity
+    # otherwise) and no unit — the wireguard latest_handshake pattern.
+    "fault_timestamp": {"key": "fault_timestamp", "device_class": DEVICE_CLASS_TIMESTAMP, "state_class": STATE_CLASS_NONE, "accuracy_decimals": 0, "bus_class": 0},
     # Generic bus-field sensor: user specifies device/register/offset/datatype/scale
     # (decode mode) or a full-frame lambda. bus_class is derived from device_address.
     "raw_register": {"key": "raw_register", "bus_class": 0},
@@ -111,7 +119,7 @@ def _apply_sensor_type(config):
     if config[CONF_TYPE] == "raw_register":
         return config
     info = SENSOR_TYPES[config[CONF_TYPE]]
-    config[sensor.CONF_UNIT_OF_MEASUREMENT] = info["unit"]
+    config[sensor.CONF_UNIT_OF_MEASUREMENT] = info.get("unit", "")
     config[sensor.CONF_DEVICE_CLASS] = info.get("device_class", "")
     config[CONF_ACCURACY_DECIMALS] = info.get("accuracy_decimals", 1)
     config[CONF_STATE_CLASS] = sensor.validate_state_class(info.get("state_class", STATE_CLASS_MEASUREMENT))
@@ -153,6 +161,9 @@ CONFIG_SCHEMA = cv.All(
                 # raw_register extras (ignored by other sensor types):
                 cv.Optional(CONF_DEVICE_ADDRESS): cv.hex_uint8_t,
                 cv.Optional(CONF_REGISTER): cv.hex_uint16_t,
+                # fault_timestamp: the ESPHome time source used to anchor the
+                # bus-relative fault time to an epoch timestamp.
+                cv.Optional(CONF_TIME_ID): cv.use_id("time.RealTimeClock"),
                 cv.Optional(CONF_OFFSET, default=0): cv.int_range(min=0, max=250),
                 cv.Optional(CONF_DATATYPE): cv.one_of(*RAW_DATATYPES, lower=True),
                 cv.Optional(CONF_SCALE, default=1.0): cv.float_,
@@ -174,6 +185,9 @@ async def to_code(config):
     await sensor.register_sensor(var, config)
     cg.add(var.set_zone(config[CONF_ZONE]))
     cg.add(var.set_sensor_type(info["key"]))
+    if CONF_TIME_ID in config:
+        clock = await cg.get_variable(config[CONF_TIME_ID])
+        cg.add(var.set_time_source(clock))
     if stype == "raw_register":
         dev = config[CONF_DEVICE_ADDRESS]
         cg.add(var.set_bus_class(dev >> 4))

@@ -84,6 +84,55 @@ static const uint16_t REG_TSTAT_WIFI = 0x4608;          // SSID, password, hostn
 static inline uint16_t comfort_reg_for_zone(uint8_t zone) {
   return REG_TSTAT_COMFORT + (zone - 1);
 }
+
+// ---- Thermostat fault log 0x4202 layout (verified live 2026-08-24, issue #22) ----
+// 72 bytes: 10 entries x 7 bytes (code, source, hour, minute, days_be16, status),
+// NEWEST FIRST, then a 2-byte trailer = install-relative day counter (NOT an
+// absolute epoch; Infinitude's fixed 2013-01-01 claim is disproven). Status low 7
+// bits = occurrence count. Bit 7: observed set at logging, cleared within ~2 min
+// on one banner-class fault, persisting on silent diagnostics; NOT liveness, NOT
+// acknowledgment, and unusable as a new-fault detector (it changes faster than
+// one slow-poll rotation). Semantics not characterized across installs — render
+// nothing based on it. No fault
+// liveness exists anywhere on the bus. Non-thermostat sources may pack fields
+// differently (observed hours 47/79) — entries with hour > 23, minute > 59, or
+// days > trailer are invalid for age math.
+static const uint8_t FAULT_ENTRY_COUNT = 10;
+static const uint8_t FAULT_ENTRY_SIZE = 7;
+static const uint8_t FAULT_REG_SIZE = 72;  // 10*7 + 2-byte day-counter trailer
+
+// Fault-log entry fields (offsets within one 7-byte entry).
+enum FaultEntry : uint8_t {
+  FAULT_CODE = 0,
+  FAULT_SOURCE = 1,
+  FAULT_HOUR = 2,
+  FAULT_MINUTE = 3,
+  FAULT_DAYS_HI = 4,
+  FAULT_DAYS_LO = 5,
+  FAULT_STATUS = 6,
+};
+
+// True if the entry's time/days fields are plausible (thermostat-sourced entries
+// are; some non-thermostat sources pack other data into these bytes).
+static inline bool fault_entry_time_valid(const std::vector<uint8_t> &data, uint8_t i) {
+  uint8_t base = i * FAULT_ENTRY_SIZE;
+  uint16_t days = ((uint16_t) data[base + FAULT_DAYS_HI] << 8) | data[base + FAULT_DAYS_LO];
+  uint16_t trailer = ((uint16_t) data[70] << 8) | data[71];
+  return data[base + FAULT_HOUR] <= 23 && data[base + FAULT_MINUTE] <= 59 && days <= trailer;
+}
+
+// Entry age in minutes, from the entry's own fields plus the register's day
+// trailer and a "now" bus-clock minute count (SAM 3B02 REG3B02_MINUTES). The
+// (trailer - days) term carries midnight rollover. Caller must have validated
+// the entry (fault_entry_time_valid) and that data->size() >= FAULT_REG_SIZE.
+static inline int32_t fault_entry_age_minutes(const std::vector<uint8_t> &data, uint8_t i,
+                                               uint16_t now_bus_min) {
+  uint8_t base = i * FAULT_ENTRY_SIZE;
+  uint16_t days = ((uint16_t) data[base + FAULT_DAYS_HI] << 8) | data[base + FAULT_DAYS_LO];
+  uint16_t trailer = ((uint16_t) data[70] << 8) | data[71];
+  uint16_t entry_min = data[base + FAULT_HOUR] * 60 + data[base + FAULT_MINUTE];
+  return (int32_t) (trailer - days) * 1440 + (int32_t) now_bus_min - (int32_t) entry_min;
+}
 static const uint16_t REG_TSTAT_CLOUD = 0x4609;         // Cloud host, proxy server IP
 static const uint16_t REG_TSTAT_DEALER = 0x460A;        // Dealer name, brand, URL (120 bytes)
 static const uint16_t REG_TSTAT_FAULTS = 0x4202;        // Fault history (10 entries × 7 bytes = 70 bytes)
@@ -489,8 +538,6 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zc_hpt_staleness(uint32_t ms) { zc_hpt_.staleness_timeout_ms = ms; }
 
   const std::vector<uint8_t> *get_register(uint8_t addr, uint16_t key) const;
-  // True if any thermostat fault-history (0x4202) entry has the active bit set.
-  bool has_active_fault() const;
   // 3B02 byte 0: bitmask of commissioned zones (bit zone-1). 0 when unreadable.
   uint8_t get_zone_active_mask() const;
   bool is_bus_online() const { return bus_online_; }

@@ -201,74 +201,105 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
     return;
   }
 
-  // Fault history from 4202
-  // 10 entries × 7 bytes: code(1), source(1), hour(1), minute(1), days_be16(2), status(1)
-  // Days since 2013-01-01 epoch. Status bit 7 = active (0=active, 1=cleared), bits 0-6 = occurrence count.
+  // Fault history from 4202 (layout and semantics verified live 2026-08-24,
+  // issue #22; see the FAULT_* block in infinitesp.h):
+  // 10 entries x 7 bytes (newest first) + 2-byte install-relative day trailer.
+  // status low 7 bits = occurrence count; bit 7 observed set at logging and
+  // clearing within ~2 min for one banner-class fault, persisting on silent
+  // diagnostics — NOT liveness, NOT acknowledgment, semantics under-characterized
+  // across installs. No fault liveness exists on the bus. Dates are rendered
+  // RELATIVE (trailer - entry days) because the day counter is per-install
+  // (Infinitude's fixed 2013-01-01 epoch is disproven). Non-thermostat sources
+  // may pack garbage into the time fields.
   if (sensor_type_ == "fault_history") {
     if (register_key != REG_TSTAT_FAULTS)
       return;
     auto *data = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_FAULTS);
-    if (!data || data->size() < 70)
+    if (!data || data->size() < FAULT_REG_SIZE)
       return;
+    auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
+    bool have_clock = state && state->size() >= REG3B02_MINUTES + 2;
+    uint16_t now_bus_min = 0;
+    if (have_clock)
+      now_bus_min = ((uint16_t) state->at(REG3B02_MINUTES) << 8) |
+                    state->at(REG3B02_MINUTES + 1);
 
-    // Source label: fault_source_name() (device-class high nibble of the bus
-    // address). Fault codes are shown as decimal numbers. Human-readable
-    // descriptions require a verified Carrier Infinity / Bryant Evolution
-    // fault-code reference, which is not available here; add one when found.
+    // Fault codes are decimal numbers. Human-readable descriptions require a
+    // verified Carrier fault-code reference, which is not available; add when found.
+    // RENDER BUDGET: HA rejects states longer than 255 chars ("falling back to
+    // unknown" — the pre-2026.8.6 render exceeded it, so fault_history was
+    // always unknown in HA; issue #22's original report). Compact format:
+    // code[(xN)][ SRC] [today|yesterday|Nd] HH:MM, entries joined by "; ",
+    // newest first, truncated at the budget with a "+N more" tail.
     std::string result;
-    for (int i = 0; i < 10; i++) {
-      uint8_t base = i * 7;
-      uint8_t code = (*data)[base + 0];
-      uint8_t source = (*data)[base + 1];
-      uint8_t hour = (*data)[base + 2];
-      uint8_t minute = (*data)[base + 3];
-      uint16_t days = ((uint16_t) (*data)[base + 4] << 8) | (*data)[base + 5];
-      uint8_t status = (*data)[base + 6];
-      bool active = !(status & 0x80);  // bit 7: 0=active, 1=cleared
+    uint8_t shown = 0, remaining = 0;
+    for (uint8_t i = 0; i < FAULT_ENTRY_COUNT; i++) {
+      uint8_t base = i * FAULT_ENTRY_SIZE;
+      uint8_t code = (*data)[base + FAULT_CODE];
+      uint8_t source = (*data)[base + FAULT_SOURCE];
+      uint16_t days = ((uint16_t) (*data)[base + FAULT_DAYS_HI] << 8) |
+                      (*data)[base + FAULT_DAYS_LO];
+      uint8_t status = (*data)[base + FAULT_STATUS];
+      // Bit 7 is NOT rendered: our single-install observations of it (set at
+      // logging, clears within ~2 min for one banner-class fault, persists on
+      // silent diagnostics) are not characterized well enough across installs
+      // to present as user-facing semantics. Decoded if needed for research.
+      bool bit7 = (status & 0x80) != 0;
+      (void) bit7;
       uint8_t occurrences = status & 0x7F;
 
       // Skip empty entries (all zeros)
       if (code == 0 && source == 0 && days == 0)
         continue;
 
-      if (!result.empty())
-        result += "\n";
-
-      // Convert days since 2013-01-01 to a date string
-      // 2013-01-01 epoch, account for leap years
-      uint32_t total_days = days;
-      int year = 2013;
-      while (total_days >= 365) {
-        uint16_t year_days = ((year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 366 : 365);
-        if (total_days >= year_days) {
-          total_days -= year_days;
-          year++;
-        } else {
-          break;
-        }
-      }
-      static const uint8_t mdays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-      uint8_t month = 0;
-      while (month < 12) {
-        uint8_t dim = mdays[month];
-        if (month == 1 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)))
-          dim = 29;
-        if (total_days >= dim) {
-          total_days -= dim;
-          month++;
-        } else {
-          break;
-        }
-      }
-      uint8_t day = (uint8_t) total_days + 1;
-      month++;  // 1-indexed
-
+      char buf[56];
+      // Render: "code[(xN)][ SRC] [today|yesterday|Nd] HH:MM".
+      // Human-readable words (today/yesterday), UI source omitted (the
+      // common case), occurrences bound to the code. State changes only when
+      // the register changes — day granularity, no poll-cadence churn.
+      char occ_suffix[6] = "";
+      if (occurrences > 1)
+        snprintf(occ_suffix, sizeof(occ_suffix), "(x%u)", occurrences);
       const char *src_name = fault_source_name(source);
-      char buf[80];
-      snprintf(buf, sizeof(buf), "%s code=%02d src=%s %02d:%02d %04d-%02d-%02d occ=%d%s",
-               active ? "ACT" : "CLR", code, src_name, hour, minute, year, month, day,
-               occurrences, (i == 0 && active) ? " (latest)" : "");
+      bool is_ui = (source >> 4) == CLASS_THERMOSTAT;
+      if (have_clock && fault_entry_time_valid(*data, i)) {
+        uint16_t trailer = ((uint16_t) (*data)[70] << 8) | (*data)[71];
+        uint16_t dd = trailer - days;  // 0 = today, 1 = yesterday, ...
+        const char *day;
+        char day_buf[6];
+        if (dd == 0)
+          day = "today";
+        else if (dd == 1)
+          day = "yesterday";
+        else {
+          snprintf(day_buf, sizeof(day_buf), "%ud", dd);
+          day = day_buf;
+        }
+        // Source label: omitted for UI (the common case), " ODU"/" IDU" etc otherwise.
+        char src_prefix[8] = "";
+        if (!is_ui)
+          snprintf(src_prefix, sizeof(src_prefix), " %s", src_name);
+        snprintf(buf, sizeof(buf), "%u%s%s %s %02d:%02d",
+                 code, occ_suffix, src_prefix, day,
+                 (*data)[base + FAULT_HOUR], (*data)[base + FAULT_MINUTE]);
+      } else {
+        // Invalid/garbage time fields (non-thermostat source packing): keep
+        // the code visible without rendering a wrong date.
+        snprintf(buf, sizeof(buf), "%u%s src 0x%02X ?",
+                 code, occ_suffix, source);
+      }
+      size_t need = strlen(buf) + (result.empty() ? 0 : 2) + (shown + 1 < 10 ? 8 : 0);
+      if (result.size() + need > 250) {
+        remaining++;
+        continue;
+      }
+      if (!result.empty())
+        result += "; ";
       result += buf;
+      shown++;
+    }
+    if (remaining > 0) {
+      result += "; +" + std::to_string(remaining) + " more";
     }
 
     if (result.empty())

@@ -24,7 +24,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: infinitesp.esp32-s3-relay-6ch
-    version: 2026.8.5
+    version: 2026.8.6
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -343,6 +343,18 @@ sensor:
     type: humidity
     zone: 1
 
+  # Time the most recent fault was logged (register 4202). Bus-relative age
+  # anchored to the ESPHome time source (time_id, required). State changes =
+  # new fault logged; detection can lag by one slow-poll rotation (~5-7 min).
+  # One-minute granularity: two faults in the same minute collide.
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Fault Timestamp"
+    type: fault_timestamp
+    time_id: homeassistant_time
+    icon: "mdi:clock-alert"
+    entity_category: diagnostic
+
   # Outdoor temperature
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
@@ -542,12 +554,9 @@ binary_sensor:
     type: electric_heat
     icon: "mdi:fire"
     entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Active Fault"
-    type: active_fault
-    icon: "mdi:alert"
-    entity_category: diagnostic
+  # active_fault is deprecated (not reliable enough; a false all-clear is worse
+  # than no sensor) and will be removed in a future version. Use the
+  # fault_timestamp sensor instead.
   # Per-zone occupancy (occupied = not in the thermostat's away/unoccupied
   # state). NOTE: this is the schedule/away state, NOT a motion/presence sensor.
   - platform: infinitesp

@@ -15,7 +15,7 @@ InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address 
 | **Climate** | Per-zone thermostat with heat/cool/auto/off modes, dual heat+cool setpoints, fan control, and preset support (per schedule, home, away, sleep, wake, hold timer, hold indefinitely) |
 | **Covers** | Per-zone damper position (0–100%) from the zone controller (either an emulated or a real physical zone controller) |
 | **Sensors** | Zone temperature, zone humidity, outdoor air temp, blower RPM, airflow CFM, compressor RPM, ODU demand/stage/modulation, expansion valve position, superheat/subcooling targets & actuals, ODU temperatures (outdoor/coil/suction/discharge) plus suction superheat, vacation min/max temps |
-| **Binary Sensors** | Bus online/offline status, compressor running, electric heat active, active fault, per-zone occupancy |
+| **Binary Sensors** | Bus online/offline status, compressor running, electric heat active, per-zone occupancy (active_fault deprecated) |
 | **Selects** | System mode (heat/cool/auto/off/emergency heat), per-zone fan speed (auto/low/med/high) |
 | **Text Sensors** | Zone names, hold state, thermostat WiFi SSID/hostname/MAC, proxy server, dealer info, comfort profile dump |
 
@@ -423,11 +423,10 @@ binary_sensor:
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Bus Status"
-    type: bus_status       # bus_status, compressor_running, electric_heat, active_fault
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Active Fault"
-    type: active_fault     # ON while any thermostat fault (0x4202) is currently active
+    type: bus_status       # bus_status, compressor_running, electric_heat, occupancy
+  # (active_fault is deprecated and publishes nothing — no fault-active state
+  # exists on the bus; its old decode misread a transient flag. Use the
+  # fault_timestamp sensor instead.)
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Zone 1 Occupancy"
@@ -472,10 +471,30 @@ text_sensor:
   # tstat_ssid, tstat_hostname, tstat_wifi_mac,
   # tstat_cloud_host, tstat_proxy_server,
   # tstat_dealer_name, tstat_dealer_brand, tstat_dealer_url,
-  # fault_history
+  # fault_history (occurrence counts, NEW tags, relative dates)
   # comfort_profile reads zone 1's comfort table by default; set
   # `zone: N` (1-8) for another zone's (each zone has its own).
 ```
+
+### Fault entities
+
+`fault_timestamp` (sensor, timestamp device class) is the time the most recent
+fault was logged (thermostat register 0x4202). A state change means a new fault
+was logged. Detection can lag by one slow-poll rotation (~5-7 min): the state is
+the fault's logging time, not the observation time. One-minute granularity: two
+faults logged within the same minute produce one state change. Requires `time_id`
+pointing at your `time:` source. No fault-active/cleared state exists on the bus;
+the wall thermostat's fault banner and Carrier's cloud `active` field are
+internal to the thermostat and are never published to the bus.
+
+`fault_history` (text) renders the ten-entry log, newest first:
+`102(x2) today 13:08; 68 ODU yesterday 14:33; ...` — fault code (with
+occurrence count when >1), source when not the thermostat, day-relative date,
+and time. The status byte also carries a high bit we have not fully
+characterized; it is not rendered.
+
+`active_fault` (binary) is deprecated: it warns at validation and publishes
+nothing. It can be removed from your yaml and/or disabled in HA.
 
 ## SAM ASCII Interface
 

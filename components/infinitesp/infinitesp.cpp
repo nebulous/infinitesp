@@ -1284,25 +1284,6 @@ const std::vector<uint8_t> *InfinitESPComponent::get_register(uint8_t addr, uint
   return nullptr;
 }
 
-bool InfinitESPComponent::has_active_fault() const {
-  // Thermostat fault history 0x4202: 10 entries × 7 bytes
-  // (code, source, hour, minute, days_be16, status). status bit 7 = 0 means
-  // the fault is currently ACTIVE. Skip empty slots (code=source=days=0).
-  const auto *data = get_register(ADDR_THERMOSTAT, REG_TSTAT_FAULTS);
-  if (!data || data->size() < 70)
-    return false;
-  for (uint8_t i = 0; i < 10; i++) {
-    uint8_t base = i * 7;
-    uint8_t code = (*data)[base], source = (*data)[base + 1];
-    uint16_t days = ((uint16_t) (*data)[base + 4] << 8) | (*data)[base + 5];
-    if (code == 0 && source == 0 && days == 0)
-      continue;  // empty slot
-    if (!((*data)[base + 6] & 0x80))
-      return true;  // active
-  }
-  return false;
-}
-
 uint8_t InfinitESPComponent::get_zone_active_mask() const {
   auto *state = get_register(sam_address_, REG_SAM_STATE);
   if (state && state->size() > REG3B02_ACTIVE_ZONES)
