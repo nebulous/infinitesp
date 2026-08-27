@@ -1,7 +1,7 @@
 #pragma once
 #include "esphome/components/sensor/sensor.h"
-#include "esphome/components/time/real_time_clock.h"
 #include <cmath>
+#include <ctime>
 #include <functional>
 #include <string>
 #include <vector>
@@ -31,9 +31,14 @@ class InfinitESPSensor : public sensor::Sensor, public InfinitESPEntity {
   }
   void set_raw_lambda(RawLambda &&fn) { raw_lambda_ = std::move(fn); }
 
-  // fault_timestamp: ESPHome time source used to render the bus-relative fault
-  // time as an epoch timestamp (optional; without it the sensor stays unavailable).
-  void set_time_source(time::RealTimeClock *clock) { time_source_ = clock; }
+  // fault_timestamp: epoch provider used to render the bus-relative fault time
+  // as an epoch timestamp (optional; without it the sensor stays unavailable).
+  // Deliberately a lambda, not a time::RealTimeClock*: builds stage only the
+  // components a config uses, so a config without a time platform doesn't have
+  // the time component's header and this component must not include it
+  // (issue #26). The lambda is generated into main.cpp, which has the header
+  // whenever time_id is configured. Returns 0 while the source is unsynced.
+  void set_epoch_provider(std::function<time_t()> fn) { epoch_provider_ = std::move(fn); }
 
  private:
   std::string sensor_type_;
@@ -47,7 +52,7 @@ class InfinitESPSensor : public sensor::Sensor, public InfinitESPEntity {
   float raw_min_{0}, raw_max_{0};
   bool raw_has_range_{false};
   RawLambda raw_lambda_;  // set in lambda mode; full register data is passed in
-  time::RealTimeClock *time_source_{nullptr};
+  std::function<time_t()> epoch_provider_;  // fault_timestamp anchor; see set_epoch_provider
   bool fault_time_warned_{false};  // one-shot warn when time source is missing/unsynced
   // fault_timestamp: signature (code/hour/minute/days) of the last-published
   // newest entry. The published value is computed once per new entry; the

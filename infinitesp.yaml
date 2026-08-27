@@ -24,7 +24,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: infinitesp.esp32-s3-relay-6ch
-    version: 2026.8.7
+    version: 2026.8.8
 
 esp32:
   board: esp32-s3-devkitc-1

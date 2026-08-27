@@ -137,16 +137,16 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
         if (sig_changed) {
           fault_sig_valid_ = true;
           fault_last_sig_ = sig;
-          if (time_source_ == nullptr) {
+          if (!epoch_provider_) {
             if (!fault_time_warned_) {
               fault_time_warned_ = true;
               ESP_LOGW("InfinitESP", "fault_timestamp: no time_id configured; cannot publish. "
                                      "Set time_id on the sensor to your time source.");
             }
           } else {
-            auto now = time_source_->now();
-            if (now.is_valid()) {
-              publish_state((float) now.timestamp - (float) best_age * 60.0f);
+            time_t now_epoch = epoch_provider_();  // 0 = not yet synced
+            if (now_epoch != 0) {
+              publish_state((float) now_epoch - (float) best_age * 60.0f);
             } else if (!fault_time_warned_) {
               fault_time_warned_ = true;
               ESP_LOGW("InfinitESP", "fault_timestamp: time source not yet synced; publishing deferred");

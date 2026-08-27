@@ -223,6 +223,8 @@ static const uint8_t REG3B03_ZONES_HOLDING = 11;      // bitmask
 static const uint8_t REG3B03_HEAT_SETPOINTS = 12;     // heat_sp[8], °F
 static const uint8_t REG3B03_COOL_SETPOINTS = 20;     // cool_sp[8], °F
 static const uint8_t REG3B03_HUMIDITY_SETPOINTS = 28;  // humidity_sp[8], %
+static const uint8_t REG3B03_SPEED_FAN = 36;         // speed_controlled_fan (Infinitude's label, unverified by us)
+static const uint8_t REG3B03_TIMED_HOLDS = 37;       // bitmask, bit N = zone N+1 countdown running (verified 2026-08-27)
 static const uint8_t REG3B03_HOLD_DURATIONS = 38;     // hold_duration[8], uint16 BE each
 static const uint8_t REG3B03_ZONE_NAMES = 54;         // zone_names[8], 12 chars each
 static const uint8_t REG3B03_SIZE = 150;
@@ -609,6 +611,10 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   //   duration == 0                  → cancel     (0x02, bit clear → tstat zeroes timer)
   //   0 < duration < HOLD_PERMANENT  → timed      (0x80; NOTE: tstat ignores, won't register)
   //   duration >= HOLD_PERMANENT     → permanent  (0x02, bit set  → tstat adopts dur 0xFFFF)
+  // Timed holds are NOT wire-writable at all (issue #25, 2026-08-27): the wall
+  // unit emits no bus frame when it arms a timer, and no known write encoding
+  // sets REG3B03_TIMED_HOLDS. Use permanent + cancel from HA if a timed hold
+  // is needed.
   // Must match the reader get_zone_hold_duration().
   uint8_t encode_hold_(uint16_t duration, uint8_t idx, std::vector<uint8_t> &data) const;
 

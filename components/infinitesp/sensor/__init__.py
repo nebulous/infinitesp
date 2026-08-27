@@ -186,8 +186,20 @@ async def to_code(config):
     cg.add(var.set_zone(config[CONF_ZONE]))
     cg.add(var.set_sensor_type(info["key"]))
     if CONF_TIME_ID in config:
-        clock = await cg.get_variable(config[CONF_TIME_ID])
-        cg.add(var.set_time_source(clock))
+        # Generate the epoch provider as a lambda in main.cpp rather than passing
+        # a RealTimeClock* into the component: builds stage only the components a
+        # config uses, so a config without a time platform lacks the time header
+        # and our component must not include it (issue #26). With time_id set the
+        # time component is necessarily configured, so main.cpp has the header.
+        await cg.get_variable(config[CONF_TIME_ID])  # config-time existence check
+        cg.add(
+            var.set_epoch_provider(
+                cg.RawExpression(
+                    f"[]() -> time_t {{ auto t = id({config[CONF_TIME_ID].id}).now(); "
+                    f"return t.is_valid() ? t.timestamp : (time_t) 0; }}"
+                )
+            )
+        )
     if stype == "raw_register":
         dev = config[CONF_DEVICE_ADDRESS]
         cg.add(var.set_bus_class(dev >> 4))

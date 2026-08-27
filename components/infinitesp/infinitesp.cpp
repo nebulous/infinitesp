@@ -1297,11 +1297,20 @@ uint16_t InfinitESPComponent::get_zone_hold_duration(uint8_t zone) const {
   if (!data || data->size() < REG3B03_HOLD_DURATIONS + idx * 2 + 2)
     return 0;
   bool is_holding = (data->at(REG3B03_ZONES_HOLDING) & (1 << idx)) != 0;
+  bool timed = data->size() > REG3B03_TIMED_HOLDS &&
+               (data->at(REG3B03_TIMED_HOLDS) & (1 << idx)) != 0;
   uint16_t dur = ((uint16_t) data->at(REG3B03_HOLD_DURATIONS + idx * 2) << 8) |
                  data->at(REG3B03_HOLD_DURATIONS + idx * 2 + 1);
-  // Carrier protocol: zones_holding bit + duration<=1 = permanent hold
+  // Hold vocabulary on the wire (verified 2026-08-27, issue #25 capture):
+  // zones_holding (byte 11) is the PERMANENT-hold bitmask only; a wall-set
+  // timed hold never sets its bit. A timed hold is zones_holding bit clear +
+  // hold_duration > 0, with REG3B03_TIMED_HOLDS (byte 37) carrying the
+  // corroborating per-zone timer bitmask. Timer-bit set with a zeroed
+  // duration covers the torn final poll before expiry lands.
   if (is_holding && dur <= 1)
     return HOLD_PERMANENT;
+  if (timed && dur == 0)
+    return 1;
   return dur;
 }
 
@@ -1528,6 +1537,9 @@ uint8_t InfinitESPComponent::encode_hold_(uint16_t duration, uint8_t idx,
   // Timed uses 0x80 per Infinitude, but the tstat ignores 0x80 — so a timed hold
   // set this way won't register (only permanent/cancel via 0x02 are reliable).
   // Cancel: clear the bit with 0x02 and the tstat zeroes its countdown timer.
+  // (2026-08-27: confirmed there is no other encoding to find. The wall unit
+  // itself writes nothing to the bus when arming a timed hold; the timer is
+  // thermostat-internal and only readable via REG3B03_TIMED_HOLDS + durations.)
   data[REG3B03_ZONES_HOLDING] &= ~(1 << idx);
   return CHANGE_HOLD;              // 0x02 (cancel: bit clear → tstat drops timer)
 }
