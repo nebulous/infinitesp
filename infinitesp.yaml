@@ -241,39 +241,38 @@ climate:
 # is read-only.
 # ──────────────────────────────────────────────
 
-cover:
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Zone 1 Damper"
-    zone: 1
-    device_class: damper
-  # - platform: infinitesp
-  #   infinitesp_id: infinitesp_hub
-  #   name: "Zone 2 Damper"
-  #   zone: 2
-  #   device_class: damper
+# ──────────────────────────────────────────────
+# Entity generation: per-zone entities (temperature, humidity, occupancy,
+# zone name, hold state, comfort profile, fan mode, damper cover) and all
+# system-wide sensors (ODU/IDU families, faults, vacation, diagnostics) are
+# generated automatically from the zones declared under climate: above.
+# Declare any of them explicitly to customize its name/icon/config — your
+# declaration replaces the generated one. Per-zone opt-outs live on the
+# climate block (e.g. hold_state: false); auto_diagnostics: false in the
+# infinitesp: block drops the diagnostic group. Only genuinely manual
+# entities (raw_register, ZC sensor feeds) need yaml entries — see the
+# sensor: section below.
+# ──────────────────────────────────────────────
 
-# Optional on_change: fires whenever the cover's reported position doesn't
-# match the commanded position (from the thermostat bus or from Home
-# Assistant), passing the new 0.0–1.0 position as `pos`.
-# The cover never writes the bus, so what the action does (log, drive relays,
-# toggle GPIO) is up to you. This example just logs it.
-#
+# Damper covers are generated per zone when a zone controller is emulated
+# (zone_controller_address nonzero) or a physical one is monitored. A custom
+# cover replaces the generated one for that zone — for example to drive real
+# dampers from the commanded position:
 # cover:
 #   - platform: infinitesp
 #     infinitesp_id: infinitesp_hub
-#     name: "Zone 1 Damper"
-#     zone: 1
+#     name: "Office Damper"
+#     zone: 5
 #     device_class: damper
 #     on_change:
 #       then:
-#         - logger.log:
-#             format: "Damper: %.0f%%"
-#             args: [ 'pos * 100.0' ]
-
-# ──────────────────────────────────────────────
-# Sensors
-# ──────────────────────────────────────────────
+#         - if:
+#             condition:
+#               lambda: return pos > 0.5;
+#             then:
+#               - switch.turn_on: damper_relay
+#             else:
+#               - switch.turn_off: damper_relay
 
 sensor:
   # Generic bus-field sensor: decode any field by device/register/offset. Different
@@ -332,202 +331,6 @@ sensor:
   #   offset: 0
   #   datatype: uint8
   # Zone environment - add temperature + humidity for each active zone
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Zone 1 Temperature"
-    type: temperature
-    zone: 1
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Zone 1 Humidity"
-    type: humidity
-    zone: 1
-
-  # Time the most recent fault was logged (register 4202). Bus-relative age
-  # anchored to the ESPHome time source (time_id, required). State changes =
-  # new fault logged; detection can lag by one slow-poll rotation (~5-7 min).
-  # One-minute granularity: two faults in the same minute collide.
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Fault Timestamp"
-    type: fault_timestamp
-    time_id: homeassistant_time
-    icon: "mdi:clock-alert"
-    entity_category: diagnostic
-
-  # Outdoor temperature
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Outdoor Temperature"
-    type: outdoor_temperature
-
-  # Zone board thermistor ports (register 0302, ids 0x14/0x1C). Only populated
-  # by a real Zone Controller with LAT/HPT thermistors wired; disabled by
-  # default — enable in Home Assistant if your board reports them.
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Leaving Air Temperature"
-    type: zc_lat
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "HPT Temperature"
-    type: zc_hpt
-
-  # Indoor unit diagnostics (passively snooped from bus traffic)
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Blower RPM"
-    type: blower_rpm
-    icon: "mdi:fan"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Airflow CFM"
-    type: airflow_cfm
-    icon: "mdi:air-filter"
-    entity_category: diagnostic
-
-  # Outdoor unit - compressor, passively snooped (target=commanded, actual=measured)
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Target Compressor RPM"
-    type: target_compressor_rpm
-    icon: "mdi:engine"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Compressor RPM"
-    type: compressor_rpm
-    icon: "mdi:engine"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Compressor Frequency"
-    type: compressor_frequency
-    icon: "mdi:sine-wave"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Expansion Valve"
-    type: odu_expansion_valve
-    accuracy_decimals: 0
-    icon: "mdi:valve"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Commanded Stage"
-    type: odu_commanded_stage
-    icon: "mdi:transmission-tower"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Stage"
-    type: odu_stage
-    icon: "mdi:step-forward"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Operating Mode"
-    type: odu_mode
-    icon: "mdi:briefcase-edit"
-    entity_category: diagnostic
-
-  # Outdoor unit - superheat / subcooling (float registers)
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Superheat Target"
-    type: odu_float_1
-    accuracy_decimals: 1
-    icon: "mdi:thermometer"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Superheat Actual"
-    type: odu_float_2
-    accuracy_decimals: 1
-    icon: "mdi:thermometer"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Subcooling Target"
-    type: odu_float_3
-    accuracy_decimals: 1
-    icon: "mdi:thermometer-chevron-down"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Subcooling Actual"
-    type: odu_float_4
-    accuracy_decimals: 1
-    icon: "mdi:thermometer-chevron-down"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Float 5"
-    type: odu_float_5
-    accuracy_decimals: 1
-    icon: "mdi:thermometer-alert"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Float 6"
-    type: odu_float_6
-    accuracy_decimals: 3
-    icon: "mdi:blur"
-    entity_category: diagnostic
-
-  # Outdoor unit - temperatures
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Outdoor Temp"
-    type: odu_outdoor_temp
-    accuracy_decimals: 1
-    icon: "mdi:thermometer"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Coil Temp"
-    type: odu_coil_temp
-    accuracy_decimals: 1
-    icon: "mdi:thermometer"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Suction Temp"
-    type: odu_suction_temp
-    accuracy_decimals: 1
-    icon: "mdi:thermometer"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Suction Superheat"
-    type: odu_suction_superheat
-    accuracy_decimals: 1
-    icon: "mdi:thermometer-lines"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "ODU Discharge Temp"
-    type: odu_discharge_temp
-    accuracy_decimals: 1
-    icon: "mdi:thermometer"
-    entity_category: diagnostic
-
-  # Vacation limits
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Vacation Min Temp"
-    type: vacation_min_temp
-    icon: "mdi:thermometer-low"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Vacation Max Temp"
-    type: vacation_max_temp
-    icon: "mdi:thermometer-high"
-    entity_category: diagnostic
-
-  # WiFi
   - platform: wifi_signal
     name: "WiFi Signal"
     update_interval: 60s
@@ -538,214 +341,19 @@ sensor:
 # ──────────────────────────────────────────────
 
 binary_sensor:
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Bus Status"
-    type: bus_status
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Compressor Running"
-    type: compressor_running
-    icon: "mdi:engine"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Electric Heat"
-    type: electric_heat
-    icon: "mdi:fire"
-    entity_category: diagnostic
-  # active_fault is deprecated (not reliable enough; a false all-clear is worse
-  # than no sensor) and will be removed in a future version. Use the
-  # fault_timestamp sensor instead.
-  # Per-zone occupancy (occupied = not in the thermostat's away/unoccupied
-  # state). NOTE: this is the schedule/away state, NOT a motion/presence sensor.
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Zone 1 Occupancy"
-    type: occupancy
-    zone: 1
-  - platform: status
-    name: "Status"
-
-  # Boot button (available on most ESP32 dev boards)
-  - platform: gpio
-    pin:
-      number: GPIO0
-      mode:
-        input: true
-        pullup: true
-      inverted: true
-    name: "Boot Button"
-    entity_category: diagnostic
-
-# ──────────────────────────────────────────────
-# Selects
-# ──────────────────────────────────────────────
+  # Bus status, electric heat, compressor running and per-zone occupancy are
+  # generated automatically. Only declare them to customize names/icons.
+  # (active_fault remains manual-only and deprecated; it publishes nothing.)
 
 select:
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "System Mode"
-    type: system_mode
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Zone 1 Fan Mode"
-    type: fan_mode
-    zone: 1
-
-# ──────────────────────────────────────────────
-# Text sensors
-# ──────────────────────────────────────────────
+  # System mode and per-zone fan mode selects are generated automatically.
+  # Only declare them to customize names/icons.
 
 text_sensor:
-  # Firmware version (diagnostic) - shows the running build's CalVer (e.g. 2026.7.0)
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "InfinitESP Version"
-    type: version
-    entity_category: diagnostic
-    icon: "mdi:tag"
-  # Zone info - add zone_name for each active zone
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Zone 1 Name"
-    type: zone_name
-    zone: 1
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Zone 1 Hold State"
-    type: hold_state
-    zone: 1
-
-  # Fault history (polled every ~31s)
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Fault History"
-    type: fault_history
-    icon: "mdi:alert-circle-outline"
-    entity_category: diagnostic
-
-  # Comfort profiles (home/away/sleep/wake setpoints + fan). Per-zone: omit
-  # zone for zone 1's table (register 400A), or set `zone: N` for zone N's
-  # (400A+N-1). Rows arrive via the SAM slow poll when emulating.
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Comfort Profiles"
-    type: comfort_profile
-    icon: "mdi:thermostat"
-    entity_category: diagnostic
-
-  # Thermostat network info
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Thermostat WiFi SSID"
-    type: tstat_ssid
-    icon: "mdi:wifi"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Thermostat Hostname"
-    type: tstat_hostname
-    icon: "mdi:network"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Thermostat WiFi MAC"
-    type: tstat_wifi_mac
-    icon: "mdi:identifier"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Thermostat Cloud Host"
-    type: tstat_cloud_host
-    icon: "mdi:cloud-outline"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Thermostat Proxy Server"
-    type: tstat_proxy_server
-    icon: "mdi:ip-network"
-    entity_category: diagnostic
-
-  # Dealer info
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Dealer Name"
-    type: tstat_dealer_name
-    icon: "mdi:account-hard-hat"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Dealer Brand"
-    type: tstat_dealer_brand
-    icon: "mdi:tag"
-    entity_category: diagnostic
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Dealer URL"
-    type: tstat_dealer_url
-    icon: "mdi:web"
-    entity_category: diagnostic
-
-  # WiFi
-  - platform: wifi_info
-    ip_address:
-      name: "IP Address"
-      entity_category: diagnostic
-
-# ──────────────────────────────────────────────
-# Board hardware - OPTIONAL
-# ──────────────────────────────────────────────
-# The following section is specific to the Waveshare ESP32-S3-Relay-6CH.
-# Remove or replace it if using a different board. The infinitesp component
-# itself only needs UART + power - relays, LEDs, and buzzers are extras.
-# ──────────────────────────────────────────────
-
-# # Relays (Waveshare 6CH)
-# switch:
-#   - platform: gpio
-#     pin: GPIO1
-#     name: "Relay 1"
-#   - platform: gpio
-#     pin: GPIO2
-#     name: "Relay 2"
-#   - platform: gpio
-#     pin: GPIO41
-#     name: "Relay 3"
-#   - platform: gpio
-#     pin: GPIO42
-#     name: "Relay 4"
-#   - platform: gpio
-#     pin:
-#       number: GPIO45
-#       ignore_strapping_warning: true
-#     name: "Relay 5"
-#   - platform: gpio
-#     pin:
-#       number: GPIO46
-#       ignore_strapping_warning: true
-#     name: "Relay 6"
-
-# # RGB LED (Waveshare 6CH has a WS2812 on GPIO38)
-# light:
-#   - platform: esp32_rmt_led_strip
-#     id: rgb_led
-#     name: "RGB LED"
-#     rgb_order: RGB
-#     pin: GPIO38
-#     num_leds: 1
-#     chipset: WS2812
-
-# # Buzzer (Waveshare 6CH has a piezo on GPIO21)
-# output:
-#   - platform: ledc
-#     pin: GPIO21
-#     id: buzzer
-#
-# rtttl:
-#   output: buzzer
-#   id: rtttl_buzzer
-#   gain: 30%
+  # Zone names, hold state, comfort profiles, fault history, manufacture date,
+  # firmware version and the thermostat wifi/dealer strings are generated
+  # automatically (diagnostics group; disable via auto_diagnostics: false in
+  # the infinitesp: block). Only declare them to customize.
 
 button:
   - platform: restart
