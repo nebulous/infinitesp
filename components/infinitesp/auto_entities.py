@@ -147,6 +147,11 @@ def _explicit(domain):
         if not isinstance(blk, dict) or blk.get("platform") != "infinitesp":
             continue
         stype = blk.get("type")
+        # Multi-device variants (manufacture_date with device_address for the
+        # IDU/ODU) are distinct entities: only a declaration of the DEFAULT
+        # variant (no device_address) suppresses the auto spawn.
+        if stype == "manufacture_date" and "device_address" in blk:
+            continue
         if stype in _ZONE_SCOPED.get(domain, set()):
             zone_keys.add((stype, blk.get(CONF_ZONE, 0)))
         else:
