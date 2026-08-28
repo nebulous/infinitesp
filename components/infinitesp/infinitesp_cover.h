@@ -1,7 +1,7 @@
 #pragma once
 #include "esphome/components/cover/cover.h"
 #include "esphome/core/automation.h"
-#include "../infinitesp.h"
+#include "infinitesp.h"
 
 namespace esphome {
 namespace infinitesp {

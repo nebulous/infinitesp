@@ -99,6 +99,9 @@ def _validate_status_led(config):
     return config
 
 
+CONF_AUTO_DIAGNOSTICS = "auto_diagnostics"
+
+
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
@@ -115,6 +118,11 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_ZONE_CONTROLLER_ADDRESS, default=0): cv.int_range(min=0, max=255),
             # Temperature unit: auto (heuristic), F, or C
             cv.Optional(CONF_TEMPERATURE_UNIT, default=TEMP_UNIT_AUTO): cv.one_of(TEMP_UNIT_AUTO, TEMP_UNIT_FAHRENHEIT, TEMP_UNIT_CELSIUS),
+            # Opt-out for the auto-generated diagnostic entity group
+            # (counters, tstat wifi/dealer strings, version, manufacture date,
+            # fault timestamp). Core and equipment-conditional entities always
+            # spawn; see auto_entities.py.
+            cv.Optional(CONF_AUTO_DIAGNOSTICS, default=True): cv.boolean,
             # ZC zone temperature sensor references (requires zone_controller_address).
             # Zones 2-4 are on the primary controller (0x60); 5-8 on a second
             # controller at +1 (0x61). Zone 1 is always thermostat-direct.
@@ -215,3 +223,7 @@ async def to_code(config):
 
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)
+
+    from . import auto_entities
+
+    await auto_entities.spawn_system_entities(config)

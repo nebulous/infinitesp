@@ -1,6 +1,6 @@
 #pragma once
 #include "esphome/components/select/select.h"
-#include "../infinitesp.h"
+#include "infinitesp.h"
 
 namespace esphome {
 namespace infinitesp {

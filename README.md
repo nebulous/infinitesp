@@ -91,7 +91,7 @@ ssid: "YourWiFiNetwork"
 password: "YourWiFiPassword"
 ```
 
-Review `infinitesp.yaml` and remove any zones you don't have. The default config defines all 8 zones. Unused ones stay dormant in Home Assistant.
+Review `infinitesp.yaml` and set up one `climate:` block per zone you have (1-8). Everything else — per-zone sensors, hold state, fan and damper entities, and the full system sensor set — is generated automatically from your zone list. Declare any entity explicitly only if you want to customize its name or behavior.
 
 ### 3. First Flash (USB)
 
@@ -204,6 +204,21 @@ Connect with `nc infinitesp.local 4242` to see raw hex traffic. The `from_bridge
 > **Warning:** When using `flow: both`, TCP clients share the bus with InfinitESP. The ABCD bus has no arbitration. Simultaneous transmits will collide. Only use bidirectional mode if your tool understands the protocol timing.
 
 ## Configuration Reference
+
+### Auto-Generated Entities
+
+Each zone's sensors and controls, plus the system-wide entities, are generated automatically from the `climate:` blocks you declare. You only need to declare them if you want to change defaults.
+
+- **Per zone** (from each climate block): temperature, humidity, occupancy, zone name, hold state, comfort profile, fan mode select, and the damper cover (when a zone controller is emulated or monitored).
+- **System-wide**: outdoor temperature, blower RPM, airflow, electric heat, compressor running, bus status, ODU temperature/stage sensors, vacation setpoints, fault history and fault timestamp.
+- **Diagnostics** (entity category diagnostic): IDU/ODU cycle and hour counters, thermostat wifi/dealer strings, manufacture date, firmware version. Disable the whole group with `auto_diagnostics: false` in the `infinitesp:` block.
+- **Equipment-conditional** (generated disabled by default, enable in HA if your hardware serves them): the variable-speed ODU family — compressor RPM/frequency, expansion valve, float registers, discharge/suction temperatures, superheat.
+
+Rules:
+
+- **Explicit definitions get priority.** An entity you declare yourself (same type and zone) replaces the generated one, keeping your name and options. Existing fully-explicit configs compile unchanged.
+- **Per-zone opt-outs.** Each generated per-zone entity can be disabled with an option on its climate block, default true, named after it: `temperature: false`, `humidity: false`, `occupancy: false`, `zone_name: false`, `hold_state: false`, `comfort_profile: false`, `fan_mode: false`, `damper: false`. The option affects that zone only. System-wide entities have no individual switches: declare one explicitly to take control of it, or set `auto_diagnostics: false` to drop the diagnostics group.
+- **Manual-only**: `raw_register` sensors, the zone controller sensor feeds (`zc_zone_temperature`, `zc_lat`, `zc_hpt`), and multi-device `manufacture_date` variants.
 
 ### Core Component
 

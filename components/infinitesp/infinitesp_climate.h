@@ -1,7 +1,7 @@
 #pragma once
 #include "esphome/components/climate/climate.h"
 #include <cmath>
-#include "../infinitesp.h"
+#include "infinitesp.h"
 
 namespace esphome {
 namespace infinitesp {
