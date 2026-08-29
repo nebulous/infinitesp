@@ -41,6 +41,8 @@ PER_ZONE_ENTITIES = [
     {"domain": "text_sensor", "type": "comfort_profile", "label": None, "flag": "comfort_profile"},
     {"domain": "select", "type": "fan_mode", "label": "Fan Mode", "flag": "fan_mode"},
     {"domain": "cover", "type": None, "label": "Damper", "flag": "damper"},
+    {"domain": "datetime", "type": None, "label": "Hold Until", "flag": "hold_until"},
+    {"domain": "number", "type": None, "label": "Hold Minutes", "flag": "hold_minutes"},
 ]
 
 # System-wide, always spawned.
@@ -122,7 +124,14 @@ _ZONE_SCOPED = {
     "text_sensor": {"zone_name", "hold_state", "comfort_profile"},
     "select": {"fan_mode"},
     "cover": {None},
+    "datetime": {None},
+    "number": {None},
 }
+
+# Some stock schemas inject a `type` that is the entity KIND, not our flavor
+# key (datetime.time_schema defaults CONF_TYPE to "TIME"). Normalize those to
+# None so suppression matches our typeless convention.
+_TYPE_NORMALIZE = {}
 
 _modules = {}
 _uniq = itertools.count()
@@ -147,6 +156,7 @@ def _explicit(domain):
         if not isinstance(blk, dict) or blk.get("platform") != "infinitesp":
             continue
         stype = blk.get("type")
+        stype = _TYPE_NORMALIZE.get(domain, {}).get(str(stype).lower() if stype else None, stype)
         # Multi-device variants (manufacture_date with device_address for the
         # IDU/ODU) are distinct entities: only a declaration of the DEFAULT
         # variant (no device_address) suppresses the auto spawn.
@@ -173,6 +183,17 @@ async def _spawn(domain, stype, zone, cfg):
     tag = (stype or domain).replace("_", "")
     cfg["id"] = f"infinitesp_auto_{tag}_{zone}_{next(_uniq)}"
     cfg = mod.CONFIG_SCHEMA(cfg)
+    # Component-backed entities (the datetime time entity registers a loop)
+    # need register_component, which validates against CORE.component_ids —
+    # a set populated only during yaml validation. Spawned ids are created
+    # after that pass, so register them here. Generic: keyed on the declared
+    # class actually inheriting Component.
+    id_obj = cfg.get("id")
+    if hasattr(id_obj, "type") and getattr(id_obj.type, "inherits_from", None):
+        from esphome import codegen as _cg
+
+        if id_obj.type.inherits_from(_cg.Component):
+            CORE.component_ids.add(id_obj.id)
     await mod.to_code(cfg)
 
 
@@ -227,7 +248,7 @@ async def spawn_zone_entities(climate_config):
         }
         if comp["type"] is not None:
             cfg["type"] = comp["type"]
-        if comp["domain"] in ("sensor", "binary_sensor", "text_sensor", "select", "cover"):
+        if comp["domain"] in ("sensor", "binary_sensor", "text_sensor", "select", "cover", "datetime", "number"):
             cfg[CONF_ZONE] = zone
         if comp["domain"] == "cover":
             cfg["device_class"] = "damper"

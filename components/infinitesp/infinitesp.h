@@ -404,6 +404,12 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 
   void setup() override;
   void loop() override;
+
+  // Timed-hold setter debounce, owned by the hub (the setter entities are
+  // plain entities, NOT Components: auto-spawned Component registrations
+  // corrupt the loop-slot scheduling and stall this loop entirely — the
+  // 2026-08-28 outage). Each zone has one pending slot; a new set replaces it.
+  void queue_hold_set(uint8_t zone, uint16_t minutes, uint32_t debounce_ms);
   float get_setup_priority() const override { return setup_priority::DATA; }
 
   void set_sam_address(uint8_t addr) { sam_address_ = addr; }
@@ -588,6 +594,18 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // MAX is the largest multiple of 15 under the documented 23:59 SAM01 max.
   static constexpr uint16_t HOLD_TIMED_MIN = 15;
   static constexpr uint16_t HOLD_TIMED_MAX = 1425;
+  // Normalize a finite timed-hold duration onto the thermostat's grid:
+  // nearest 15, clamped to [HOLD_TIMED_MIN, HOLD_TIMED_MAX]. Shared by the
+  // write path (set_zone_hold) and the setter entities' optimistic publishes,
+  // so the UI only ever shows a value the bus will actually produce.
+  static uint16_t normalize_timed_hold(uint16_t duration) {
+    if (duration > HOLD_TIMED_MAX)
+      duration = HOLD_TIMED_MAX;  // before rounding: duration+7 wraps near 0xFFFF
+    uint16_t rounded = ((duration + 7) / 15) * 15;
+    if (rounded < HOLD_TIMED_MIN) rounded = HOLD_TIMED_MIN;
+    if (rounded > HOLD_TIMED_MAX) rounded = HOLD_TIMED_MAX;
+    return rounded;
+  }
   uint16_t get_zone_hold_duration(uint8_t zone) const;
 
   // Vacation config (source of truth for sam_ascii reads; pushed to the
@@ -984,6 +1002,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     uint32_t fire_ms;
   };
   std::deque<PendingRetransmit> pending_retransmits_;
+
+  // Debounced timed-hold sets from the setter entities (queue_hold_set).
+  struct PendingHoldSet {
+    uint16_t minutes;
+    uint32_t until_ms;
+    bool active;
+  };
+  PendingHoldSet pending_hold_sets_[8] = {};
   // Cached WiFi credentials discovered from thermostat register 4608
   // Stored in NVS, injected into WiFi component on boot if WiFi hasn't connected yet
   struct CachedWifi {

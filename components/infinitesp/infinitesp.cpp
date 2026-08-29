@@ -133,6 +133,16 @@ void InfinitESPComponent::loop() {
     version_published_ = true;
   }
 
+  // Fire debounced timed-hold sets from the setter entities (see
+  // queue_hold_set): one write per zone after the target settles.
+  for (uint8_t z = 0; z < 8; z++) {
+    if (pending_hold_sets_[z].active && millis() >= pending_hold_sets_[z].until_ms) {
+      pending_hold_sets_[z].active = false;
+      ESP_LOGI("InfinitESP", "Zone %u hold set -> %u min", z + 1, pending_hold_sets_[z].minutes);
+      set_zone_hold(z + 1, pending_hold_sets_[z].minutes);
+    }
+  }
+
   uint32_t loop_start = millis();
 
   // NOTE: no echo suppression needed. RS485 auto-direction transceivers disable
@@ -1291,6 +1301,14 @@ uint8_t InfinitESPComponent::get_zone_active_mask() const {
   return 0;
 }
 
+void InfinitESPComponent::queue_hold_set(uint8_t zone, uint16_t minutes, uint32_t debounce_ms) {
+  if (zone < 1 || zone > 8)
+    return;
+  pending_hold_sets_[zone - 1].minutes = minutes;
+  pending_hold_sets_[zone - 1].until_ms = millis() + debounce_ms;
+  pending_hold_sets_[zone - 1].active = true;
+}
+
 uint16_t InfinitESPComponent::get_zone_hold_duration(uint8_t zone) const {
   auto *data = get_register(sam_address_, REG_SAM_ZONES);
   uint8_t idx = zone - 1;
@@ -1560,18 +1578,10 @@ void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes)
   // would ACK and do nothing (issue #25, verified 2026-08-27).
   uint16_t duration = duration_minutes;
   if (duration > 0 && duration < HOLD_PERMANENT) {
-    // Clamp high BEFORE rounding: duration+7 can wrap uint16_t near 0xFFFF,
-    // which would round a huge request down to the 15-min floor.
-    if (duration > HOLD_TIMED_MAX)
-      duration = HOLD_TIMED_MAX;
-    uint16_t rounded = ((duration + 7) / 15) * 15;  // nearest 15
-    if (rounded < HOLD_TIMED_MIN) rounded = HOLD_TIMED_MIN;
-    if (rounded > HOLD_TIMED_MAX) rounded = HOLD_TIMED_MAX;
-    if (rounded != duration_minutes) {
+    duration = normalize_timed_hold(duration);
+    if (duration != duration_minutes)
       ESP_LOGI("InfinitESP", "Zone %d timed hold %d min rounded to %d (15-min grid)",
-               zone, duration_minutes, rounded);
-      duration = rounded;
-    }
+               zone, duration_minutes, duration);
   }
 
   std::vector<uint8_t> data = *zones_data;

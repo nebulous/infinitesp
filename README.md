@@ -209,7 +209,7 @@ Connect with `nc infinitesp.local 4242` to see raw hex traffic. The `from_bridge
 
 Each zone's sensors and controls, plus the system-wide entities, are generated automatically from the `climate:` blocks you declare. You only need to declare them if you want to change defaults.
 
-- **Per zone** (from each climate block): temperature, humidity, occupancy, zone name, hold state, comfort profile, fan mode select, and the damper cover (when a zone controller is emulated or monitored).
+- **Per zone** (from each climate block): temperature, humidity, occupancy, zone name, hold state, comfort profile, fan mode select, hold-until time, hold-minutes number, and the damper cover (when a zone controller is emulated or monitored).
 - **System-wide**: outdoor temperature, blower RPM, airflow, electric heat, compressor running, bus status, ODU temperature/stage sensors, vacation setpoints, fault history and fault timestamp.
 - **Diagnostics** (entity category diagnostic): IDU/ODU cycle and hour counters, thermostat wifi/dealer strings, manufacture date, firmware version. Disable the whole group with `auto_diagnostics: false` in the `infinitesp:` block.
 - **Equipment-conditional** (generated disabled by default, enable in HA if your hardware serves them): the variable-speed ODU family — compressor RPM/frequency, expansion valve, float registers, discharge/suction temperatures, superheat.
@@ -217,8 +217,23 @@ Each zone's sensors and controls, plus the system-wide entities, are generated a
 Rules:
 
 - **Explicit definitions get priority.** An entity you declare yourself (same type and zone) replaces the generated one, keeping your name and options. Existing fully-explicit configs compile unchanged.
-- **Per-zone opt-outs.** Each generated per-zone entity can be disabled with an option on its climate block, default true, named after it: `temperature: false`, `humidity: false`, `occupancy: false`, `zone_name: false`, `hold_state: false`, `comfort_profile: false`, `fan_mode: false`, `damper: false`. The option affects that zone only. System-wide entities have no individual switches: declare one explicitly to take control of it, or set `auto_diagnostics: false` to drop the diagnostics group.
+- **Per-zone opt-outs.** Each generated per-zone entity can be disabled with an option on its climate block, default true, named after it: `temperature: false`, `humidity: false`, `occupancy: false`, `zone_name: false`, `hold_state: false`, `comfort_profile: false`, `fan_mode: false`, `damper: false`, `hold_until: false`, `hold_minutes: false`. The option affects that zone only. System-wide entities have no individual switches: declare one explicitly to take control of it, or set `auto_diagnostics: false` to drop the diagnostics group.
 - **Manual-only**: `raw_register` sensors, the zone controller sensor feeds (`zc_zone_temperature`, `zc_lat`, `zc_hpt`), and multi-device `manufacture_date` variants.
+
+### Timed holds from Home Assistant
+
+Each zone gets two entities that read and set the same native bus timed hold — the thermostat owns the countdown, the same mechanism the wall unit uses:
+
+- "Zone N Hold Until" (a `time` entity): set a clock time and the hold ends then. Good for people thinking in absolute terms ("hold until bedtime").
+- "Zone N Hold Minutes" (a `number`, steps of 15): remaining minutes, 0 when no timed hold is running. Set it to arm a hold for N minutes; set 0 to cancel and return to Per Schedule. Good for durations ("hold two hours") and for automations.
+
+Notes:
+
+- Both show the value the bus will actually produce: a requested 20 minutes displays as 15 immediately (the thermostat's grid is quarter-hours), and a requested 8:40 PM end may hold until 8:45 PM. The `hold_state` sensor always shows the true end.
+- Sets are debounced for about a second and a half after you stop adjusting, because Home Assistant's pickers send every intermediate value. One bus write arms the hold after the value settles.
+- A hold-until target within 15 minutes of now means tomorrow.
+- While a timed hold runs, both entities mirror it. After the hold ends or is cancelled they keep their last value until the next hold is set.
+- Cancel with either zero minutes or the climate entity's "Per Schedule" preset.
 
 ### Core Component
 
