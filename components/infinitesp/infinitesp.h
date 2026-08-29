@@ -310,7 +310,7 @@ static const uint16_t REG_IDU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-
 //   0x01 DEVCONFG  device configuration (REG_DEVICE_INFO = 0x0104)
 //   0x02 SYSTIME  system time/date (thermostat-owned; ODU never reads it)
 //   0x03 RLCSMAIN main controller, RLCS (Residential & Light Commercial Systems) family - ODU sensors & loop state
-//   0x06 VAR COMP variable-speed compressor drive - frequency & stage
+//   0x06 VAR COMP variable-speed compressor drive - stage, EXV, requested CFM
 // Tables 0x04,0x05,0x07-0x0F return FUNC 0x15 (not present on this hardware).
 //
 // Table 0x03 RLCSMAIN:
@@ -322,7 +322,7 @@ static const uint16_t REG_ODU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-
 //
 // Table 0x06 VAR COMP:
 static const uint16_t REG_ODU_COMP_SPEED = 0x0604;  // Compressor speed: target RPM [0..1], current RPM [2..3] (per stage)
-static const uint16_t REG_ODU_DEMAND = 0x0608;     // Compressor drive: frequency uint16 at [5..6] (0.1 Hz), expansion valve % at [2]
+static const uint16_t REG_ODU_DEMAND = 0x0608;     // Compressor drive: requested IDU airflow uint16 at [5..6] (CFM), expansion valve % at [2]
 static const uint16_t REG_ODU_CMD_STAGE = 0x0605;  // Commanded compressor stage (float32 at [0..3]: 0.0/1.0..5.0)
 static const uint16_t REG_ODU_STAGE_INFO = 0x060E;  // Actual stage index (byte 0: 0=off, 1..5=stage)
 static const uint16_t REG_ODU_SETPOINT = 0x060B;   // Target value at byte[2], native °F (label TBD; not confirmed a cooling setpoint)
@@ -700,7 +700,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   //   [0..1] = target (commanded) RPM  — holds round rated stage speeds
   //            {0,1500,1700,2460,2800,3650}
   //   [2..3] = actual (measured) RPM — fluctuates around target
-  //            (~3·drive_hz with slip)
+  //            (slips below the commanded speed under load)
   // Verified via 0604-vs-060e stage crosstab and the v=0x0484 frame where
   // actual(3640) != target(2800). See DEVLOG 2026-06-21 and Infinitude
   // OutdoorUnit.pm 0604 (target_rpm / current_rpm — Infinitude uses 'current'
@@ -713,12 +713,16 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     if (data.size() < 4) return NAN;
     return (float) (((uint16_t) data[2] << 8) | data[3]);
   }
-  // ODU register 0608 (REG_ODU_DEMAND): compressor drive frequency, u16 BE at [5..6], 0.1 Hz
-  // Scale confirmed for stages 1-4 against Carrier rated RPM (4-pole motor, sync rpm = 3*v);
-  // stage 5 (144 Hz) predicted, not yet measured. See private/DEVLOG.md 2026-06-23.
-  static float odu_compressor_frequency_(const std::vector<uint8_t> &data) {
+  // ODU register 0608 (REG_ODU_DEMAND): airflow the ODU requests from the
+  // IDU, u16 BE at [5..6], CFM. The IDU may run above it (e.g. strip heat).
+  // Formerly decoded as 0.1 Hz drive frequency: on a 4-ton 24VNA9 both
+  // readings fit the same numbers (1440 = 144.0 Hz = 4320 rpm on a 4-pole
+  // motor, and 1440 CFM at ~360/ton), but issue #7 cross-model data
+  // (display-confirmed CFM on a Greenspeed, 2-ton values) rules out frequency.
+  // See DEVLOG 2026-08-29.
+  static float odu_requested_cfm_(const std::vector<uint8_t> &data) {
     if (data.size() < 7) return NAN;
-    return (float) (((uint16_t) data[5] << 8) | data[6]) / 10.0f;
+    return (float) (((uint16_t) data[5] << 8) | data[6]);
   }
   // ODU register 0608 (REG_ODU_DEMAND): expansion valve position at byte [2], 0-100 percent.
   // Proven from bus captures: ramps through intermediate values (39-95%) over 10-15s on

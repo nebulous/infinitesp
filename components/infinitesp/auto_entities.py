@@ -18,6 +18,8 @@ from esphome import config_validation as cv
 from esphome.const import CONF_NAME
 from esphome.core import CORE
 
+from . import sensor as _sensor_platform
+
 # CONF_ZONE is not in esphome.const; every platform schema keys on the string.
 CONF_ZONE = "zone"
 
@@ -102,7 +104,7 @@ SYSTEM_DIAGNOSTIC = [
 SYSTEM_CONDITIONAL = [
     ("sensor", "compressor_rpm", "Compressor RPM"),
     ("sensor", "target_compressor_rpm", "Compressor Target RPM"),
-    ("sensor", "compressor_frequency", "ODU Compressor Frequency"),
+    ("sensor", "odu_requested_cfm", "ODU Requested CFM"),
     ("sensor", "odu_expansion_valve", "ODU Expansion Valve"),
     ("sensor", "odu_float_1", "ODU Float 1"),
     ("sensor", "odu_float_2", "ODU Float 2"),
@@ -130,8 +132,13 @@ _ZONE_SCOPED = {
 
 # Some stock schemas inject a `type` that is the entity KIND, not our flavor
 # key (datetime.time_schema defaults CONF_TYPE to "TIME"). Normalize those to
-# None so suppression matches our typeless convention.
-_TYPE_NORMALIZE = {}
+# None so suppression matches our typeless convention. Deprecated sensor-type
+# aliases (single source: sensor platform) normalize to their replacement so an
+# explicit old-name declaration suppresses the replacement's auto twin instead
+# of double-spawning it.
+_TYPE_NORMALIZE = {
+    "sensor": dict(_sensor_platform.DEPRECATED_SENSOR_TYPES),
+}
 
 _modules = {}
 _uniq = itertools.count()

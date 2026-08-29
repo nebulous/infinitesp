@@ -1,7 +1,8 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import logging
 from esphome.components import sensor
-from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, STATE_CLASS_NONE, STATE_CLASS_TOTAL_INCREASING, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_VOLUME_FLOW_RATE, DEVICE_CLASS_VOLTAGE, DEVICE_CLASS_DURATION, DEVICE_CLASS_TIMESTAMP, CONF_ACCURACY_DECIMALS, CONF_STATE_CLASS
+from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, STATE_CLASS_NONE, STATE_CLASS_TOTAL_INCREASING, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_HUMIDITY, DEVICE_CLASS_VOLUME_FLOW_RATE, DEVICE_CLASS_VOLTAGE, DEVICE_CLASS_DURATION, DEVICE_CLASS_TIMESTAMP, CONF_ACCURACY_DECIMALS, CONF_STATE_CLASS
 from esphome.components import time
 from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
@@ -21,6 +22,13 @@ RAW_DATATYPES = ["uint8", "int8", "uint16_be", "int16_be", "uint32_be", "int32_b
 
 InfinitESPSensor = infinitesp_ns.class_("InfinitESPSensor", sensor.Sensor, InfinitESPEntity)
 
+_LOGGER = logging.getLogger(__name__)
+
+# Deprecated sensor type aliases: old yaml key -> replacement.
+DEPRECATED_SENSOR_TYPES = {
+    "compressor_frequency": "odu_requested_cfm",
+}
+
 # Monotonic counters (register 0310 cycles / 0311 hours): state_class=total_increasing
 # so HA treats them as utility-meter-able totals (not stair-step measurement graphs),
 # with integer precision.
@@ -31,7 +39,7 @@ _CYCLES = {"unit": "cycles", "state_class": STATE_CLASS_TOTAL_INCREASING, "accur
 SENSOR_TYPES = {
     # SAM/thermostat sensors — device_class 0 (any), they gate on register_key
     "temperature": {"key": "temperature", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 0},
-    "humidity": {"key": "humidity", "unit": "%", "bus_class": 0},
+    "humidity": {"key": "humidity", "unit": "%", "device_class": DEVICE_CLASS_HUMIDITY, "bus_class": 0},
     "outdoor_temperature": {"key": "outdoor_temperature", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 0},
     "vacation_min_temp": {"key": "vacation_min_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 0},
     "vacation_max_temp": {"key": "vacation_max_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 0},
@@ -44,7 +52,16 @@ SENSOR_TYPES = {
     # additive. Infinitude OutdoorUnit.pm 0604: target_rpm / current_rpm.
     "compressor_rpm": {"key": "compressor_rpm", "unit": "RPM", "bus_class": 5},
     "target_compressor_rpm": {"key": "target_compressor_rpm", "unit": "RPM", "bus_class": 5},
-    "compressor_frequency": {"key": "compressor_frequency", "unit": "Hz", "bus_class": 5},
+    # ODU register 0608 bytes [5..6]: airflow (CFM) the ODU requests from the
+    # IDU while running. 'compressor_frequency' is the deprecated old name for
+    # the same field: on a 4-ton 24VNA9 the values fit both decodes (1440 =
+    # 144.0 Hz = 4320 rpm on a 4-pole motor, and 1440 CFM at ~360/ton), but
+    # issue #7 cross-model data (display-confirmed CFM, 2-ton values) rules
+    # out frequency.
+    "odu_requested_cfm": {"key": "odu_requested_cfm", "unit": "ft³/min", "device_class": DEVICE_CLASS_VOLUME_FLOW_RATE, "bus_class": 5, "accuracy_decimals": 0},
+    # Deprecated alias for odu_requested_cfm. Warns at validation, decodes
+    # identically (same key), publishes the corrected CFM unit.
+    "compressor_frequency": {"key": "odu_requested_cfm", "unit": "ft³/min", "device_class": DEVICE_CLASS_VOLUME_FLOW_RATE, "bus_class": 5, "accuracy_decimals": 0},
     # ODU expansion valve position from register 0608 byte [2] (0-100 percent).
     # Ramps over 10-15s on cycle transitions; reads 0 (off) or 100 (running) otherwise.
     "odu_expansion_valve": {"key": "odu_expansion_valve", "unit": "%", "bus_class": 5},
@@ -118,6 +135,10 @@ def _apply_sensor_type(config):
     zc_lat/zc_hpt). raw_register supplies its own from yaml, so it is skipped."""
     if config[CONF_TYPE] == "raw_register":
         return config
+    if config[CONF_TYPE] in DEPRECATED_SENSOR_TYPES:
+        _LOGGER.warning(
+            "Sensor type '%s' is deprecated, use '%s' instead",
+            config[CONF_TYPE], DEPRECATED_SENSOR_TYPES[config[CONF_TYPE]])
     info = SENSOR_TYPES[config[CONF_TYPE]]
     config[sensor.CONF_UNIT_OF_MEASUREMENT] = info.get("unit", "")
     config[sensor.CONF_DEVICE_CLASS] = info.get("device_class", "")

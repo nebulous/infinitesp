@@ -635,8 +635,8 @@ void InfinitESPComponent::handle_passive_frame_() {
                    (unsigned) target, (unsigned) actual, data.size());
       }
       if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_DEMAND && data.size() >= 7) {
-        ESP_LOGD("InfinitESP", "ODU 0608: compressor_frequency=%.1f Hz expansion_valve=%.0f%% raw=[%02X %02X %02X %02X %02X %02X %02X]",
-                 odu_compressor_frequency_(data),
+        ESP_LOGD("InfinitESP", "ODU 0608: requested_cfm=%u expansion_valve=%.0f%% raw=[%02X %02X %02X %02X %02X %02X %02X]",
+                 (unsigned) odu_requested_cfm_(data),
                  odu_expansion_valve_(data),
                  data[0], data[1], data[2], data[3], data[4], data[5], data[6]);
       }

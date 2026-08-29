@@ -212,7 +212,7 @@ Each zone's sensors and controls, plus the system-wide entities, are generated a
 - **Per zone** (from each climate block): temperature, humidity, occupancy, zone name, hold state, comfort profile, fan mode select, hold-until time, hold-minutes number, and the damper cover (when a zone controller is emulated or monitored).
 - **System-wide**: outdoor temperature, blower RPM, airflow, electric heat, compressor running, bus status, ODU temperature/stage sensors, vacation setpoints, fault history and fault timestamp.
 - **Diagnostics** (entity category diagnostic): IDU/ODU cycle and hour counters, thermostat wifi/dealer strings, manufacture date, firmware version. Disable the whole group with `auto_diagnostics: false` in the `infinitesp:` block.
-- **Equipment-conditional** (generated disabled by default, enable in HA if your hardware serves them): the variable-speed ODU family — compressor RPM/frequency, expansion valve, float registers, discharge/suction temperatures, superheat.
+- **Equipment-conditional** (generated disabled by default, enable in HA if your hardware serves them): the variable-speed ODU family — compressor RPM, ODU requested CFM, expansion valve, float registers, discharge/suction temperatures, superheat.
 
 Rules:
 
@@ -425,7 +425,10 @@ sensor:
   # All diagnostic sensor types:
   #   blower_rpm, airflow_cfm, compressor_rpm (actual), target_compressor_rpm
   #   (`compressor_rpm` = measured RPM [2..3], `target_compressor_rpm` = commanded [0..1].)
-  #   compressor_frequency, odu_expansion_valve, odu_commanded_stage, odu_stage, odu_mode, odu_line_voltage
+  #   odu_requested_cfm, odu_expansion_valve, odu_commanded_stage, odu_stage, odu_mode, odu_line_voltage
+  #   (`compressor_frequency` still works as the deprecated alias of
+  #   odu_requested_cfm: the field is the CFM the ODU requests from the IDU,
+  #   not a frequency.)
   #   odu_outdoor_temp, odu_coil_temp, odu_suction_temp,
   #   odu_suction_superheat, odu_indoor_ambient, odu_discharge_temp
   #   odu_float_1 (superheat target), odu_float_2 (superheat actual),

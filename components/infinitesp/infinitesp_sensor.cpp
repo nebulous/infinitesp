@@ -213,13 +213,15 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
-  // Compressor drive frequency from register 0608 (uint16 BE at [5..6], 0.1 Hz)
-  if (register_key == REG_ODU_DEMAND && sensor_type_ == "compressor_frequency") {
+  // Airflow the ODU requests from the IDU, register 0608 (uint16 BE at [5..6],
+  // CFM). Formerly decoded as compressor drive frequency (issue #7 disproved
+  // that reading). 'compressor_frequency' is the deprecated sensor-type alias.
+  if (register_key == REG_ODU_DEMAND && sensor_type_ == "odu_requested_cfm") {
     auto *data = parent_->get_register(device_addr, REG_ODU_DEMAND);
     if (data) {
-      float f = parent_->odu_compressor_frequency_(*data);
-      if (!std::isnan(f))
-        value = f;
+      float cfm = parent_->odu_requested_cfm_(*data);
+      if (!std::isnan(cfm))
+        value = cfm;
     }
   }
 
