@@ -133,6 +133,16 @@ void InfinitESPComponent::loop() {
     version_published_ = true;
   }
 
+  // Fire debounced timed-hold sets from the setter entities (see
+  // queue_hold_set): one write per zone after the target settles.
+  for (uint8_t z = 0; z < 8; z++) {
+    if (pending_hold_sets_[z].active && millis() >= pending_hold_sets_[z].until_ms) {
+      pending_hold_sets_[z].active = false;
+      ESP_LOGI("InfinitESP", "Zone %u hold set -> %u min", z + 1, pending_hold_sets_[z].minutes);
+      set_zone_hold(z + 1, pending_hold_sets_[z].minutes);
+    }
+  }
+
   uint32_t loop_start = millis();
 
   // NOTE: no echo suppression needed. RS485 auto-direction transceivers disable
@@ -1291,6 +1301,14 @@ uint8_t InfinitESPComponent::get_zone_active_mask() const {
   return 0;
 }
 
+void InfinitESPComponent::queue_hold_set(uint8_t zone, uint16_t minutes, uint32_t debounce_ms) {
+  if (zone < 1 || zone > 8)
+    return;
+  pending_hold_sets_[zone - 1].minutes = minutes;
+  pending_hold_sets_[zone - 1].until_ms = millis() + debounce_ms;
+  pending_hold_sets_[zone - 1].active = true;
+}
+
 uint16_t InfinitESPComponent::get_zone_hold_duration(uint8_t zone) const {
   auto *data = get_register(sam_address_, REG_SAM_ZONES);
   uint8_t idx = zone - 1;
@@ -1534,14 +1552,18 @@ uint8_t InfinitESPComponent::encode_hold_(uint16_t duration, uint8_t idx,
     data[REG3B03_ZONES_HOLDING] |= (1 << idx);     // permanent-hold bit (0x02 makes the
     return CHANGE_HOLD;                            // tstat adopt duration 0xFFFF itself)
   }
-  // Timed uses 0x80 per Infinitude, but the tstat ignores 0x80 — so a timed hold
-  // set this way won't register (only permanent/cancel via 0x02 are reliable).
-  // Cancel: clear the bit with 0x02 and the tstat zeroes its countdown timer.
-  // (2026-08-27: confirmed there is no other encoding to find. The wall unit
-  // itself writes nothing to the bus when arming a timed hold; the timer is
-  // thermostat-internal and only readable via REG3B03_TIMED_HOLDS + durations.)
+  // Timed hold: flags 0x82 (hold | override_timer). VERIFIED LIVE 2026-08-27
+  // (issue #25): Z3HOLD!15 armed a real countdown on the Touch (served 3B03
+  // showed byte37 bit set + dur 15 counting down, permanent bit clear, HA
+  // preset Hold Timer; cancel and natural expiry both verified; 120 min and
+  // 1440 min also verified). DURATION FLOOR: 15 min. Writes of 10/12/13/14
+  // are processed (3B0E activity flag) but silently not adopted; 15 works
+  // (3/3, incl. right after rejections). 0x80-alone is insufficient and
+  // 0x02-alone is a cancel (duration ignored; tested live). The pre-2026-08-27
+  // "tstat ignores 0x80" conclusion came from muddy-state tests of 0x80-alone;
+  // see the 2026-08-27 DEVLOG entries.
   data[REG3B03_ZONES_HOLDING] &= ~(1 << idx);
-  return CHANGE_HOLD;              // 0x02 (cancel: bit clear → tstat drops timer)
+  return duration > 0 ? (CHANGE_HOLD | CHANGE_OVERRIDE) : CHANGE_HOLD;
 }
 
 void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes) {
@@ -1550,9 +1572,21 @@ void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes)
   if (!zones_data || zones_data->size() < REG3B03_SIZE)
     return;
 
+  // Normalize finite durations onto the thermostat's timed-hold grid. Without
+  // this, sub-floor values are silently not adopted by the thermostat (it
+  // processes the write, raises 3B0E activity, then drops it), so the command
+  // would ACK and do nothing (issue #25, verified 2026-08-27).
+  uint16_t duration = duration_minutes;
+  if (duration > 0 && duration < HOLD_PERMANENT) {
+    duration = normalize_timed_hold(duration);
+    if (duration != duration_minutes)
+      ESP_LOGI("InfinitESP", "Zone %d timed hold %d min rounded to %d (15-min grid)",
+               zone, duration_minutes, duration);
+  }
+
   std::vector<uint8_t> data = *zones_data;
   uint8_t idx = zone - 1;
-  uint8_t flags = encode_hold_(duration_minutes, idx, data);
+  uint8_t flags = encode_hold_(duration, idx, data);
 
   // Update local cache
   data[REG3B03_CHANGE_FLAGS] = 0;
@@ -1562,7 +1596,7 @@ void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes)
   payload.insert(payload.end(), data.begin() + 3, data.end());
 
   send_write_frame_(ADDR_THERMOSTAT, 0x01, payload);
-  ESP_LOGI("InfinitESP", "Set zone %d hold=%d min (flags=0x%02X)", zone, duration_minutes, flags);
+  ESP_LOGI("InfinitESP", "Set zone %d hold=%d min (flags=0x%02X)", zone, duration, flags);
 }
 
 void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, uint16_t hold_duration) {

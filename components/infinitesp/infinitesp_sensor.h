@@ -5,7 +5,7 @@
 #include <functional>
 #include <string>
 #include <vector>
-#include "../infinitesp.h"
+#include "infinitesp.h"
 
 namespace esphome {
 namespace infinitesp {

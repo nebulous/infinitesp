@@ -1,6 +1,6 @@
 #pragma once
 #include "esphome/components/binary_sensor/binary_sensor.h"
-#include "../infinitesp.h"
+#include "infinitesp.h"
 
 namespace esphome {
 namespace infinitesp {
