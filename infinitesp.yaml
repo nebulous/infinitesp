@@ -192,7 +192,7 @@ infinitesp:
   uart_id: bus_uart           # Change to bus_cdcuart or bus_tcpuart if using those
   sam_address: 0x92               # Nonzero = SAM emulation active. 0x92 = SAM, 0x93 = FakeSAM (test), 0 = passive
   zone_controller_address: 0x60   # Nonzero = emulate ZC at 0x60. 0 = no emulation (still passively monitors a real ZC if present)
-  # flow_control_pin: GPIO13   # RS485 DE/RE control (needed for some transceivers)
+  # flow_control_pin: GPIO13   # RS485 DE/RE control (available if needed, but better to use the same option on your uart: config)
   # status_light_id: rgb_led  # Status LED reference (see light: section below)
 
   # Feed external ESPHome sensors into the emulated ZC's register 0302. Zone
@@ -362,4 +362,15 @@ button:
   - platform: safe_mode
     name: "Safe Mode"
     entity_category: config
+
+# RGB status LED (Waveshare 6CH has a WS2812 on GPIO38). Referenced by
+# status_light_id: rgb_led in the infinitesp: block above.
+# light:
+#   - platform: esp32_rmt_led_strip
+#     id: rgb_led
+#     name: "RGB LED"
+#     rgb_order: RGB
+#     pin: GPIO38
+#     num_leds: 1
+#     chipset: WS2812
 
