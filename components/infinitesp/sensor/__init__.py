@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
-from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, STATE_CLASS_NONE, STATE_CLASS_TOTAL_INCREASING, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_VOLTAGE, DEVICE_CLASS_DURATION, DEVICE_CLASS_TIMESTAMP, CONF_ACCURACY_DECIMALS, CONF_STATE_CLASS
+from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, STATE_CLASS_NONE, STATE_CLASS_TOTAL_INCREASING, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_VOLUME_FLOW_RATE, DEVICE_CLASS_VOLTAGE, DEVICE_CLASS_DURATION, DEVICE_CLASS_TIMESTAMP, CONF_ACCURACY_DECIMALS, CONF_STATE_CLASS
 from esphome.components import time
 from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
@@ -37,7 +37,7 @@ SENSOR_TYPES = {
     "vacation_max_temp": {"key": "vacation_max_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 0},
     # IDU sensors — device class 4
     "blower_rpm": {"key": "blower_rpm", "unit": "RPM", "bus_class": 4},
-    "airflow_cfm": {"key": "airflow_cfm", "unit": "ft³/min", "bus_class": 4},
+    "airflow_cfm": {"key": "airflow_cfm", "unit": "ft³/min", "device_class": DEVICE_CLASS_VOLUME_FLOW_RATE, "bus_class": 4},
     # ODU sensors — device class 5
     # bare = actual (measured) RPM [2..3] (the original `compressor_rpm` read
     # [0..1] = target; re-pointed to actual). target_compressor_rpm [0..1] is
