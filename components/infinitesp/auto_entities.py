@@ -222,13 +222,6 @@ def entity_name(comp, zone, prefix):
     return f"{prefix} {comp['label']}"
 
 
-def zc_emulation_configured():
-    for blk in CORE.config.get("infinitesp") or []:
-        if isinstance(blk, dict) and blk.get("zone_controller_address", 0) != 0:
-            return True
-    return False
-
-
 def _first_time_id():
     for blk in CORE.config.get("time") or []:
         if isinstance(blk, dict) and "id" in blk:
@@ -241,11 +234,8 @@ async def spawn_zone_entities(climate_config):
     zone = climate_config[CONF_ZONE]
     prefix = zone_prefix(climate_config.get(CONF_NAME), zone)
     hub_id = climate_config["infinitesp_id"]
-    damper_on = zc_emulation_configured()
     for comp in PER_ZONE_ENTITIES:
         if not climate_config.get(comp["flag"], True):
-            continue
-        if comp["domain"] == "cover" and not damper_on:
             continue
         if _suppressed(comp["domain"], comp["type"], zone):
             continue

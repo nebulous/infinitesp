@@ -24,7 +24,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: infinitesp.esp32-s3-relay-6ch
-    version: 2026.8.12
+    version: 2026.8.13
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -254,10 +254,9 @@ climate:
 # sensor: section below.
 # ──────────────────────────────────────────────
 
-# Damper covers are generated per zone when a zone controller is emulated
-# (zone_controller_address nonzero) or a physical one is monitored. A custom
-# cover replaces the generated one for that zone — for example to drive real
-# dampers from the commanded position:
+# Damper covers are generated for every declared zone; with no zone controller
+# on the bus they stay unknown. A custom cover replaces the generated one for
+# that zone, for example to drive real dampers from the commanded position:
 # cover:
 #   - platform: infinitesp
 #     infinitesp_id: infinitesp_hub
