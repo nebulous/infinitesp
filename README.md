@@ -205,6 +205,8 @@ Connect with `nc infinitesp.local 4242` to see raw hex traffic. The `from_bridge
 
 ## Configuration Reference
 
+Full type-by-type reference for every hub option and entity type: [docs/entity-reference.md](docs/entity-reference.md)
+
 ### Auto-Generated Entities
 
 Each zone's sensors and controls, plus the system-wide entities, are generated automatically from the `climate:` blocks you declare. You only need to declare them if you want to change defaults.
@@ -217,9 +219,9 @@ Each zone's sensors and controls, plus the system-wide entities, are generated a
 Rules:
 
 - **Explicit definitions get priority.** An entity you declare yourself (same type and zone) replaces the generated one, keeping your name and options. Existing fully-explicit configs compile unchanged.
-- **Per-zone opt-outs.** Each generated per-zone entity can be disabled with an option on its climate block, default true, named after it: `temperature: false`, `humidity: false`, `occupancy: false`, `zone_name: false`, `hold_state: false`, `comfort_profile: false`, `fan_mode: false`, `damper: false`, `hold_until: false`, `hold_minutes: false`. The option affects that zone only. System-wide entities have no individual switches: declare one explicitly to take control of it, or set `auto_diagnostics: false` to drop the diagnostics group.
+- **Per-zone opt-outs.** Each generated per-zone entity can be disabled with an option on its climate block, default true, named after the entity (`temperature: false`, `damper: false`; full list in the [reference](docs/entity-reference.md#climate-block)). The option affects that zone only. System-wide entities have no individual switches: declare one explicitly to take control of it, or set `auto_diagnostics: false` to drop the diagnostics group.
 - **Manual-only**: `raw_register` sensors and the zone controller sensor feeds (`zc_zone_temperature`, `zc_lat`, `zc_hpt`).
-- **Manufacture-date matching.** The three generated date sensors each cover one device class (thermostat, IDU, ODU). A manual `manufacture_date` block replaces the generated one for its class; `device_address` pins one exact bus node (for two devices in the same class), and `bus_class` selects a class. The two keys are mutually exclusive. A bare block covers the thermostat. Devices sit at class-dependent addresses that vary by install (an ODU can answer at 0x50 or 0x52), so `device_address` must be the node's real address, not a class representative: check it against a `REPORT?` dump.
+- **Manufacture-date matching.** The three generated date sensors each cover one device class (thermostat, IDU, ODU). A manual `manufacture_date` block replaces the generated one for its class. `device_address` is an exact node match and must be the device's real address: an ODU often answers at 0x52, not 0x50, so check against a `REPORT?` dump. Matching rules and `bus_class`: [reference](docs/entity-reference.md#manufacture_date-matching).
 
 ### Timed holds from Home Assistant
 
@@ -423,31 +425,8 @@ sensor:
     name: "Blower RPM"
     type: blower_rpm
 
-  # All diagnostic sensor types:
-  #   blower_rpm, airflow_cfm, compressor_rpm (actual), target_compressor_rpm
-  #   (`compressor_rpm` = measured RPM [2..3], `target_compressor_rpm` = commanded [0..1].)
-  #   odu_requested_cfm, odu_expansion_valve, odu_commanded_stage, odu_stage, odu_mode, odu_line_voltage
-  #   (`compressor_frequency` still works as the deprecated alias of
-  #   odu_requested_cfm: the field is the CFM the ODU requests from the IDU,
-  #   not a frequency.)
-  #   odu_outdoor_temp, odu_coil_temp, odu_suction_temp,
-  #   odu_suction_superheat, odu_indoor_ambient, odu_discharge_temp
-  #   odu_float_1 (superheat target), odu_float_2 (superheat actual),
-  #   odu_float_3 (subcooling target), odu_float_4 (subcooling actual),
-  #   odu_float_5, odu_float_6
-  #   vacation_min_temp, vacation_max_temp
-  #
-  # Zone controller sensors (need zone_controller on the bus). zc_lat/zc_hpt are
-  # the board's LAT/HPT thermistor ports, disabled by default:
-  #   zc_zone_temperature (requires zone:), zc_lat, zc_hpt
-  #
-  # Cycle counters and runtime hours (may not be available on all systems):
-  #   idu_low_heat_cycles, idu_high_heat_cycles, idu_med_heat_cycles,
-  #   idu_blower_cycles, idu_poweron_cycles
-  #   idu_low_heat_hours, idu_high_heat_hours, idu_med_heat_hours,
-  #   idu_blower_hours, idu_poweron_hours
-  #   odu_heat_cycles, odu_cool_cycles, odu_defrost_cycles, odu_poweron_cycles
-  #   odu_heat_hours, odu_cool_hours, odu_defrost_hours, odu_poweron_hours
+  # Full sensor type list with units, zones, and which are generated:
+  # docs/entity-reference.md
 ```
 
 ### Binary Sensors
@@ -501,16 +480,8 @@ text_sensor:
     type: hold_state        # hold_state (per-zone, requires zone:)
     zone: 1
 
-  # Diagnostic text sensors (no zone required)
-  # tstat_ssid, tstat_hostname, tstat_wifi_mac,
-  # tstat_cloud_host, tstat_proxy_server,
-  # tstat_dealer_name, tstat_dealer_brand, tstat_dealer_url,
-  # fault_history (occurrence counts, NEW tags, relative dates)
-  # comfort_profile reads zone 1's comfort table by default; set
-  # `zone: N` (1-8) for another zone's (each zone has its own).
-  # manufacture_date is generated for the thermostat, IDU, and ODU; declare
-  # it only to pin one exact node (device_address, e.g. two IDUs on one
-  # bus) or select a class (bus_class). The keys are mutually exclusive.
+  # Full text sensor type list and the manufacture_date matching rules:
+  # docs/entity-reference.md
 ```
 
 ### Fault entities
@@ -666,7 +637,7 @@ InfinitESP targets Carrier Infinity / Bryant Evolution / ICP systems that commun
 - **Thermostats**: Infinity Touch (SYSTXCCITC01), Evolution Connex (SYSTXBBECC01), legacy UID/UIZ controls with firmware 14+
 - **HVAC equipment**: Infinity/Evolution furnace, air handler, or heat pump on the ABCD bus
 
-What matters is the bus protocol, not the badge. See the [Disclaimer](#disclaimer) and [NOTICE](NOTICE).
+See the [Disclaimer](#disclaimer) and [NOTICE](NOTICE).
 
 ## Troubleshooting
 
