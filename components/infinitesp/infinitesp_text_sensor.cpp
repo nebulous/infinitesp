@@ -311,23 +311,29 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
 
   // Manufacture date derived from 0104 serial number
   // Carrier serial format: first 2 digits = week (01-52), next 2 digits = year (00-99)
-  // device_address matches on the upper nibble (device class), not the full
-  // address: a class can sit at different low-nibble values across installs
-  // (ODU is class 5, seen at 0x50 on some systems and 0x52 on others). One
-  // sensor per class; any value in the class works (0x50, 0x40, 0x20).
+  // Device matching: a manual device_address pins one exact bus node;
+  // device_class matching rides the base-class bus_class dispatch gate
+  // (notify_entities_ never delivers a mismatched class here). Bare
+  // manufacture_date — no address, no bus_class — defaults to the thermostat
+  // class (2): the entity surface is one sensor per device class, and
+  // accepting any class made the bare sensor publish whichever device's
+  // serial arrived last. Class, not node, because a class sits at different
+  // low-nibble values across installs (ODU: 0x50 or 0x52).
   if (sensor_type_ == "manufacture_date") {
     // Two disjoint identity sources, same duck-typed pattern as the ODU sensors:
     // register 0x0104 (offset 96) on families whose thermostat polls device
     // info, or register 3E09 (offset 0) on the 2-stage/two-capacity family
     // whose thermostat never polls the ODU's 0104 (issue #21). Both carry the
     // Carrier WWYY serial prefix. Only one family's register ever arrives, so
-    // there is no precedence conflict. Class-matched either way (ODU is class
-    // 5: 0x50 on some systems, 0x52 on others).
+    // there is no precedence conflict.
     if (register_key != REG_DEVICE_INFO && register_key != REG_ODU_3E_SERIAL)
       return;
-    // Match on class; 0 means accept any device class.
-    if (target_device_addr_ != 0 && (device_addr >> 4) != (target_device_addr_ >> 4))
+    if (target_device_addr_ != 0) {
+      if (device_addr != target_device_addr_)
+        return;
+    } else if (get_bus_class() == 0 && (device_addr >> 4) != 2) {
       return;
+    }
     const bool from_3e = (register_key == REG_ODU_3E_SERIAL);
     auto *data = parent_->get_register(device_addr, register_key);
     if (!data)

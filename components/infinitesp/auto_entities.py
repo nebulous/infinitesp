@@ -95,6 +95,8 @@ SYSTEM_DIAGNOSTIC = [
     ("text_sensor", "tstat_dealer_brand", "Dealer Brand"),
     ("text_sensor", "tstat_dealer_url", "Dealer URL"),
     ("text_sensor", "manufacture_date", "Thermostat Manufacture Date"),
+    ("text_sensor", "manufacture_date", "IDU Manufacture Date", 4),
+    ("text_sensor", "manufacture_date", "ODU Manufacture Date", 5),
     ("text_sensor", "version", "InfinitESP Version"),
 ]
 
@@ -130,6 +132,12 @@ _ZONE_SCOPED = {
     "number": {None},
 }
 
+# Variant types: one entity per device class, fourth tuple element in the
+# matrix rows (bus_class on the spawn; device_address on the schema is
+# exact-match). The bare form is the type's default variant; its class is
+# listed here. Non-variant types key on (type, None).
+_TYPE_DEFAULT_CLASS = {"manufacture_date": 2}
+
 # Some stock schemas inject a `type` that is the entity KIND, not our flavor
 # key (datetime.time_schema defaults CONF_TYPE to "TIME"). Normalize those to
 # None so suppression matches our typeless convention. Deprecated sensor-type
@@ -156,31 +164,41 @@ def _platform_module(domain):
 
 def _explicit(domain):
     """Explicit infinitesp declarations in CORE.config: returns
-    (zone_scoped_keys, system_types) for suppression checks."""
+    (zone_scoped_keys, system_keys). System keys are (type, bus_class)
+    for variant types, (type, None) otherwise. A device_address normalizes
+    to its class (0x52 and 0x50 both key as class 5) so any spelling in the
+    class suppresses that class's twin; suppression never inspects the low
+    nibble."""
     zone_keys = set()
-    system_types = set()
+    system_keys = set()
     for blk in CORE.config.get(domain) or []:
         if not isinstance(blk, dict) or blk.get("platform") != "infinitesp":
             continue
         stype = blk.get("type")
         stype = _TYPE_NORMALIZE.get(domain, {}).get(str(stype).lower() if stype else None, stype)
-        # Multi-device variants (manufacture_date with device_address for the
-        # IDU/ODU) are distinct entities: only a declaration of the DEFAULT
-        # variant (no device_address) suppresses the auto spawn.
-        if stype == "manufacture_date" and "device_address" in blk:
-            continue
         if stype in _ZONE_SCOPED.get(domain, set()):
             zone_keys.add((stype, blk.get(CONF_ZONE, 0)))
+        elif stype in _TYPE_DEFAULT_CLASS:
+            dcls = blk.get("bus_class")
+            if dcls is None:
+                addr = blk.get("device_address") or 0
+                dcls = (addr >> 4) if addr else _TYPE_DEFAULT_CLASS[stype]
+            system_keys.add((stype, dcls))
         else:
-            system_types.add(stype)
-    return zone_keys, system_types
+            system_keys.add((stype, None))
+    return zone_keys, system_keys
 
 
-def _suppressed(domain, stype, zone):
-    zone_keys, system_types = _explicit(domain)
+def _suppressed(domain, stype, zone, dcls=None):
+    zone_keys, system_keys = _explicit(domain)
     if stype in _ZONE_SCOPED.get(domain, set()):
         return (stype, zone) in zone_keys
-    return stype in system_types
+    # Spawn side normalizes like the explicit side: a variant type spawned
+    # bare keys as its default class, so a bare explicit declaration
+    # suppresses it.
+    if dcls is None and stype in _TYPE_DEFAULT_CLASS:
+        dcls = _TYPE_DEFAULT_CLASS[stype]
+    return (stype, dcls) in system_keys
 
 
 async def _spawn(domain, stype, zone, cfg):
@@ -262,8 +280,10 @@ async def spawn_system_entities(hub_config):
 
     time_id = _first_time_id()
     for entries, diagnostic, conditional in groups:
-        for domain, stype, name in entries:
-            if _suppressed(domain, stype, 0):
+        for row in entries:
+            domain, stype, name = row[0], row[1], row[2]
+            dcls = row[3] if len(row) > 3 else None
+            if _suppressed(domain, stype, 0, dcls):
                 continue
             cfg = {
                 CONF_NAME: name,
@@ -271,6 +291,8 @@ async def spawn_system_entities(hub_config):
             }
             if stype is not None:
                 cfg["type"] = stype
+            if dcls is not None:
+                cfg["bus_class"] = dcls
             if domain in ("sensor", "binary_sensor", "text_sensor", "select"):
                 cfg[CONF_ZONE] = 1  # schema default; system types ignore it
             if diagnostic:

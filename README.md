@@ -211,14 +211,15 @@ Each zone's sensors and controls, plus the system-wide entities, are generated a
 
 - **Per zone** (from each climate block): temperature, humidity, occupancy, zone name, hold state, comfort profile, fan mode select, hold-until time, hold-minutes number, and the damper cover (generated on every zone; it publishes only when a zone controller is on the bus, see [Covers](#covers)).
 - **System-wide**: outdoor temperature, blower RPM, airflow, electric heat, compressor running, bus status, ODU temperature/stage sensors, vacation setpoints, fault history and fault timestamp.
-- **Diagnostics** (entity category diagnostic): IDU/ODU cycle and hour counters, thermostat wifi/dealer strings, manufacture date, firmware version. Disable the whole group with `auto_diagnostics: false` in the `infinitesp:` block.
+- **Diagnostics** (entity category diagnostic): IDU/ODU cycle and hour counters, thermostat wifi/dealer strings, thermostat/IDU/ODU manufacture dates, firmware version. Disable the whole group with `auto_diagnostics: false` in the `infinitesp:` block.
 - **Equipment-conditional** (generated disabled by default, enable in HA if your hardware serves them): the variable-speed ODU family — compressor RPM, ODU requested CFM, expansion valve, float registers, discharge/suction temperatures, superheat.
 
 Rules:
 
 - **Explicit definitions get priority.** An entity you declare yourself (same type and zone) replaces the generated one, keeping your name and options. Existing fully-explicit configs compile unchanged.
 - **Per-zone opt-outs.** Each generated per-zone entity can be disabled with an option on its climate block, default true, named after it: `temperature: false`, `humidity: false`, `occupancy: false`, `zone_name: false`, `hold_state: false`, `comfort_profile: false`, `fan_mode: false`, `damper: false`, `hold_until: false`, `hold_minutes: false`. The option affects that zone only. System-wide entities have no individual switches: declare one explicitly to take control of it, or set `auto_diagnostics: false` to drop the diagnostics group.
-- **Manual-only**: `raw_register` sensors, the zone controller sensor feeds (`zc_zone_temperature`, `zc_lat`, `zc_hpt`), and multi-device `manufacture_date` variants.
+- **Manual-only**: `raw_register` sensors and the zone controller sensor feeds (`zc_zone_temperature`, `zc_lat`, `zc_hpt`).
+- **Manufacture-date matching.** The three generated date sensors each cover one device class (thermostat, IDU, ODU). A manual `manufacture_date` block replaces the generated one for its class; `device_address` pins one exact bus node (for two devices in the same class), and `bus_class` selects a class. The two keys are mutually exclusive. A bare block covers the thermostat. Devices sit at class-dependent addresses that vary by install (an ODU can answer at 0x50 or 0x52), so `device_address` must be the node's real address, not a class representative: check it against a `REPORT?` dump.
 
 ### Timed holds from Home Assistant
 
@@ -507,6 +508,9 @@ text_sensor:
   # fault_history (occurrence counts, NEW tags, relative dates)
   # comfort_profile reads zone 1's comfort table by default; set
   # `zone: N` (1-8) for another zone's (each zone has its own).
+  # manufacture_date is generated for the thermostat, IDU, and ODU; declare
+  # it only to pin one exact node (device_address, e.g. two IDUs on one
+  # bus) or select a class (bus_class). The keys are mutually exclusive.
 ```
 
 ### Fault entities
@@ -694,6 +698,11 @@ What matters is the bus protocol, not the badge. See the [Disclaimer](#disclaime
 - Check the STATS line in logs every 5 seconds
 - Healthy: `crc_fail=0`, `stale=0`, `overflow_evts=0`, `reply_got ≈ reply_exp`
 - `crc_fail > 0` → bus noise or bad wiring
+
+### A manufacture-date sensor stays unknown
+
+- Generated date sensors cover a whole device class and populate on their own. A manually declared one with `device_address` matches that exact node only: verify the address against a `REPORT?` dump (an ODU often answers at 0x52, not 0x50).
+- The IDU/ODU dates decode from register 0104 or, on two-stage ODUs, 3E09. If the thermostat never polls device info, no date ever arrives.
 - `overflow_evts > 0` → main loop not keeping up (reduce logging verbosity)
 - `stale > 0` → bytes arriving with gaps > 100ms (transport issue)
 

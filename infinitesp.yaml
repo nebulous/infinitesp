@@ -24,7 +24,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: infinitesp.esp32-s3-relay-6ch
-    version: 2026.8.13
+    version: 2026.8.14
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -349,10 +349,14 @@ select:
   # Only declare them to customize names/icons.
 
 text_sensor:
-  # Zone names, hold state, comfort profiles, fault history, manufacture date,
-  # firmware version and the thermostat wifi/dealer strings are generated
-  # automatically (diagnostics group; disable via auto_diagnostics: false in
-  # the infinitesp: block). Only declare them to customize.
+  # Zone names, hold state, comfort profiles, fault history, manufacture
+  # dates (thermostat, IDU, ODU — one per device class), firmware version and
+  # the thermostat wifi/dealer strings are generated automatically
+  # (diagnostics group; disable via auto_diagnostics: false in the
+  # infinitesp: block). Only declare them to customize. A manual
+  # manufacture_date replaces the generated one for its class: device_address
+  # pins one exact bus node (two devices in one class), bus_class selects a
+  # class, bare covers the thermostat; the two keys are mutually exclusive.
 
 button:
   - platform: restart
