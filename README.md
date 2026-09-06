@@ -246,6 +246,12 @@ infinitesp:
   uart_id: bus_uart
   sam_address: 0x92  # SAM address. 0x93 = FakeSAM test mode, 0 = disabled (passive monitor)
   zone_controller_address: 0x60  # Zone Controller address. 0 = no emulation (passive monitor of a real ZC if present)
+  # Optional: pin the indoor/outdoor unit to an exact bus node (default 0 = class
+  # matching). For installs whose unit sits off the usual class nibble, e.g. a
+  # furnace at 0x3E, or to keep a second class-5 node (refrigerant board) out of
+  # ODU entities and slow polls:
+  # idu_address: 0x3E
+  # odu_address: 0x57
   # Optional: temperature unit detection (default: auto)
   # temperature_unit: auto     # read from bus, or force F / C
   # Optional status LED (mutually exclusive):

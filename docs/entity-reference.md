@@ -16,6 +16,8 @@ for variant types); opt-out flags on the climate block remove generated entities
 | `sam_address` | `0x92` | Bus address for SAM emulation. `0` disables. |
 | `address` | - | Deprecated alias for `sam_address`. |
 | `zone_controller_address` | `0` | `0x60` emulates a zone controller. `0` passively monitors a real one. |
+| `idu_address` | `0` | Pin the indoor unit to an exact bus node instead of device-class matching. |
+| `odu_address` | `0` | Pin the outdoor unit to an exact bus node instead of device-class matching. |
 | `temperature_unit` | `auto` | `auto` (bus heuristic), `F`, or `C`. The thermostat's unit setting is authoritative once read. |
 | `auto_diagnostics` | `true` | `false` drops the generated diagnostics group (below). |
 | `status_light_id` | - | Existing light entity for status. Mutually exclusive with `status_led_pin`. |
@@ -154,6 +156,29 @@ generated entity for its class:
 - Bare: the thermostat class.
 
 The two keys are mutually exclusive. `device_address: 0` behaves as unset.
+
+### Unit address pins (`idu_address` / `odu_address`)
+
+By default IDU and ODU entities match their device's class nibble (4 and 5).
+Carrier commissions the low nibble per install, and the class itself is not a
+guaranteed device-type key: furnaces have been observed at `0x40` and `0x3E`,
+and an install can carry a second class-5 node (a refrigerant dissipation
+board) alongside the ODU. Setting:
+
+```yaml
+infinitesp:
+  idu_address: 0x3E
+  odu_address: 0x57
+```
+
+pins every IDU/ODU-scoped entity (blower RPM, airflow, electric heat, ODU
+sensors, unit manufacture dates, slow polls) to that exact node and keeps other
+same-class nodes out entirely. `0` (default) keeps class matching. Addresses
+equal to `sam_address`, `zone_controller_address`, the thermostat (`0x20`), or
+broadcast (`0xF1`) are rejected at validation; an `idu_address` in class 5 (or
+`odu_address` in class 4) warns as a probable swap. A manual
+`manufacture_date` block pinned to the configured node suppresses the
+generated twin for that class.
 
 ## Select types
 

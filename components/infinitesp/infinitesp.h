@@ -391,11 +391,18 @@ class InfinitESPEntity {
   uint8_t get_zone() const { return zone_; }
   void set_bus_class(uint8_t cls) { bus_class_ = cls; }
   uint8_t get_bus_class() const { return bus_class_; }
+  // Exact bus-node pin. 0 = none (class matching via bus_class_). A pin takes
+  // precedence over the class gate in notify_entities_(), which is how the
+  // hub-level idu_address/odu_address overrides reach installs whose unit
+  // sits off the assumed class (e.g. a 0x3E furnace, disc #232).
+  void set_device_address(uint8_t addr) { device_address_ = addr; }
+  uint8_t get_device_address() const { return device_address_; }
 
  protected:
   InfinitESPComponent *parent_{nullptr};
   uint8_t zone_{0};
   uint8_t bus_class_{0};  // upper nibble of bus address: 0=any, 2=tstat, 4=IDU, 5=ODU, 9=SAM
+  uint8_t device_address_{0};  // exact node pin, 0 = none (class matching)
 };
 
 class InfinitESPComponent : public Component, public uart::UARTDevice {
@@ -418,6 +425,25 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zc_address(uint8_t addr) { zc_address_ = addr; }
   uint8_t get_zc_address() const { return zc_address_; }
   bool zc_enabled() const { return zc_address_ != 0; }
+
+  // Hub-pinned unit addresses: 0 (default) keeps class-nibble matching;
+  // a nonzero value pins all IDU/ODU-scoped entities to that exact node.
+  // Needed because the class nibble is not a device-type key across installs
+  // (our furnace 0x40, disc #232's furnace 0x3E; brybus 0x30 serves 3B0x).
+  // Also keeps a second class-5 node (their 0x5F refrig board) out of ODU
+  // entity dispatch and the ODU slow-poll rotation.
+  void set_idu_address(uint8_t addr) { idu_address_ = addr; }
+  uint8_t get_idu_address() const { return idu_address_; }
+  void set_odu_address(uint8_t addr) { odu_address_ = addr; }
+  uint8_t get_odu_address() const { return odu_address_; }
+
+  // Device-role matchers: exact node when pinned, else the class nibble.
+  bool is_idu_addr_(uint8_t addr) const {
+    return idu_address_ != 0 ? addr == idu_address_ : (addr >> 4) == CLASS_INDOOR_UNIT;
+  }
+  bool is_odu_addr_(uint8_t addr) const {
+    return odu_address_ != 0 ? addr == odu_address_ : (addr >> 4) == CLASS_OUTDOOR_UNIT;
+  }
 
   // Multi-ZC mapping. A Carrier damper system uses one SYSTXCC4ZC01 per four
   // zones: the primary controller (base = zc_address_ when emulating, else
@@ -942,6 +968,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   bool version_published_{false};
   uint8_t sam_address_{ADDR_FAKESAM};
   uint8_t zc_address_{0};  // 0 = zone controller emulation disabled
+  uint8_t idu_address_{0};  // 0 = IDU class matching (default)
+  uint8_t odu_address_{0};  // 0 = ODU class matching (default)
   ZCZoneConfig zc_zones_[9];  // index 0=unused, 1-8=zones (2-8 may have external sensors)
   ZCZoneConfig zc_lat_;       // LAT thermistor (register 0302 id 0x14)
   ZCZoneConfig zc_hpt_;       // HPT thermistor (register 0302 id 0x1C)

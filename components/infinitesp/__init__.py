@@ -22,6 +22,8 @@ InfinitESPEntity = infinitesp_ns.class_("InfinitESPEntity")
 
 CONF_SAM_ADDRESS = "sam_address"
 CONF_ADDRESS = "address"  # deprecated alias for sam_address
+CONF_IDU_ADDRESS = "idu_address"
+CONF_ODU_ADDRESS = "odu_address"
 CONF_FLOW_CONTROL_PIN = "flow_control_pin"
 CONF_ZONE_CONTROLLER_ADDRESS = "zone_controller_address"
 CONF_TEMPERATURE_UNIT = "temperature_unit"
@@ -92,6 +94,39 @@ def _validate_addresses(config):
     return config
 
 
+def _validate_unit_addresses(config):
+    """Validate hub-pinned IDU/ODU addresses (0 = class matching, the default).
+
+    The class nibble is not a device-type key across installs (our furnace
+    0x40, a reported 0x3E furnace, a 0x30 node serving 3B0x elsewhere), so the
+    override pins an exact node. Reject addresses that can never be the unit;
+    warn on a probable swap (IDU in class 5 / ODU in class 4)."""
+    fixed = {
+        config.get(CONF_SAM_ADDRESS, 0x92): "sam_address",
+        config.get(CONF_ZONE_CONTROLLER_ADDRESS, 0): "zone_controller_address",
+        0x20: "the thermostat address",
+        0xF1: "the broadcast address",
+    }
+    for key, label in ((CONF_IDU_ADDRESS, "idu_address"), (CONF_ODU_ADDRESS, "odu_address")):
+        addr = config.get(key, 0)
+        if addr == 0:
+            continue
+        role = "indoor" if key == CONF_IDU_ADDRESS else "outdoor"
+        if fixed.get(addr):
+            raise cv.Invalid(
+                f"{label} 0x{addr:02X} is {fixed[addr]}, which cannot be the {role} unit"
+            )
+        if key == CONF_IDU_ADDRESS and addr >> 4 == 5:
+            _LOGGER.warning(
+                "idu_address 0x%02X is in device class 5 (outdoor); did you mean odu_address?", addr
+            )
+        if key == CONF_ODU_ADDRESS and addr >> 4 == 4:
+            _LOGGER.warning(
+                "odu_address 0x%02X is in device class 4 (indoor); did you mean idu_address?", addr
+            )
+    return config
+
+
 def _validate_status_led(config):
     """Ensure status_light_id and status_led_pin are mutually exclusive."""
     if CONF_STATUS_LIGHT_ID in config and CONF_STATUS_LED_PIN in config:
@@ -116,6 +151,13 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_FLOW_CONTROL_PIN): pins.gpio_output_pin_schema,
             # Zone controller emulation: set to 0x60 to emulate a SYSTXCC4ZC01
             cv.Optional(CONF_ZONE_CONTROLLER_ADDRESS, default=0): cv.int_range(min=0, max=255),
+            # Pin the indoor/outdoor unit to an exact bus node (unset = default
+            # class matching). For installs whose unit sits off the assumed
+            # class nibble (4 = IDU, 5 = ODU), e.g. a furnace at 0x3E, or to
+            # keep a second class-5 node (a refrigerant board) out of ODU
+            # entities and slow polls.
+            cv.Optional(CONF_IDU_ADDRESS): cv.int_range(min=0, max=255),
+            cv.Optional(CONF_ODU_ADDRESS): cv.int_range(min=0, max=255),
             # Temperature unit: auto (heuristic), F, or C
             cv.Optional(CONF_TEMPERATURE_UNIT, default=TEMP_UNIT_AUTO): cv.one_of(TEMP_UNIT_AUTO, TEMP_UNIT_FAHRENHEIT, TEMP_UNIT_CELSIUS),
             # Opt-out for the auto-generated diagnostic entity group
@@ -141,6 +183,7 @@ CONFIG_SCHEMA = cv.All(
         }
     ).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA),
     _validate_addresses,
+    _validate_unit_addresses,
     _validate_status_led,
     _validate_zc_config,
 )
@@ -161,6 +204,12 @@ async def register_infinitesp_entity(var, config):
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     cg.add(var.set_sam_address(config[CONF_SAM_ADDRESS]))
+    # Unit pins: only emit when set — the default (class matching) keeps
+    # generated code identical to configs written before these keys existed.
+    if config.get(CONF_IDU_ADDRESS, 0) != 0:
+        cg.add(var.set_idu_address(config[CONF_IDU_ADDRESS]))
+    if config.get(CONF_ODU_ADDRESS, 0) != 0:
+        cg.add(var.set_odu_address(config[CONF_ODU_ADDRESS]))
 
     if config[CONF_ZONE_CONTROLLER_ADDRESS] != 0:
         cg.add(var.set_zc_address(config[CONF_ZONE_CONTROLLER_ADDRESS]))

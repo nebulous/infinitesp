@@ -152,6 +152,26 @@ _modules = {}
 _uniq = itertools.count()
 
 
+def _hub_role_class_map():
+    """Map a hub-pinned unit's actual class back to its role class
+    (4 = IDU, 5 = ODU), for variant-type suppression keying. Empty when
+    neither idu_address nor odu_address is configured, or when a configured
+    address already sits in its role class (identity mapping, nothing to do).
+    Classes 4/5 are never mapped cross-role: a pin inside the other role's
+    class is a probable swap (warned at validation), and remapping it would
+    mis-suppress that role's explicit declarations."""
+    blocks = CORE.config.get("infinitesp") or []
+    hub = blocks[0] if blocks and isinstance(blocks[0], dict) else {}
+    mapping = {}
+    idu = hub.get("idu_address") or 0
+    odu = hub.get("odu_address") or 0
+    if idu and (idu >> 4) not in (4, 5):
+        mapping[idu >> 4] = 4
+    if odu and (odu >> 4) not in (4, 5):
+        mapping[odu >> 4] = 5
+    return mapping
+
+
 def _platform_module(domain):
     mod = _modules.get(domain)
     if mod is None:
@@ -168,7 +188,11 @@ def _explicit(domain):
     for variant types, (type, None) otherwise. A device_address normalizes
     to its class (0x52 and 0x50 both key as class 5) so any spelling in the
     class suppresses that class's twin; suppression never inspects the low
-    nibble."""
+    nibble. A class the hub pins via idu_address/odu_address maps back to the
+    role class (4/5), so an entity pinned to the configured node (e.g.
+    device_address: 0x3E) suppresses the auto role twin instead of
+    double-spawning."""
+    role_map = _hub_role_class_map()
     zone_keys = set()
     system_keys = set()
     for blk in CORE.config.get(domain) or []:
@@ -183,6 +207,7 @@ def _explicit(domain):
             if dcls is None:
                 addr = blk.get("device_address") or 0
                 dcls = (addr >> 4) if addr else _TYPE_DEFAULT_CLASS[stype]
+            dcls = role_map.get(dcls, dcls)
             system_keys.add((stype, dcls))
         else:
             system_keys.add((stype, None))

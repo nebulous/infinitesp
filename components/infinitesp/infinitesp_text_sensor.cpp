@@ -328,8 +328,8 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
     // there is no precedence conflict.
     if (register_key != REG_DEVICE_INFO && register_key != REG_ODU_3E_SERIAL)
       return;
-    if (target_device_addr_ != 0) {
-      if (device_addr != target_device_addr_)
+    if (get_device_address() != 0) {
+      if (device_addr != get_device_address())
         return;
     } else if (get_bus_class() == 0 && (device_addr >> 4) != 2) {
       return;

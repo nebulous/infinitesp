@@ -77,6 +77,29 @@ void InfinitESPComponent::setup() {
   ESP_LOGI("InfinitESP", "SAM Address=0x%02X", sam_address_);
   if (zc_enabled())
     ESP_LOGI("InfinitESP", "Zone Controller emulation at 0x%02X", zc_address_);
+  if (idu_address_ != 0)
+    ESP_LOGI("InfinitESP", "IDU pinned at 0x%02X (exact match, class matching off)", idu_address_);
+  if (odu_address_ != 0)
+    ESP_LOGI("InfinitESP", "ODU pinned at 0x%02X (exact match, class matching off)", odu_address_);
+
+  // Hub-pinned unit addresses: push the exact node into every IDU/ODU-scoped
+  // entity (bus_class 4/5 — the role marker the curated entity types spawn
+  // with), unless the entity pins its own node via per-entity config. The pin
+  // then takes precedence over the class gate in notify_entities_(), so
+  // entities follow their node even off the assumed class (e.g. 0x3E). All
+  // entities register at codegen before any setup() runs, so the list is
+  // complete here.
+  if (idu_address_ != 0 || odu_address_ != 0) {
+    for (auto *entity : entities_) {
+      if (entity->get_device_address() != 0)
+        continue;  // explicit per-entity pin wins
+      uint8_t cls = entity->get_bus_class();
+      if (cls == CLASS_INDOOR_UNIT && idu_address_ != 0)
+        entity->set_device_address(idu_address_);
+      else if (cls == CLASS_OUTDOOR_UNIT && odu_address_ != 0)
+        entity->set_device_address(odu_address_);
+    }
+  }
 
   // Initialize NVS-backed preference for cached WiFi credentials
   wifi_pref_ = global_preferences->make_preference<CachedWifi>(
@@ -600,8 +623,7 @@ void InfinitESPComponent::handle_passive_frame_() {
   // Passive snooping: capture REPLY frames from IDU (0x40) and ODU (0x52)
   // that the thermostat polls. We observe but don't initiate these transactions.
   if (current_frame_.func == FUNC_REPLY && current_frame_.payload.size() > 3) {
-    uint8_t src_class = current_frame_.src >> 4;
-    if (src_class == CLASS_INDOOR_UNIT || src_class == CLASS_OUTDOOR_UNIT) {
+    if (is_idu_addr_(current_frame_.src) || is_odu_addr_(current_frame_.src)) {
       uint8_t table = current_frame_.payload[1];
       uint8_t row = current_frame_.payload[2];
       uint16_t reg_key = (table << 8) | row;
@@ -609,12 +631,12 @@ void InfinitESPComponent::handle_passive_frame_() {
       store_register_(current_frame_.src, reg_key, data);
 
       // Log decoded IDU data via accessors (single source of truth for offsets)
-      if (src_class == CLASS_INDOOR_UNIT && reg_key == REG_IDU_STATUS) {
+      if (is_idu_addr_(current_frame_.src) && reg_key == REG_IDU_STATUS) {
         float blower_rpm = idu_blower_rpm_(data);
         if (!std::isnan(blower_rpm))
           ESP_LOGD("InfinitESP", "IDU 0306: blower_rpm=%u", (unsigned) blower_rpm);
       }
-      if (src_class == CLASS_INDOOR_UNIT && reg_key == REG_IDU_CONFIG) {
+      if (is_idu_addr_(current_frame_.src) && reg_key == REG_IDU_CONFIG) {
         float airflow_cfm = idu_airflow_cfm_(data);
         if (!std::isnan(airflow_cfm))
           ESP_LOGD("InfinitESP", "IDU 0316: airflow_cfm=%u elec_heat=%d",
@@ -622,30 +644,30 @@ void InfinitESPComponent::handle_passive_frame_() {
       }
 
       // Log decoded ODU data
-      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_STATUS2 && data.size() >= 1) {
+      if (is_odu_addr_(current_frame_.src) && reg_key == REG_ODU_STATUS2 && data.size() >= 1) {
         ESP_LOGD("InfinitESP", "ODU 0303: stage=%u raw=[%02X %02X %02X %02X]",
                  data[0] >> 1, data[0], data.size() > 1 ? data[1] : 0,
                  data.size() > 2 ? data[2] : 0, data.size() > 3 ? data[3] : 0);
       }
-      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_COMP_SPEED) {
+      if (is_odu_addr_(current_frame_.src) && reg_key == REG_ODU_COMP_SPEED) {
         float target = odu_compressor_target_rpm_(data);
         float actual = odu_compressor_actual_rpm_(data);
         if (!std::isnan(target) && !std::isnan(actual))
           ESP_LOGD("InfinitESP", "ODU 0604: target_rpm=%u actual_rpm=%u (%u bytes)",
                    (unsigned) target, (unsigned) actual, data.size());
       }
-      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_DEMAND && data.size() >= 7) {
+      if (is_odu_addr_(current_frame_.src) && reg_key == REG_ODU_DEMAND && data.size() >= 7) {
         ESP_LOGD("InfinitESP", "ODU 0608: requested_cfm=%u expansion_valve=%.0f%% raw=[%02X %02X %02X %02X %02X %02X %02X]",
                  (unsigned) odu_requested_cfm_(data),
                  odu_expansion_valve_(data),
                  data[0], data[1], data[2], data[3], data[4], data[5], data[6]);
       }
-      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_STAGE_INFO && data.size() >= 1) {
+      if (is_odu_addr_(current_frame_.src) && reg_key == REG_ODU_STAGE_INFO && data.size() >= 1) {
         ESP_LOGD("InfinitESP", "ODU 060e: stage=%u raw=[%02X]",
                  (unsigned) odu_stage_(data), data[0]);
       }
 
-      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_FLOATS && data.size() >= 25) {
+      if (is_odu_addr_(current_frame_.src) && reg_key == REG_ODU_FLOATS && data.size() >= 25) {
         ESP_LOGI("InfinitESP", "ODU 061f: sh_tgt=%.1f sh_act=%.1f sc_tgt=%.1f sc_act=%.1f dyn=%.1f unk=%.3f",
                  odu_float_(data, 1), odu_float_(data, 2),
                  odu_float_(data, 3), odu_float_(data, 4),
@@ -655,7 +677,7 @@ void InfinitESPComponent::handle_passive_frame_() {
       // ODU register 0302: temperatures and thresholds (24 bytes = 12 int16 BE / 16)
       // Alternating (threshold, measurement): offsets 0,4,8,12,16,20 = constants;
       // offsets 2,6,10,14,18,22 = dynamic measurements (accessor idx 0..5).
-      if (src_class == CLASS_OUTDOOR_UNIT && reg_key == REG_ODU_STATUS1 && data.size() >= 24) {
+      if (is_odu_addr_(current_frame_.src) && reg_key == REG_ODU_STATUS1 && data.size() >= 24) {
         ESP_LOGD("InfinitESP", "ODU 0302: outdoor=%.1f coil=%.1f suction=%.1f superheat=%.1f indoor_amb=%.1f discharge=%.1f",
                  odu_status1_meas_f_(data, 0), odu_status1_meas_f_(data, 1),
                  odu_status1_meas_f_(data, 2), odu_status1_meas_f_(data, 3),
@@ -672,7 +694,7 @@ void InfinitESPComponent::handle_passive_frame_() {
     // for real physical ZCs. Multi-ZC: capture each controller under its real
     // source address (0x60 serves zones 1-4, 0x61 serves zones 5-8) so the
     // per-zone cover/climate/sensor entities read the correct register.
-    if (!zc_enabled() && src_class == CLASS_ZONE_CTRL) {
+    if (!zc_enabled() && (current_frame_.src >> 4) == CLASS_ZONE_CTRL) {
       uint8_t table = current_frame_.payload[1];
       uint8_t row = current_frame_.payload[2];
       uint16_t zc_key = (table << 8) | row;
@@ -734,9 +756,12 @@ void InfinitESPComponent::handle_passive_frame_() {
     // Capture thermostat→ODU writes. The ODU never replies to these (write-only
     // registers like 060b setpoint and 0605 commanded stage), so passive write
     // capture is the only source. Stored under dst (ODU address) so ODU sensors
-    // match on bus_class 5. Write rows (0x0605/060b/0610/0612/061a/061d/061e)
+    // match. Write rows (0x0605/060b/0610/0612/061a/061d/061e)
     // do not collide with reply rows (0x0602/0604/0608/060a/060e/061f/0625).
-    if (current_frame_.dst >> 4 == CLASS_OUTDOOR_UNIT && current_frame_.src == ADDR_THERMOSTAT &&
+    // is_odu_addr_: exact node when odu_address pins one, else the class nibble
+    // (a pinned ODU keeps second class-5 nodes like disc #232's 0x5F refrig
+    // board out of the register store's ODU namespace).
+    if (is_odu_addr_(current_frame_.dst) && current_frame_.src == ADDR_THERMOSTAT &&
         current_frame_.payload.size() > 3) {
       std::vector<uint8_t> odu_data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
       store_register_(current_frame_.dst, reg_key, odu_data);
@@ -1084,18 +1109,25 @@ void InfinitESPComponent::poll_thermostat_() {
 }
 
 void InfinitESPComponent::poll_odu_slow_() {
-  // Rotate over (observed class-5 device, union register) pairs, skipping
-  // entries blacklisted by a FUNC 0x15 refusal this session. "Observed" = any
-  // stored register from that address; passive snooping populates this within
-  // seconds of boot. The flat index is taken modulo the recomputed pair count,
-  // so devices appearing mid-session are picked up and vanished ones drop out.
-  // If every non-blacklisted slot is skipped, the loop just advances the index
-  // with no TX (on a variable-speed unit this settles to 0304-only, i.e. one
-  // frame per 31s).
+  // Rotate over (ODU target, union register) pairs, skipping entries
+  // blacklisted by a FUNC 0x15 refusal this session. Target list: exactly the
+  // hub-pinned odu_address when configured, else every "observed" class-5
+  // device. "Observed" = any stored register from that address; passive
+  // snooping populates this within seconds of boot. The flat index is taken
+  // modulo the recomputed pair count, so devices appearing mid-session are
+  // picked up and vanished ones drop out. If every non-blacklisted slot is
+  // skipped, the loop just advances the index with no TX (on a variable-speed
+  // unit this settles to 0304-only, i.e. one frame per 31s).
   std::vector<uint8_t> odus;
-  for (const auto &akv : device_registers_) {
-    if ((akv.first >> 4) == CLASS_OUTDOOR_UNIT && akv.first != sam_address_)
-      odus.push_back(akv.first);
+  if (odu_address_ != 0) {
+    // Hub-pinned ODU: poll exactly the configured node. A user assertion —
+    // polled even before the node is observed, unlike the discovered path.
+    odus.push_back(odu_address_);
+  } else {
+    for (const auto &akv : device_registers_) {
+      if ((akv.first >> 4) == CLASS_OUTDOOR_UNIT && akv.first != sam_address_)
+        odus.push_back(akv.first);
+    }
   }
   if (odus.empty())
     return;  // no ODU observed yet; retry next cycle
@@ -1277,9 +1309,18 @@ void InfinitESPComponent::store_register_(uint8_t addr, uint16_t key, const std:
 void InfinitESPComponent::notify_entities_(uint8_t device_addr, uint16_t register_key) {
   uint8_t src_class = device_addr >> 4;
   for (auto *entity : entities_) {
-    uint8_t dc = entity->get_bus_class();
-    if (dc != 0 && src_class != 0 && dc != src_class)
-      continue;
+    // An exact pin (per-entity device_address or the hub idu_address/
+    // odu_address override) takes precedence over the class gate: pinned
+    // entities follow their node even off the assumed class (0x3E furnace).
+    uint8_t pin = entity->get_device_address();
+    if (pin != 0) {
+      if (device_addr != pin)
+        continue;
+    } else {
+      uint8_t dc = entity->get_bus_class();
+      if (dc != 0 && src_class != 0 && dc != src_class)
+        continue;
+    }
     entity->on_register_update(device_addr, register_key);
   }
 }
