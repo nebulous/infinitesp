@@ -164,12 +164,19 @@ static const uint8_t CHANGE_COOL = 0x08;
 static const uint8_t CHANGE_MODE = 0x10;
 static const uint8_t CHANGE_OVERRIDE = 0x80;
 
-// System modes (stagmode low nibble)
+// System modes (stagmode low nibble; heat sources per infinitive's decode,
+// live-verified 2026-09-09/10). 0 = heat with the configured source (furnace
+// on gas gear), 3 = electric-only (fan-coil aux), 4 = heat-pump-only
+// (dual-fuel). Writing 3/4 on gear lacking the source: the thermostat ACKs
+// and normalizes to system heat. 5 = off and fanonly (shared; the blower
+// command IDU 0305 distinguishes them). Nibble 4 is never served on reads by
+// our AC-only rig; read paths render it as heat_pump.
 static const uint8_t SYSMODE_HEAT = 0;
 static const uint8_t SYSMODE_COOL = 1;
 static const uint8_t SYSMODE_AUTO = 2;
 static const uint8_t SYSMODE_EHEAT = 3;
-static const uint8_t SYSMODE_OFF = 4;
+static const uint8_t SYSMODE_HEATPUMP = 4;
+static const uint8_t SYSMODE_OFF = 5;
 
 // Fan modes
 static const uint8_t FAN_AUTO = 0;
@@ -300,7 +307,8 @@ static const uint8_t REG3B06_SIZE = 52;
 //
 // Table 0x03 RLCSMAIN:
 static const uint16_t REG_IDU_STATUS = 0x0306;     // Blower RPM, operating info (10 bytes)
-static const uint16_t REG_IDU_CONFIG = 0x0316;      // Airflow CFM, electric heat (14 bytes)
+static const uint16_t REG_IDU_CONFIG = 0x0316;      // Heat stage [0], airflow CFM [4..5] (14 bytes)
+static const uint16_t REG_IDU_AIRFLOW_CMD = 0x0305; // tstat->IDU blower CFM command, BE16 [4..5], write-only
 static const uint16_t REG_IDU_CYCLES = 0x0310;     // Cycle counters (4-byte key-value entries)
 static const uint16_t REG_IDU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-value entries)
 
@@ -430,6 +438,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 
   void setup() override;
   void loop() override;
+
+  // True when the thermostat's blower CFM command (IDU 0305) is nonzero.
+  // Distinguishes fan-only (nonzero) from off (0) while both share mode
+  // nibble 5. Returns false when 0305 has not been captured yet.
+  bool idu_blower_commanded_() const;
+  // Class-scoped register store lookup for IDU registers, tolerant of the
+  // commissioned address varying across installs (0x40 here, 0x3E on some).
+  const std::vector<uint8_t> *get_idu_register(uint16_t key) const;
 
   // Timed-hold setter debounce, owned by the hub (the setter entities are
   // plain entities, NOT Components: auto-spawned Component registrations
@@ -889,13 +905,17 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t func,
                        const std::vector<uint8_t> &payload);
   void send_frame_(uint8_t dst, uint8_t dst_bus, uint8_t func, const std::vector<uint8_t> &payload);
-  // Send a WRITE frame now and queue one retransmit RETRANSMIT_DELAY_MS later.
-  // Rides through sporadic bus drops without readback verification. All callers
-  // write idempotent values (setpoints/fan/mode/permanent holds); timed holds
-  // see a sub-minute countdown reset, below the field's minute resolution.
+  // Queue a WRITE frame for transmission from loop(). Entries drain FIFO,
+  // bus-idle gated, with up to WRITE_ATTEMPTS sends per frame. Callers write
+  // idempotent values (setpoints/fan/mode/permanent holds); timed holds see a
+  // sub-minute countdown reset, below the field's minute resolution.
+  // Immediate transmission is NOT done here: an unguarded send can collide
+  // with the thermostat's reply window right after a preceding frame (lost
+  // 3B02 mode write, captured 2026-09-10). The idle gate plus retries rides
+  // out bus contention instead.
   // Coupling: RETRANSMIT_DELAY_MS must stay <= PENDING_SETPOINT_WINDOW_MS/2
-  // (InfinitESPClimate) so a retransmit always lands inside the newest
-  // change's overlay window and cannot cause UI snapback.
+  // (InfinitESPClimate) so a retry always lands inside the newest change's
+  // overlay window and cannot cause UI snapback.
   void send_write_frame_(uint8_t dst, uint8_t dst_bus, const std::vector<uint8_t> &payload);
   void send_reply_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, const std::vector<uint8_t> &payload);
   void send_exception_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t table, uint8_t row, uint8_t code);
@@ -1071,15 +1091,17 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   };
   std::vector<PendingPoll> pending_polls_;
 
-  // Queued write retransmits. Each entry fires once from loop() at fire_ms.
-  // Drained FIFO; with RETRANSMIT_DELAY_MS <= overlay/2, the last-sent value
-  // for a zone always wins on the bus regardless of rapid change ordering.
+  // Queued write frames. Each entry transmits from loop() at fire_ms behind
+  // the bus-idle gate, up to attempts_left + 1 sends total. Drained FIFO; with
+  // RETRANSMIT_DELAY_MS <= overlay/2, the last-sent value for a zone always
+  // wins on the bus regardless of rapid change ordering.
   struct PendingRetransmit {
     uint8_t dst;
     uint8_t dst_bus;
     uint8_t func;   // FUNC_WRITE
     std::vector<uint8_t> payload;
     uint32_t fire_ms;
+    uint8_t attempts_left;
   };
   std::deque<PendingRetransmit> pending_retransmits_;
 

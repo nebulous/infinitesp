@@ -71,6 +71,8 @@ static const uint8_t TABLEDEF_ROW = 0x01;  // every table's self-describing regi
 // overlay window — keeps the last-sent value winning on the bus and the UI
 // free of snapback under rapid changes.
 static const uint32_t RETRANSMIT_DELAY_MS = 4000;
+// Total sends per queued WRITE frame (primary + retries), bus-idle gated.
+static const uint8_t WRITE_ATTEMPTS = 3;
 
 void InfinitESPComponent::setup() {
   ESP_LOGI("InfinitESP", "InfinitESP v%s build %s %s", INFINITESP_VERSION, __DATE__, __TIME__);
@@ -292,17 +294,22 @@ void InfinitESPComponent::loop() {
     ESP_LOGI("InfinitESP", "Install discovery holdoff expired - resuming initiated bus TX");
   }
 
-  // Drain due write retransmit (one per iteration, bus-idle gated). Suppresses
+  // Drain a due write frame (one per iteration, bus-idle gated). Suppresses
   // the fast/slow polls this iteration to avoid back-to-back TX to the thermostat.
   bool retransmit_sent = false;
   if (!discovery_holdoff && !pending_retransmits_.empty() && bus_idle_ms > 50 &&
       (int32_t) (pending_retransmits_.front().fire_ms - now) <= 0) {
-    auto &r = pending_retransmits_.front();
-    uint16_t rk = r.payload.size() >= 3 ? (uint16_t) ((r.payload[1] << 8) | r.payload[2]) : 0;
-    ESP_LOGI("InfinitESP", "Retransmit WRITE %04X (+%ums, %u queued)",
-             rk, RETRANSMIT_DELAY_MS, (uint32_t) pending_retransmits_.size());
-    send_frame_(r.dst, r.dst_bus, r.func, r.payload);
+    PendingRetransmit r = pending_retransmits_.front();
     pending_retransmits_.pop_front();
+    uint16_t rk = r.payload.size() >= 3 ? (uint16_t) ((r.payload[1] << 8) | r.payload[2]) : 0;
+    ESP_LOGI("InfinitESP", "TX WRITE %04X (retries left %u, %u queued)",
+             rk, r.attempts_left, (uint32_t) pending_retransmits_.size());
+    send_frame_(r.dst, r.dst_bus, r.func, r.payload);
+    if (r.attempts_left > 0) {
+      r.attempts_left--;
+      r.fire_ms = now + RETRANSMIT_DELAY_MS;
+      pending_retransmits_.push_back(r);
+    }
     retransmit_sent = true;
   }
 
@@ -720,6 +727,18 @@ void InfinitESPComponent::handle_passive_frame_() {
       }
     }
 
+    // Thermostat->IDU blower CFM command (0305, ~10 s cadence, write-only).
+    // Distinguishes fan-only (nonzero) from off (0) while both share mode
+    // nibble 5. 0305 only: other tstat->IDU write rows (0307/031D/0403/0409)
+    // share register keys with reply rows and must not fight the reply capture.
+    if (is_idu_addr_(current_frame_.dst) && current_frame_.src == ADDR_THERMOSTAT &&
+        reg_key == REG_IDU_AIRFLOW_CMD && current_frame_.payload.size() > 3 + 6) {
+      std::vector<uint8_t> idu_data(current_frame_.payload.begin() + 3,
+                                    current_frame_.payload.end());
+      store_register_(current_frame_.dst, reg_key, idu_data);
+      notify_entities_(current_frame_.dst, reg_key);
+    }
+
     // 0308 damper command from the thermostat to a physical ZC (0x60/0x61).
     // Emulated-ZC frames go to handle_write_request_ instead, so this only
     // fires for real hardware. 0308 is an 8-byte system-wide payload (see
@@ -836,8 +855,12 @@ void InfinitESPComponent::send_frame_(uint8_t dst, uint8_t dst_bus, uint8_t func
 
 void InfinitESPComponent::send_write_frame_(uint8_t dst, uint8_t dst_bus,
                                              const std::vector<uint8_t> &payload) {
-  send_frame_(dst, dst_bus, FUNC_WRITE, payload);
-  pending_retransmits_.push_back({dst, dst_bus, FUNC_WRITE, payload, millis() + RETRANSMIT_DELAY_MS});
+  // Queue-only: loop() transmits behind the bus-idle gate (see header). An
+  // immediate send here collides with the thermostat's post-reply window
+  // after a preceding frame; the 2026-09-10 capture shows a 3B02 mode write
+  // lost exactly that way, twice (primary + its one retry).
+  pending_retransmits_.push_back({dst, dst_bus, FUNC_WRITE, payload, millis(),
+                                   (uint8_t) (WRITE_ATTEMPTS - 1)});
 }
 
 void InfinitESPComponent::send_reply_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus,
@@ -1334,6 +1357,31 @@ const std::vector<uint8_t> *InfinitESPComponent::get_register(uint8_t addr, uint
   return nullptr;
 }
 
+bool InfinitESPComponent::idu_blower_commanded_() const {
+  // The 0305 capture stores under the real IDU address (0x40 here, 0x3E on
+  // some installs); scan the store for the class-scoped device that has it.
+  for (const auto &dev : device_registers_) {
+    if (!is_idu_addr_(dev.first))
+      continue;
+    auto it = dev.second.find(REG_IDU_AIRFLOW_CMD);
+    if (it == dev.second.end() || it->second.size() < 6)
+      continue;
+    return (((uint16_t) it->second[4] << 8) | it->second[5]) != 0;
+  }
+  return false;
+}
+
+const std::vector<uint8_t> *InfinitESPComponent::get_idu_register(uint16_t key) const {
+  for (const auto &dev : device_registers_) {
+    if (!is_idu_addr_(dev.first))
+      continue;
+    auto it = dev.second.find(key);
+    if (it != dev.second.end())
+      return &it->second;
+  }
+  return nullptr;
+}
+
 uint8_t InfinitESPComponent::get_zone_active_mask() const {
   auto *state = get_register(sam_address_, REG_SAM_STATE);
   if (state && state->size() > REG3B02_ACTIVE_ZONES)
@@ -1788,7 +1836,7 @@ void InfinitESPComponent::initialize_defaults_() {
       for (int i = 0; i < 8; i++) data[REG3B02_TEMPS + i] = 70;   // 70°F
       for (int i = 0; i < 8; i++) data[REG3B02_HUMIDITY + i] = 50; // 50%
       data[REG3B02_OUTDOOR_TEMP] = 70;                             // 70°F
-      data[REG3B02_STAGMODE] = 0x04;                               // stage=0, mode=off
+      data[REG3B02_STAGMODE] = 0x05;                               // stage=0, mode=off
       data[REG3B02_WEEKDAY] = 0x01;                                // Monday
       data[REG3B02_MINUTES] = 0x01;                                // 480 (8:00am) BE high byte
       data[REG3B02_MINUTES + 1] = 0xE0;                            // BE low byte

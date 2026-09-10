@@ -64,6 +64,7 @@ SYSTEM_CORE = [
     ("sensor", "odu_mode", "ODU Operating Mode"),
     ("sensor", "odu_line_voltage", "ODU Line Voltage"),
     ("select", "system_mode", "System Mode"),
+    ("text_sensor", "heat_source", "Heat Source"),
     ("text_sensor", "fault_history", "Fault History"),
     ("sensor", "fault_timestamp", "Fault Timestamp"),
 ]

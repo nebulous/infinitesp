@@ -19,6 +19,43 @@ static const char *fault_source_name(uint8_t source) {
 }
 
 void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t register_key) {
+  // Heat source: furnace / heat_pump / electric / none. Resolved from the
+  // 3B02 mode nibble (3 = electric-only, 4 = heat-pump-only; per infinitive
+  // and live write tests) plus the IDU heat stage (0316[0], source-blind:
+  // gas stages on furnace gear, element stages on fan-coil gear - hence the
+  // nibble takes precedence). Known gap (Q5): variable-speed dual-fuel in
+  // AUTO can hold nibble 2 while heating via HP; that reads "none" until
+  // cross-gear captures refine the rule.
+  if (sensor_type_ == "heat_source") {
+    if (register_key != REG_SAM_STATE && register_key != REG_IDU_CONFIG)
+      return;
+    auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
+    if (!state || state->size() <= REG3B02_STAGMODE)
+      return;
+    uint8_t stagmode = (*state)[REG3B02_STAGMODE];
+    uint8_t mode = stagmode & 0x0F;
+    uint8_t stage = (stagmode >> 4) & 0x0F;
+
+    const char *value = "none";
+    if (stage > 0) {
+      if (mode == SYSMODE_HEATPUMP) {
+        value = "heat_pump";
+      } else if (mode == SYSMODE_EHEAT) {
+        value = "electric";
+      } else if (mode == SYSMODE_HEAT || mode == SYSMODE_AUTO) {
+        // Direction nibble heat, or requested AUTO: the IDU heat stage is
+        // the source signal (furnace on gas gear; documented caveat: on
+        // air-handler gear the electric elements stage here too).
+        auto *cfg = parent_->get_idu_register(REG_IDU_CONFIG);
+        if (cfg && !cfg->empty() && ((*cfg)[0] & 0x0F) != 0)
+          value = "furnace";
+      }
+    }
+    if (!has_state() || std::string(value) != this->state)
+      publish_state(value);
+    return;
+  }
+
   // Hold state display: "until HH:MM PM", "Permanent", or "Schedule"
   if (sensor_type_ == "hold_state") {
     if (register_key != REG_SAM_ZONES)
