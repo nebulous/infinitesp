@@ -674,14 +674,13 @@ void InfinitESPComponent::handle_passive_frame_() {
                  odu_float_(data, 5), odu_float_(data, 6));
       }
 
-      // ODU register 0302: temperatures and thresholds (24 bytes = 12 int16 BE / 16)
-      // Alternating (threshold, measurement): offsets 0,4,8,12,16,20 = constants;
-      // offsets 2,6,10,14,18,22 = dynamic measurements (accessor idx 0..5).
-      if (is_odu_addr_(current_frame_.src) && reg_key == REG_ODU_STATUS1 && data.size() >= 24) {
-        ESP_LOGD("InfinitESP", "ODU 0302: outdoor=%.1f coil=%.1f suction=%.1f superheat=%.1f indoor_amb=%.1f discharge=%.1f",
-                 odu_status1_meas_f_(data, 0), odu_status1_meas_f_(data, 1),
-                 odu_status1_meas_f_(data, 2), odu_status1_meas_f_(data, 3),
-                 odu_status1_meas_f_(data, 4), odu_status1_meas_f_(data, 5));
+      // ODU register 0302: typed-TLV entries [u16 type, u16 value], raw/16.
+      // Log the common types when present (family-dependent; see infinitesp.h).
+      if (is_odu_addr_(current_frame_.src) && reg_key == REG_ODU_STATUS1 && data.size() >= 8) {
+        ESP_LOGD("InfinitESP", "ODU 0302: oat=%.1f oct=%.1f suct=%.1f ssh=%.1f osp=%.1f dis=%.1f",
+                 odu_tlv_value_f_(data, ODU_TLV_OAT), odu_tlv_value_f_(data, ODU_TLV_OCT),
+                 odu_tlv_value_f_(data, ODU_TLV_SUCT), odu_tlv_value_f_(data, ODU_TLV_SSH),
+                 odu_tlv_value_f_(data, ODU_TLV_OSP), odu_tlv_value_f_(data, ODU_TLV_DIS2));
       }
 
       notify_entities_(current_frame_.src, reg_key);

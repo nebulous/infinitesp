@@ -2,7 +2,7 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 import logging
 from esphome.components import sensor
-from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, STATE_CLASS_NONE, STATE_CLASS_TOTAL_INCREASING, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_HUMIDITY, DEVICE_CLASS_VOLUME_FLOW_RATE, DEVICE_CLASS_VOLTAGE, DEVICE_CLASS_DURATION, DEVICE_CLASS_TIMESTAMP, CONF_ACCURACY_DECIMALS, CONF_STATE_CLASS
+from esphome.const import CONF_ID, CONF_TYPE, CONF_DISABLED_BY_DEFAULT, STATE_CLASS_MEASUREMENT, STATE_CLASS_NONE, STATE_CLASS_TOTAL_INCREASING, DEVICE_CLASS_TEMPERATURE, DEVICE_CLASS_HUMIDITY, DEVICE_CLASS_VOLUME_FLOW_RATE, DEVICE_CLASS_VOLTAGE, DEVICE_CLASS_DURATION, DEVICE_CLASS_TIMESTAMP, DEVICE_CLASS_PRESSURE, CONF_ACCURACY_DECIMALS, CONF_STATE_CLASS
 from esphome.components import time
 from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
 
@@ -27,6 +27,8 @@ _LOGGER = logging.getLogger(__name__)
 # Deprecated sensor type aliases: old yaml key -> replacement.
 DEPRECATED_SENSOR_TYPES = {
     "compressor_frequency": "odu_requested_cfm",
+    # 0x14B content unknown (liquid line at a guess); no curated decode.
+    "odu_indoor_ambient": "raw_register",
 }
 
 # Monotonic counters (register 0310 cycles / 0311 hours): state_class=total_increasing
@@ -80,15 +82,33 @@ SENSOR_TYPES = {
     "odu_float_4": {"key": "odu_float_4", "unit": "\u00b0F", "bus_class": 5},
     "odu_float_5": {"key": "odu_float_5", "unit": "\u00b0F", "bus_class": 5},
     "odu_float_6": {"key": "odu_float_6", "unit": "", "bus_class": 5},
-    # ODU register 0302 temperature measurements
+    # ODU registers 0302/0303: typed-TLV entries [u16 type, u16 value],
+    # value = raw/16 in native units (never reformat with the tstat units
+    # flag). Temperatures convert F->C; pressures publish native PSI
+    # (pressure conversion is multiplicative, safe for device_class).
     "odu_outdoor_temp": {"key": "odu_outdoor_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     "odu_coil_temp": {"key": "odu_coil_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
+    # Suction LINE temperature: 0x130 (24VNA9 family, screen-confirmed
+    # 2026-09-09) or 0x154 (26VNA148 family) - both temperature channels in
+    # 0302. The same 0x130 code is the pressure channel in 0303; quantity
+    # follows the register row.
     "odu_suction_temp": {"key": "odu_suction_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
     # \u0394T (delta): published native \u00b0F, no device_class (HA's temp conversion
-    # adds +32, corrupting deltas). Matches the thermostat's \u00b0F superheat display.
+    # adds +32, corrupting deltas). Type 0x14A, screen-confirmed twice
+    # (16-17 F and 12.0 F vs channel), sanity banded 0..60 F;
+    # 26VNA148-family units serve two 0x14A entries with non-physical values
+    # (rejected).
     "odu_suction_superheat": {"key": "odu_suction_superheat", "unit": "\u00b0F", "bus_class": 5},
+    # Type 0x14B: content unknown, no curated decode (deprecated; use raw_register).
     "odu_indoor_ambient": {"key": "odu_indoor_ambient", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
+    # Discharge line temperature: type 0x140 (HP families) or 0x145 (24VNA9).
     "odu_discharge_temp": {"key": "odu_discharge_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 5},
+    # Suction pressure: 0x130 in 0303 (native PSI; screen-confirmed 135 PSI
+    # on a 24VNA948A, 108 on a 26VNA148).
+    "odu_suction_pressure": {"key": "odu_suction_pressure", "unit": "PSI", "device_class": DEVICE_CLASS_PRESSURE, "bus_class": 5, "accuracy_decimals": 1},
+    # Discharge pressure: 0x152 in 0303 (26VNA148 family; screen-confirmed
+    # 269 PSI there; absent on 24VNA9-family units).
+    "odu_discharge_pressure": {"key": "odu_discharge_pressure", "unit": "PSI", "device_class": DEVICE_CLASS_PRESSURE, "bus_class": 5, "accuracy_decimals": 1},
     # ZC register 0302 (device class 6 = 0x60>>4). 24-byte TLV [tag,id,hi,lo],
     # °F = uint16_BE / 16. zone N -> id N; id 0x14 = LAT, id 0x1C = HPT.
     # LAT/HPT exist only on zone boards with those thermistor ports wired, so

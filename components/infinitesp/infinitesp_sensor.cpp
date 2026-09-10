@@ -304,40 +304,69 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
-  // ODU register 0302: int16 BE / 16, always native °F. Absolute temps convert
-  // to °C; the superheat delta (idx 3) is published in native °F with no
-  // device_class (HA's temp conversion adds +32, corrupting deltas).
-  // Field idx via accessor odu_status1_meas_f_(idx): 0=outdoor 1=coil 2=suction
-  // 3=suction_superheat(ΔT) 4=indoor_amb 5=discharge. idx 3 confirmed superheat
-  //   (matches thermostat display, e.g. 16-17°F or 3.0°F depending on state).
-  if (register_key == REG_ODU_STATUS1) {
-    struct Field { const char *suffix; uint8_t idx; bool delta; };
-    static const Field fields[] = {
-        {"odu_outdoor_temp", 0, false}, {"odu_coil_temp", 1, false},
-        {"odu_suction_temp", 2, false}, {"odu_suction_superheat", 3, true},
-        {"odu_indoor_ambient", 4, false}, {"odu_discharge_temp", 5, false},
+  // ODU registers 0302/0303: typed-TLV entries [u16 type, u16 value],
+  // value = raw/16. The type identifies the CHANNEL (0x130 "suction",
+  // 0x145 "discharge"); the quantity follows the register row: 0302 serves
+  // temperatures (F), 0303 serves pressures (PSI) - the same 0x130 code is
+  // suction line temp in 0302 and suction pressure in 0303. Screen-confirmed
+  // 2026-09-09 on a 24VNA948A while running: suction temp 58 F = 0302/0x130
+  // (57.9-60.7), suction pressure 135 PSI = 0303/0x130 (134-136), discharge
+  // temp 119 F = 0302/0x145 (119.0-119.8), superheat 12.0 = 0302/0x14A
+  // (10-13). Temperatures convert F->C for HA; superheat is a delta in
+  // native F with no device_class (HA's temp conversion adds +32, corrupting
+  // deltas); pressures publish native PSI (pressure conversion is
+  // multiplicative, safe for device_class).
+  // Superheat is sanity-banded 0..60 F: the 26VNA148 family serves two 0x14A
+  // entries with non-physical values (285.7-289.1 and 688-692.3 at /16,
+  // content unknown), which the band rejects instead of publishing garbage.
+  if (register_key == REG_ODU_STATUS1 || register_key == REG_ODU_STATUS2) {
+    auto *temps = parent_->get_register(device_addr, REG_ODU_STATUS1);  // temperature channels
+    auto *press = parent_->get_register(device_addr, REG_ODU_STATUS2);  // pressure channels
+    auto temp_tlv = [&](uint16_t type, uint8_t occ = 0) -> float {
+      if (temps && parent_->odu_tlv_populated_(*temps))
+        return parent_->odu_tlv_value_f_(*temps, type, occ);
+      return NAN;
     };
-    for (const auto &fld : fields) {
-      if (sensor_type_ != fld.suffix)
-        continue;
-      auto *data = parent_->get_register(device_addr, REG_ODU_STATUS1);
-      if (data) {
-        // Unpopulated-register guard: some systems serve 0302 with all bytes
-        // zero (documented footgun: slot0 then decodes 0.0 °F = -17.8 °C). A
-        // populated register always has non-zero threshold constants around
-        // the measurements, so all-zero means "not populated", not "very cold".
-        bool any_nonzero = false;
-        for (uint8_t b : *data) {
-          if (b) { any_nonzero = true; break; }
-        }
-        if (any_nonzero) {
-          float f = parent_->odu_status1_meas_f_(*data, fld.idx);
-          if (!std::isnan(f))
-            value = fld.delta ? f                               // ΔF published raw (no device_class)
-                              : ((f - 32.0f) * (5.0f / 9.0f));  // °F → °C
-        }
+    auto press_tlv = [&](uint16_t type) -> float {
+      if (press && parent_->odu_tlv_populated_(*press))
+        return parent_->odu_tlv_value_f_(*press, type);
+      return NAN;
+    };
+    auto abs_temp = [&](float f) -> float { return std::isnan(f) ? NAN : (f - 32.0f) * (5.0f / 9.0f); };
+    // First-found-wins scan across candidate type codes: families serve the
+    // same quantity under different ids (suction line temp is 0x130 on the
+    // 24VNA9 family, 0x154 on the 26VNA148 family; discharge temp is 0x145 on
+    // both captured AC families, 0x140 on heat pumps per disc #232). Order
+    // by evidence weight. Do NOT alias semantically distinct types that
+    // share a label in the disc #232 table.
+    auto tlv_first = [&](std::initializer_list<uint16_t> types) -> float {
+      for (uint16_t t : types) {
+        float v = temp_tlv(t);
+        if (!std::isnan(v))
+          return v;
       }
-      break;  // at most one suffix matches
+      return NAN;
+    };
+
+    if (sensor_type_ == "odu_outdoor_temp") {
+      value = abs_temp(temp_tlv(ODU_TLV_OAT));
+    } else if (sensor_type_ == "odu_coil_temp") {
+      value = abs_temp(temp_tlv(ODU_TLV_OCT));
+    } else if (sensor_type_ == "odu_suction_temp") {
+      // 0x130 (24VNA9 family, screen-confirmed) then 0x154 (26VNA148 family)
+      value = abs_temp(tlv_first({ODU_TLV_OSP, ODU_TLV_SUCT}));
+    } else if (sensor_type_ == "odu_suction_superheat") {
+      float f = temp_tlv(ODU_TLV_SSH);
+      if (!std::isnan(f) && f >= 0.0f && f <= 60.0f)
+        value = f;  // dF published raw (no device_class)
+    } else if (sensor_type_ == "odu_discharge_temp") {
+      // 0x145 screen-confirmed on both captured AC families; 0x140 from the
+      // heat-pump table (disc #232).
+      value = abs_temp(tlv_first({ODU_TLV_DIS2, ODU_TLV_DIS}));
+    } else if (sensor_type_ == "odu_suction_pressure") {
+      value = press_tlv(ODU_TLV_OSP);  // native PSI
+    } else if (sensor_type_ == "odu_discharge_pressure") {
+      value = press_tlv(ODU_TLV_DSP);  // native PSI
     }
   }
 

@@ -116,6 +116,8 @@ SYSTEM_CONDITIONAL = [
     ("sensor", "odu_float_6", "ODU Float 6"),
     ("sensor", "odu_discharge_temp", "ODU Discharge Temp"),
     ("sensor", "odu_suction_temp", "ODU Suction Temp"),
+    ("sensor", "odu_suction_pressure", "ODU Suction Pressure"),
+    ("sensor", "odu_discharge_pressure", "ODU Discharge Pressure"),
     ("sensor", "odu_suction_superheat", "ODU Suction Superheat"),
 ]
 

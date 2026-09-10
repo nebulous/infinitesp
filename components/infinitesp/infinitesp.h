@@ -314,9 +314,28 @@ static const uint16_t REG_IDU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-
 // Tables 0x04,0x05,0x07-0x0F return FUNC 0x15 (not present on this hardware).
 //
 // Table 0x03 RLCSMAIN:
-static const uint16_t REG_ODU_STATUS1 = 0x0302;    // Temperatures and operating data
-static const uint16_t REG_ODU_STATUS2 = 0x0303;    // Short status (4 bytes)
+static const uint16_t REG_ODU_STATUS1 = 0x0302;    // Typed TLV: entries [u16 type, u16 value], value = raw/16 (F temps, PSI pressures)
+static const uint16_t REG_ODU_STATUS2 = 0x0303;    // Typed TLV (same entry scheme): pressures (0x130 suction, 0x152 discharge on some families)
 static const uint16_t REG_ODU_STATUS3 = 0x0304;    // Temperatures and pressures
+// ODU 0302/0303 entry-type codes (typed-TLV scheme; decode helpers are class
+// members). The type identifies the CHANNEL; the quantity follows the
+// register row: 0302 serves temperatures (F), 0303 serves pressures (PSI).
+// Provenance: dragonflight disc #232 2026-09-08; screen-confirmed on a
+// 24VNA948A 2026-09-09 (suction temp 58 F = 0302/0x130, suction pressure
+// 135 PSI = 0303/0x130, discharge temp 119 F = 0302/0x145, superheat 12.0 =
+// 0302/0x14A).
+static const uint16_t ODU_TLV_OAT = 0x0111;   // outdoor air temp
+static const uint16_t ODU_TLV_OCT = 0x0112;   // outdoor coil temp
+static const uint16_t ODU_TLV_OST = 0x0113;   // outdoor ?temp
+static const uint16_t ODU_TLV_LAT = 0x0114;   // leaving air temp
+static const uint16_t ODU_TLV_HPT = 0x011C;   // heat pump ?temp
+static const uint16_t ODU_TLV_OSP = 0x0130;   // suction channel: line temp in 0302 (F), pressure in 0303 (PSI)
+static const uint16_t ODU_TLV_DIS = 0x0140;   // discharge temp (HP families)
+static const uint16_t ODU_TLV_SSH = 0x014A;   // suction superheat (dF)
+static const uint16_t ODU_TLV_14B = 0x014B;   // unnamed (liquid line at a guess)
+static const uint16_t ODU_TLV_DIS2 = 0x0145;  // discharge temp (screen-confirmed, both AC families)
+static const uint16_t ODU_TLV_DSP = 0x0152;   // discharge pressure (PSI; 26VNA148 family, 0303)
+static const uint16_t ODU_TLV_SUCT = 0x0154;  // suction line temp (26VNA148 family, 0302)
 static const uint16_t REG_ODU_CYCLES = 0x0310;     // Cycle counters (4-byte key-value entries)
 static const uint16_t REG_ODU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-value entries)
 //
@@ -795,15 +814,44 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   static float odu_float_(const std::vector<uint8_t> &data, uint8_t idx) {
     return decode_f32_be_(data, 1 + (idx - 1) * 4);
   }
-  // ODU register 0302 (REG_ODU_STATUS1): measurement slot idx 0..5 at offset 2+idx*4.
-  //   idx 0=outdoor 1=coil 2=suction 3=suction_superheat(ΔT) 4=indoor_amb 5=discharge
-  // Native °F via decode_int16_f_. idx 3 is a delta (caller skips the -32).
-  //   idx 3 confirmed = suction superheat (oscillates 16<->17°F, matching the
-  //   thermostat display; sat_temp(118psig R410A)~40°F, 56-40=16°F). NOT subcooling;
-  //   the real subcooling is the 061F float (REG_ODU_FLOATS), which the tstat
-  //   does not poll passively.
-  static float odu_status1_meas_f_(const std::vector<uint8_t> &data, uint8_t idx) {
-    return decode_int16_f_(data, 2 + idx * 4);
+  // ODU registers 0302/0303 (REG_ODU_STATUS1/2) are typed-TLV: 4-byte entries
+  // [u16 type, u16 value], value = raw/16. Never reformat with the tstat
+  // units flag. Type codes at file scope above (ODU_TLV_*); the type names
+  // the CHANNEL and the register row fixes the quantity: 0302 = temperatures
+  // (F), 0303 = pressures (PSI). The same 0x130 code is suction line temp in
+  // 0302 and suction pressure in 0303 (24VNA9 family serves both; the
+  // 26VNA148 family serves 0x130 only in 0303 and suction temp as 0x154 in
+  // 0302). Decode by type scan within the register for that quantity, never
+  // by slot position: the same 0302 slot carries 0x130 on the 24VNA9 family
+  // but 0x154 on the 26VNA148 family.
+
+  // Raw value of the nth (0-based) entry of the given type, or NaN when the
+  // register data holds no such entry. Skips type 0x0000 filler entries.
+  static float odu_tlv_raw_(const std::vector<uint8_t> &data, uint16_t type, uint8_t occurrence = 0) {
+    uint8_t seen = 0;
+    for (size_t off = 0; off + 3 < data.size(); off += 4) {
+      uint16_t t = (data[off] << 8) | data[off + 1];
+      if (t != type)
+        continue;
+      if (seen++ < occurrence)
+        continue;
+      uint16_t raw = (data[off + 2] << 8) | data[off + 3];
+      return (float) raw;
+    }
+    return NAN;
+  }
+  // Typed-entry value in native units (F or PSI): raw / 16.
+  static float odu_tlv_value_f_(const std::vector<uint8_t> &data, uint16_t type, uint8_t occurrence = 0) {
+    float raw = odu_tlv_raw_(data, type, occurrence);
+    return std::isnan(raw) ? NAN : raw / 16.0f;
+  }
+  // True when the register holds at least one non-zero byte (the unpopulated
+  // footgun: an all-zero row decodes slot values to 0.0 F = -17.8 C).
+  static bool odu_tlv_populated_(const std::vector<uint8_t> &data) {
+    for (uint8_t b : data)
+      if (b)
+        return true;
+    return false;
   }
   // ODU register 3E01 (REG_ODU_3E_TEMPS), 2-stage/two-capacity family: int16 BE
   // /16 °F slots at slot*2. slot 0 = outdoor ambient, slot 1 = coil temp
