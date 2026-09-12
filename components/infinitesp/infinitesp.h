@@ -446,6 +446,10 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // Class-scoped register store lookup for IDU registers, tolerant of the
   // commissioned address varying across installs (0x40 here, 0x3E on some).
   const std::vector<uint8_t> *get_idu_register(uint16_t key) const;
+  // Same for ODU registers (class 5; first matching node wins - installs
+  // with a second class-5 node like the 0x5F refrig board return whichever
+  // serves the key, which in practice is the commissioned ODU).
+  const std::vector<uint8_t> *get_odu_register(uint16_t key) const;
 
   // Timed-hold setter debounce, owned by the hub (the setter entities are
   // plain entities, NOT Components: auto-spawned Component registrations

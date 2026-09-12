@@ -19,15 +19,22 @@ static const char *fault_source_name(uint8_t source) {
 }
 
 void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t register_key) {
-  // Heat source: furnace / heat_pump / electric / none. Resolved from the
-  // 3B02 mode nibble (3 = electric-only, 4 = heat-pump-only; per infinitive
-  // and live write tests) plus the IDU heat stage (0316[0], source-blind:
-  // gas stages on furnace gear, element stages on fan-coil gear - hence the
-  // nibble takes precedence). Known gap (Q5): variable-speed dual-fuel in
-  // AUTO can hold nibble 2 while heating via HP; that reads "none" until
-  // cross-gear captures refine the rule.
+  // Heat source: furnace / heat_pump / electric / none. The mode nibble
+  // provably NEVER encodes the source on dual-fuel gear (four-state capture,
+  // 2026-09-12, issue #18: nibble 0 in idle, HP heating, and gas heating
+  // alike; nibble 3/4 never served even with HP-only commanded). Source
+  // truth is the equipment: IDU 0316[0] heat stage (gas burners on furnace
+  // gear, elements on fan-coil gear) and ODU compressor activity (0604
+  // actual RPM preferred; 0605 commanded step when 0604 is not served -
+  // integer float32, range 0-5, nonzero all summer on AC-only rigs, so the
+  // mode gate is mandatory). Capture-table conformance:
+  //   idle            s0 m0, 0316=00, rpm 0    -> none
+  //   HP mid-trans    s2 m0, 0316=00, rpm 2163 -> heat_pump
+  //   HP settled      s2 m0, 0316=00, rpm 1642 -> heat_pump
+  //   gas low         s2 m0, 0316=01, rpm 0    -> furnace
   if (sensor_type_ == "heat_source") {
-    if (register_key != REG_SAM_STATE && register_key != REG_IDU_CONFIG)
+    if (register_key != REG_SAM_STATE && register_key != REG_IDU_CONFIG &&
+        register_key != REG_ODU_COMP_SPEED && register_key != REG_ODU_CMD_STAGE)
       return;
     auto *state = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
     if (!state || state->size() <= REG3B02_STAGMODE)
@@ -36,19 +43,34 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
     uint8_t mode = stagmode & 0x0F;
     uint8_t stage = (stagmode >> 4) & 0x0F;
 
+    auto *cfg = parent_->get_idu_register(REG_IDU_CONFIG);
+    uint8_t idu_heat = (cfg && !cfg->empty()) ? ((*cfg)[0] & 0x0F) : 0;
+    auto *spd = parent_->get_odu_register(REG_ODU_COMP_SPEED);
+    float comp_rpm = spd ? parent_->odu_compressor_actual_rpm_(*spd) : NAN;
+    float cmd_stage = NAN;
+    if (std::isnan(comp_rpm)) {
+      auto *cmd = parent_->get_odu_register(REG_ODU_CMD_STAGE);
+      if (cmd && cmd->size() >= 4)
+        cmd_stage = parent_->odu_commanded_stage_(*cmd);
+    }
+
     const char *value = "none";
     if (stage > 0) {
-      if (mode == SYSMODE_HEATPUMP) {
-        value = "heat_pump";
-      } else if (mode == SYSMODE_EHEAT) {
+      if (mode == SYSMODE_EHEAT) {
         value = "electric";
-      } else if (mode == SYSMODE_HEAT || mode == SYSMODE_AUTO) {
-        // Direction nibble heat, or requested AUTO: the IDU heat stage is
-        // the source signal (furnace on gas gear; documented caveat: on
-        // air-handler gear the electric elements stage here too).
-        auto *cfg = parent_->get_idu_register(REG_IDU_CONFIG);
-        if (cfg && !cfg->empty() && ((*cfg)[0] & 0x0F) != 0)
-          value = "furnace";
+      } else if (idu_heat != 0) {
+        // Furnace on gas gear. Air-handler caveat: on fan-coil installs
+        // these are the electric elements (no bus-side discriminator
+        // unless nibble 3 is commanded).
+        value = "furnace";
+      } else if (mode == SYSMODE_HEATPUMP) {
+        // SAM-forced path; never observed served by a tstat, kept for
+        // installs that honor a nibble-4 command.
+        value = "heat_pump";
+      } else if (mode != SYSMODE_COOL &&
+                 ((!std::isnan(comp_rpm) && comp_rpm > 0) ||
+                  (!std::isnan(cmd_stage) && cmd_stage > 0))) {
+        value = "heat_pump";
       }
     }
     if (!has_state() || std::string(value) != this->state)

@@ -1382,6 +1382,17 @@ const std::vector<uint8_t> *InfinitESPComponent::get_idu_register(uint16_t key) 
   return nullptr;
 }
 
+const std::vector<uint8_t> *InfinitESPComponent::get_odu_register(uint16_t key) const {
+  for (const auto &dev : device_registers_) {
+    if (!is_odu_addr_(dev.first))
+      continue;
+    auto it = dev.second.find(key);
+    if (it != dev.second.end())
+      return &it->second;
+  }
+  return nullptr;
+}
+
 uint8_t InfinitESPComponent::get_zone_active_mask() const {
   auto *state = get_register(sam_address_, REG_SAM_STATE);
   if (state && state->size() > REG3B02_ACTIVE_ZONES)

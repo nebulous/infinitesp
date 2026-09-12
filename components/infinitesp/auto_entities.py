@@ -50,11 +50,11 @@ PER_ZONE_ENTITIES = [
 # System-wide, always spawned.
 SYSTEM_CORE = [
     ("binary_sensor", "bus_status", "Bus Status"),
-    ("binary_sensor", "electric_heat", "Electric Heat"),
     ("binary_sensor", "compressor_running", "Compressor Running"),
     ("sensor", "outdoor_temperature", "Outdoor Temperature"),
     ("sensor", "blower_rpm", "Blower RPM"),
     ("sensor", "airflow_cfm", "Airflow CFM"),
+    ("sensor", "idu_heat_stage", "IDU Heat Stage"),
     ("sensor", "vacation_min_temp", "Vacation Min Temp"),
     ("sensor", "vacation_max_temp", "Vacation Max Temp"),
     ("sensor", "odu_outdoor_temp", "ODU Outdoor Temp"),

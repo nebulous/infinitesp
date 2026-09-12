@@ -212,7 +212,7 @@ Full type-by-type reference for every hub option and entity type: [docs/entity-r
 Each zone's sensors and controls, plus the system-wide entities, are generated automatically from the `climate:` blocks you declare. You only need to declare them if you want to change defaults.
 
 - **Per zone** (from each climate block): temperature, humidity, occupancy, zone name, hold state, comfort profile, fan mode select, hold-until time, hold-minutes number, and the damper cover (generated on every zone; it publishes only when a zone controller is on the bus, see [Covers](#covers)).
-- **System-wide**: outdoor temperature, blower RPM, airflow, electric heat, compressor running, bus status, ODU temperature/stage sensors, vacation setpoints, heat source (furnace / heat_pump / electric / none), fault history and fault timestamp.
+- **System-wide**: outdoor temperature, blower RPM, airflow, IDU heat stage, compressor running, bus status, ODU temperature/stage sensors, vacation setpoints, heat source (furnace / heat_pump / electric / none), fault history and fault timestamp. The deprecated `electric_heat` binary sensor no longer publishes (0316[0] is the source-blind IDU heat stage; use `idu_heat_stage` + `heat_source`).
 - **Diagnostics** (entity category diagnostic): IDU/ODU cycle and hour counters, thermostat wifi/dealer strings, thermostat/IDU/ODU manufacture dates, firmware version. Disable the whole group with `auto_diagnostics: false` in the `infinitesp:` block.
 - **Equipment-conditional** (generated disabled by default, enable in HA if your hardware serves them): the variable-speed ODU family — compressor RPM, ODU requested CFM, expansion valve, float registers, discharge/suction temperatures, superheat.
 
@@ -442,7 +442,7 @@ binary_sensor:
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "Bus Status"
-    type: bus_status       # bus_status, compressor_running, electric_heat, occupancy
+    type: bus_status       # bus_status, compressor_running, occupancy (electric_heat deprecated)
   # (active_fault is deprecated and publishes nothing — no fault-active state
   # exists on the bus; its old decode misread a transient flag. Use the
   # fault_timestamp sensor instead.)
