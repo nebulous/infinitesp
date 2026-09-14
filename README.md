@@ -175,6 +175,37 @@ infinitesp:
 
 The TCP and USB CDC transports are provided by [esphome-uart-link](https://github.com/nebulous/esphome-uart-link), a companion ESPHome component that implements UART-over-TCP and UART-over-USB transports. InfinitESP neither knows nor cares which transport backs the UART. They're all interchangeable.
 
+### Bus Capture Stream (JSONL, default on, port 2373)
+
+Streams every bus frame as one JSON object per line with timestamps. This is the capture format to attach to issues: it has timing (unlike REPORT?), and is redacted (unlike the raw tap). The port number spells room temperature: 23°C / 73°F.
+
+```bash
+nc infinitesp.local 2373 | tee capture.jsonl
+```
+
+Each line is one wire frame, like so:
+
+```json
+{"ts":"2026-09-13T17:37:54.226Z","src":"20","dst":"52","func":"0B","reg":"0104","data":"564152205350..."}
+```
+
+`ts` is ISO8601 UTC, taken from the config's `time:` platform automatically (until the clock syncs, or on time-less configs, lines carry boot-relative `"ms"` instead). `src`/`dst` are bus addresses, `func` is the frame function (`0B` read, `0C` write, `06` reply), `reg` is the register number, and `data` is the register payload in hex. Reads carry no payload and show `"data":""`; `null` appears only when a payload had to be omitted (an anomaly worth reporting). The port is output-only: anything a client sends is discarded, so typing into the connection does nothing (the interactive command interface is the SAM ASCII port on 23).
+
+Privacy filtering is applied before anything leaves the device: registers carrying WiFi credentials or dealer information produce no lines at all, and serial-bearing registers keep only the first four serial characters (Carrier serials lead with the week and year of manufacture, which is useful for diagnostics) with the rest masked for safer sharing in public forums.
+
+```yaml
+uart_tcp_server:
+  - id: jsonl_uart
+    port: 2373
+    ...
+
+bus_jsonl:
+  infinitesp_id: infinitesp_hub
+  uart_id: jsonl_uart
+```
+
+Timestamps use whatever `time:` platform the config declares to avoid extra wiring. Leaving it enabled costs little: with no client connected the stream costs almost no cpu and about a kilobyte of RAM. To disable it anyway, comment out the `jsonl_uart` server entry and the `bus_jsonl` block.
+
 ### Raw Bus Tap (Network)
 
 Expose the raw ABCD serial bus over TCP so external tools (Infinitude, Wireshark dissector, custom scripts) can observe the bus in real time. This is useful for protocol analysis and for running Infinitude alongside InfinitESP.
@@ -200,6 +231,8 @@ uart_bridge:
 ```
 
 Connect with `nc infinitesp.local 4242` to see raw hex traffic. The `from_bridge` flow direction means TCP clients can only observe, not inject bytes onto the bus. This is the safer default. Change to `both` for bidirectional access (e.g., running Infinitude through the tap).
+
+> **Warning:** the raw tap is wire-exact: it includes WiFi credentials (registers 4608/4609 travel the bus) and equipment serials. It is a maintainer and bench tool. Never post a raw-tap capture in an issue; use the JSONL stream on port 2373 instead.
 
 > **Warning:** When using `flow: both`, TCP clients share the bus with InfinitESP. The ABCD bus has no arbitration. Simultaneous transmits will collide. Only use bidirectional mode if your tool understands the protocol timing.
 
@@ -697,6 +730,8 @@ esphome logs infinitesp.yaml --device infinitesp.local
 
 **The REPORT? command** provides a quick bus snapshot and often eliminates the need for full logs. It produces a JSON dump of all observed bus traffic, device info, cached registers, and diagnostic counters: a self-contained snapshot of the bus state.
 
+For timing-sensitive problems (mode changes that don't stick, flapping entities, suspected collisions), a JSONL stream capture is better than REPORT? - see [Bus Capture Stream](#bus-capture-stream-jsonl-default-on): `nc infinitesp.local 2373 | tee capture.jsonl` for 30 seconds around the behavior.
+
 To save a clean snapshot to `report.json`, run this one-liner from any machine that can reach the device (Python ships with the ESPHome toolchain. On Windows use `python` instead of `python3`):
 
 ```bash
@@ -709,7 +744,7 @@ Attach `report.json` to your issue. To explore interactively instead (querying l
 nc infinitesp.local 23
 ```
 
-> **Privacy note:** the REPORT output includes device serial numbers (in the `dev` array) and dealer information (in the register dump). WiFi credentials are excluded automatically. If posting the file publicly, open it and remove the `serial` fields first, or share it privately with the maintainer.
+> **Privacy note:** serials and dealer information are redacted in the REPORT output as of v2026.9.4. Device serials keep their first four characters (the week and year of manufacture); the rest of each serial field is masked. WiFi, cloud-account, and dealer registers are omitted entirely. No manual scrubbing is needed before posting. On older versions, open the file and remove the `serial` fields and any register data from `0104`, `060A`, `4608`, `4609`, and `460A` before posting publicly.
 
 **Hardware details** help narrow down firmware-specific issues:
 

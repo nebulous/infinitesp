@@ -24,7 +24,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: infinitesp.esp32-s3-relay-6ch
-    version: 2026.9.3
+    version: 2026.9.4
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -133,15 +133,39 @@ uart_tcp_server:
     max_clients: 4
     client_mode: fanout
     idle_timeout: 300s
+  # jsonl_uart: TCP server for the bus capture stream, port 2373 (the
+  # number is room temperature: 23C/73F). Output-only; nearly free when
+  # nothing is connected. See the bus_jsonl block below and the README.
+  - id: jsonl_uart
+    port: 2373
+    max_clients: 4
+    client_mode: fanout
+    idle_timeout: 300s
+    rx_buffer_size: 1024
+    tx_buffer_size: 2048
 
 sam_ascii:
   id: sam_ascii_server
   infinitesp_id: infinitesp_hub
   uart_id: ascii_uart
 
+# --- Bus capture stream: shareable, scrubbed traffic logs ---
+#   nc infinitesp.local 2373 | tee capture.jsonl
+# Credentials and identifying serials are removed before anything leaves
+# the device, so the file is safer to attach to an issue as-is.
+# see README "Bus Capture Stream" section for detail
+bus_jsonl:
+  infinitesp_id: infinitesp_hub
+  uart_id: jsonl_uart
+
 # --- Optional: Raw bus monitor via TCP ---
 # Mirrors ABCD traffic to a TCP port for external tools:
 #   nc infinitesp.local 4242
+# WARNING: this port carries the wire-exact bytes, potentially including WiFi
+# credentials (register 4608/4609) and full equipment serials. It is a
+# maintainer tool; never post its output in an issue. To record traffic you
+# can share, connect to port 2373 instead: that stream adds timestamps and
+# strips credentials and serials (see the recording block above).
 #
 # The bridge owns the hardware UART and fans bytes to both InfinitESP
 # and the TCP tap. InfinitESP must read from the bridge, not bus_uart.

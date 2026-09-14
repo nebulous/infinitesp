@@ -73,6 +73,10 @@ static const uint8_t TABLEDEF_ROW = 0x01;  // every table's self-describing regi
 static const uint32_t RETRANSMIT_DELAY_MS = 4000;
 // Total sends per queued WRITE frame (primary + retries), bus-idle gated.
 static const uint8_t WRITE_ATTEMPTS = 3;
+// Grace after the final mode-write attempt before checking the served
+// stagmode nibble: the 3B0E ACK is receipt, not adoption. Two fast-poll
+// cycles cover the observed 2-5 s ACK-to-adoption lag with margin.
+static const uint32_t MODE_ADOPT_VERIFY_MS = 10000;
 
 void InfinitESPComponent::setup() {
   ESP_LOGI("InfinitESP", "InfinitESP v%s build %s %s", INFINITESP_VERSION, __DATE__, __TIME__);
@@ -304,6 +308,15 @@ void InfinitESPComponent::loop() {
     uint16_t rk = r.payload.size() >= 3 ? (uint16_t) ((r.payload[1] << 8) | r.payload[2]) : 0;
     ESP_LOGI("InfinitESP", "TX WRITE %04X (retries left %u, %u queued)",
              rk, r.attempts_left, (uint32_t) pending_retransmits_.size());
+    // Arm the deferred adoption check on every mode-write send (3B02 writes
+    // come only from set_system_mode). The thermostat ACKs receipt of each
+    // attempt but can still refuse (nibble 4 from off on dual-fuel, issue
+    // #18, 2026-09-13) or normalize (3/4 -> 0) the value; the last arm wins.
+    if (rk == REG_SAM_STATE && r.payload.size() > REG3B02_STAGMODE + 3 &&
+        (r.payload[5] & CHANGE_MODE)) {
+      mode_verify_nibble_ = r.payload[REG3B02_STAGMODE + 3] & 0x0F;
+      mode_verify_deadline_ms_ = now + MODE_ADOPT_VERIFY_MS;
+    }
     send_frame_(r.dst, r.dst_bus, r.func, r.payload);
     if (r.attempts_left > 0) {
       r.attempts_left--;
@@ -311,6 +324,34 @@ void InfinitESPComponent::loop() {
       pending_retransmits_.push_back(r);
     }
     retransmit_sent = true;
+  }
+
+  // Deferred mode-write adoption check: compare the thermostat's served
+  // stagmode nibble MODE_ADOPT_VERIFY_MS after the last mode-write attempt.
+  // Without this a refused or normalized write is silent (the select just
+  // reverts on the next poll); the WARN names both nibbles so remote logs
+  // distinguish refusal (serving off) from normalization (serving heat).
+  // Judged only while the served stage nibble is 0: above stage 0 the mode
+  // nibble holds the active direction (see ARCHITECTURE, system-mode ADR),
+  // so a mode write landing mid-cycle cannot be assessed; disarm instead
+  // of risking a false WARN (the select revert stays visible either way).
+  if (mode_verify_deadline_ms_ != 0 && (int32_t) (now - mode_verify_deadline_ms_) >= 0) {
+    mode_verify_deadline_ms_ = 0;
+    auto *served_data = get_register(ADDR_THERMOSTAT, REG_SAM_STATE);
+    if (served_data == nullptr)
+      served_data = get_register(sam_address_, REG_SAM_STATE);
+    if (served_data && served_data->size() > REG3B02_STAGMODE) {
+      uint8_t served = served_data->at(REG3B02_STAGMODE);
+      if ((served & 0x0F) != mode_verify_nibble_ && (served >> 4) == 0) {
+        // Unknown nibbles (6-15) must not index-wrap onto a wrong name.
+        auto nibble_name = [](uint8_t n) -> const char * {
+          return n < 6 ? SYSMODE_NAMES[n] : "unknown";
+        };
+        ESP_LOGW("InfinitESP",
+                 "System mode write not adopted: requested %s (nibble %u), thermostat serving %s (nibble %u)",
+                 nibble_name(mode_verify_nibble_), mode_verify_nibble_, nibble_name(served), served);
+      }
+    }
   }
 
   bool fast_poll_sent = false;
@@ -2290,6 +2331,76 @@ void InfinitESPComponent::update_status_led_() {
 
 // --- Bus Traffic Capture ---
 
+// Privacy redaction for the JSONL stream and REPORT?. Two classes:
+//
+// Dropped outright: registers whose entire payload is credentials or
+// dealer PII. Frames are never offered to the stream and entries do not
+// appear in REPORT? regs[]/writes[] - an all-null row carries no signal.
+//
+// Serial-masked: registers that are mostly public (names, models, config
+// tables) but embed install-identifying serials. The first four serial
+// bytes survive - Carrier serials lead with the WWYY week+year of
+// manufacture, which diagnostics want - and the rest of the serial region
+// masks to '*' (0x2A), preserving length and layout. The raw TCP tap
+// (2373/4242) is NOT redacted; it stays the maintainer/bench tool,
+// documented as containing credentials.
+static bool register_is_dropped_(uint16_t reg) {
+  switch (reg) {
+    case REG_TSTAT_WIFI:            // 0x4608: SSID, password, hostname, MAC
+    case 0x4609:                    // cloud endpoint config
+    case 0x460A:                    // dealer name, phone, license
+    case REG_TSTAT_WIFI_PROFILES:   // 0x460B: stored WiFi profiles (passwords)
+    case REG_TSTAT_WIFI_SCAN:       // 0x460C: live WiFi scan results
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Serial regions as register-relative [start, end) byte ranges with the
+// number of leading bytes kept. 0104 carries two serial fields (offsets 84
+// and 96; live-confirmed on tstat/furnace/ODU captures where both hold
+// WWYY-prefixed serials). 060A carries two 16-byte option-board serials at
+// 0 and 16 (Sanhua). Regions beyond the payload length are ignored.
+struct SerialRegion {
+  uint16_t reg;
+  size_t start;
+  size_t keep;
+  size_t end;
+};
+static const SerialRegion SERIAL_REGIONS[] = {
+    {REG_DEVICE_INFO, 84, 4, 96},    // component serial: keep WWYY prefix
+    {REG_DEVICE_INFO, 96, 4, 120},   // device serial: keep WWYY prefix
+    {0x060A, 0, 4, 32},              // option-board serials
+};
+
+static bool register_has_serials_(uint16_t reg) {
+  for (const auto &sr : SERIAL_REGIONS)
+    if (sr.reg == reg)
+      return true;
+  return false;
+}
+
+// Mask serial suffixes in a payload copy ('*' bytes, length-preserving).
+static void redact_serial_regions_(uint16_t reg, uint8_t *data, size_t len) {
+  for (const auto &sr : SERIAL_REGIONS) {
+    if (sr.reg != reg)
+      continue;
+    size_t from = std::min(sr.start + sr.keep, len);
+    size_t to = std::min(sr.end, len);
+    for (size_t i = from; i < to; i++)
+      data[i] = '*';
+  }
+}
+
+// Serials redact in place for REPORT? dev entries: keep the first four
+// characters (the WWYY manufacture week/year), mask the rest, length
+// preserved.
+static void redact_serial_(char *s) {
+  for (size_t i = 4, n = strlen(s); i < n; i++)
+    s[i] = '*';
+}
+
 void InfinitESPComponent::log_traffic_(uint8_t src, uint8_t dst, uint8_t func, uint16_t reg_key,
                                          const std::vector<uint8_t> &payload) {
   TrafficKey key{src, dst, func, reg_key};
@@ -2297,6 +2408,24 @@ void InfinitESPComponent::log_traffic_(uint8_t src, uint8_t dst, uint8_t func, u
   entry.count++;
   entry.last_payload = payload;
   entry.last_seen_ms = millis();
+
+  // JSONL stream: one line per dispatched frame (RX post-validate, TX at
+  // transmit). Dropped registers (credentials/dealer PII) are never offered.
+  // Serial-bearing registers get a masked copy: serial prefixes kept (WWYY
+  // manufacture date derivable), suffixes starred. The data field is the
+  // register bytes (payload after [idx, table, row]).
+  if (frame_sink_ != nullptr && payload.size() >= 3 && !register_is_dropped_(reg_key)) {
+    const uint8_t *data = payload.data() + 3;
+    size_t dlen = payload.size() - 3;
+    uint8_t masked[128];
+    if (register_has_serials_(reg_key) && dlen > 0) {
+      dlen = std::min(dlen, sizeof(masked));
+      memcpy(masked, payload.data() + 3, dlen);
+      redact_serial_regions_(reg_key, masked, dlen);
+      data = masked;
+    }
+    frame_sink_->offer_frame(entry.last_seen_ms, src, dst, func, reg_key, data, dlen);
+  }
 
   // Capture write frames for protocol analysis
   if (func == FUNC_WRITE) {
@@ -2391,6 +2520,7 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
       memcpy(serial, s->second.data(), std::min((size_t) 16, s->second.size()));
       for (int i = 15; i >= 0 && (model[i] == ' ' || model[i] == 0); i--) model[i] = 0;
       for (int i = 15; i >= 0 && (serial[i] == ' ' || serial[i] == 0); i--) serial[i] = 0;
+      redact_serial_(serial);
       n = snprintf(buf, sizeof(buf), "%s{\"address\":\"%02X\",\"name\":\"ODU\",\"model\":",
                    first ? "" : ",", akv.first);
       write_fn((const uint8_t *) buf, n, ctx);
@@ -2409,6 +2539,7 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
     for (int i=23; i>=0 && name[i]==' '; i--) name[i]=0;
     for (int i=19; i>=0 && model[i]==' '; i--) model[i]=0;
     for (int i=23; i>=0 && serial[i]==' '; i--) serial[i]=0;
+    redact_serial_(serial);
     n = snprintf(buf, sizeof(buf), "%s{\"address\":\"%02X\",\"name\":", first?"":",", akv.first);
     write_fn((const uint8_t *)buf, n, ctx);
     emit_json_string_(write_fn, ctx, name);
@@ -2450,11 +2581,24 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
   emit(",\"writes\":[");
   first = true;
   for (auto &wc : write_captures_) {
+    if (register_is_dropped_(wc.reg_key))
+      continue;
+    const uint8_t *hex_src = wc.payload.data();
+    size_t hex_len = wc.payload.size();
+    uint8_t masked[128];
+    if (register_has_serials_(wc.reg_key) && hex_len > 3) {
+      hex_len = std::min(hex_len, sizeof(masked));
+      memcpy(masked, wc.payload.data(), hex_len);
+      // Serial offsets are register-relative; the write payload carries the
+      // [idx, table, row] header first.
+      redact_serial_regions_(wc.reg_key, masked + 3, hex_len - 3);
+      hex_src = masked;
+    }
     n = snprintf(buf, sizeof(buf), "%s{\"src\":\"%02X\",\"dst\":\"%02X\",\"reg\":\"%04X\",\"hex\":\"",
              first?"":",", wc.src, wc.dst, wc.reg_key);
     write_fn((const uint8_t *)buf, n, ctx);
-    for (auto b : wc.payload) {
-      n = snprintf(buf, sizeof(buf), "%02X", b);
+    for (size_t i = 0; i < hex_len; i++) {
+      n = snprintf(buf, sizeof(buf), "%02X", hex_src[i]);
       write_fn((const uint8_t *)buf, n, ctx);
     }
     emit("\"}");
@@ -2462,21 +2606,32 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
   }
   emit("]");
 
-  // Register dump — full hex, no truncation
+  // Register dump — full hex. Dropped registers emit no row; serial-bearing
+  // registers keep their row with serial suffixes starred in the hex
+  // (2A2A..., length and layout preserved).
   emit(",\"regs\":[");
   first = true;
   for (auto &akv : device_registers_) {
     for (auto &rkv : akv.second) {
-      if (rkv.first == REG_TSTAT_WIFI) continue;  // skip WiFi creds
+      if (register_is_dropped_(rkv.first))
+        continue;
+      const uint8_t *hex_src = rkv.second.data();
+      size_t hex_len = rkv.second.size();
+      uint8_t masked[128];
+      if (register_has_serials_(rkv.first) && hex_len > 0) {
+        hex_len = std::min(hex_len, sizeof(masked));
+        memcpy(masked, rkv.second.data(), hex_len);
+        redact_serial_regions_(rkv.first, masked, hex_len);
+        hex_src = masked;
+      }
       n = snprintf(buf, sizeof(buf),
                "%s{\"address\":\"%02X\",\"register\":\"%04X\",\"length\":%u,\"data\":\"",
                first?"":",", akv.first, rkv.first, (unsigned)rkv.second.size());
       write_fn((const uint8_t *)buf, n, ctx);
-      // Full hex dump
-      for (size_t i = 0; i < rkv.second.size(); i++) {
+      for (size_t i = 0; i < hex_len; i++) {
         char hex[3];
-        hex[0] = "0123456789ABCDEF"[rkv.second[i] >> 4];
-        hex[1] = "0123456789ABCDEF"[rkv.second[i] & 0x0F];
+        hex[0] = "0123456789ABCDEF"[hex_src[i] >> 4];
+        hex[1] = "0123456789ABCDEF"[hex_src[i] & 0x0F];
         write_fn((const uint8_t *)hex, 2, ctx);
       }
       emit("\"}");

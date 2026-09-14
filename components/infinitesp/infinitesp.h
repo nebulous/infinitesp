@@ -177,6 +177,10 @@ static const uint8_t SYSMODE_AUTO = 2;
 static const uint8_t SYSMODE_EHEAT = 3;
 static const uint8_t SYSMODE_HEATPUMP = 4;
 static const uint8_t SYSMODE_OFF = 5;
+// Shared name table, index-aligned with the SYSMODE_* constants above.
+// Used by the select and the mode-write adoption WARN in loop(); keep in
+// sync with the nibble semantics in PROTOCOL (stagmode section).
+static const char *const SYSMODE_NAMES[] = {"heat", "cool", "auto", "emergency_heat", "heat_pump", "off"};
 
 // Fan modes
 static const uint8_t FAN_AUTO = 0;
@@ -405,6 +409,23 @@ struct ZCZoneConfig {
 
 class InfinitESPComponent;
 
+// Sink for the optional bus_jsonl stream component: receives every
+// dispatched RX frame (post-validate) and every TX frame at transmit time.
+// Abstract so the hub carries no dependency on the streaming component —
+// external-component staging only pulls what a user's yaml references.
+// The hub redacts before the call: credential/dealer registers are never
+// offered, and serial-bearing registers arrive with serial suffixes masked
+// ('*' bytes; the WWYY manufacture prefix survives).
+class BusFrameSink {
+ public:
+  virtual ~BusFrameSink() = default;
+  virtual void offer_frame(uint32_t ms, uint8_t src, uint8_t dst, uint8_t func,
+                           uint16_t reg, const uint8_t *data, size_t len) = 0;
+  // Contract: data != nullptr renders a data string ("" when the frame has
+  // no data section, i.e. reads); data == nullptr renders null, reserved
+  // for anomalous omissions.
+};
+
 class InfinitESPEntity {
  public:
   virtual void on_register_update(uint8_t device_addr, uint16_t register_key) = 0;
@@ -461,6 +482,9 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_sam_address(uint8_t addr) { sam_address_ = addr; }
   uint8_t get_sam_address() const { return sam_address_; }
   bool sam_enabled() const { return sam_address_ != 0; }
+  // Attach the bus_jsonl stream (see BusFrameSink above). Single sink; a
+  // second bus_jsonl block in yaml would silently replace the first.
+  void set_bus_jsonl(BusFrameSink *sink) { frame_sink_ = sink; }
   void set_zc_address(uint8_t addr) { zc_address_ = addr; }
   uint8_t get_zc_address() const { return zc_address_; }
   bool zc_enabled() const { return zc_address_ != 0; }
@@ -989,6 +1013,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     }
   };
   std::map<TrafficKey, TrafficEntry> traffic_log_;
+  // Optional bus_jsonl stream sink (set_bus_jsonl).
+  BusFrameSink *frame_sink_{nullptr};
   void log_traffic_(uint8_t src, uint8_t dst, uint8_t func, uint16_t reg_key,
                      const std::vector<uint8_t> &payload);
 
@@ -1108,6 +1134,12 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     uint8_t attempts_left;
   };
   std::deque<PendingRetransmit> pending_retransmits_;
+
+  // Deferred mode-write adoption check: armed when the retransmit queue
+  // drains a 3B02 mode write, checked MODE_ADOPT_VERIFY_MS later against
+  // the served stagmode nibble (see loop()).
+  uint32_t mode_verify_deadline_ms_ = 0;
+  uint8_t mode_verify_nibble_ = 0;
 
   // Debounced timed-hold sets from the setter entities (queue_hold_set).
   struct PendingHoldSet {
