@@ -48,6 +48,9 @@ SENSOR_TYPES = {
     # IDU sensors — device class 4
     "blower_rpm": {"key": "blower_rpm", "unit": "RPM", "bus_class": 4},
     "airflow_cfm": {"key": "airflow_cfm", "unit": "ft³/min", "device_class": DEVICE_CLASS_VOLUME_FLOW_RATE, "bus_class": 4},
+    # IDU 0316[0]: heat stage 0-3, source-blind (gas on furnace gear,
+    # elements on fan-coil). heat_source text sensor interprets.
+    "idu_heat_stage": {"key": "idu_heat_stage", "bus_class": 4},
     # ODU sensors — device class 5
     # bare = actual (measured) RPM [2..3] (the original `compressor_rpm` read
     # [0..1] = target; re-pointed to actual). target_compressor_rpm [0..1] is

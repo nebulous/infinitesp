@@ -3,16 +3,18 @@
 namespace esphome {
 namespace infinitesp {
 
-// Index must match SYSMODE_* constants: HEAT=0, COOL=1, AUTO=2, EHEAT=3, OFF=4
-static const char *const SYSTEM_MODES[] = {"heat", "cool", "auto", "emergency_heat", "off"};
+// SYSMODE_NAMES (infinitesp.h) is index-aligned with the SYSMODE_*
+// constants (HEAT=0, COOL=1, AUTO=2, EHEAT=3, HEATPUMP=4, OFF=5) and is the
+// shared name table; guards below stay for safety.
+static const uint8_t SYSTEM_MODE_COUNT = 6;
 static const char *const FAN_MODES[] = {"auto", "low", "med", "high"};
 
 void InfinitESPSelect::control(const std::string &value) {
   if (select_type_ == "system_mode") {
     // Map string back to SYSMODE_* constant
     uint8_t mode = SYSMODE_OFF;  // default
-    for (uint8_t i = 0; i < 5; i++) {
-      if (value == SYSTEM_MODES[i]) {
+    for (uint8_t i = 0; i < SYSTEM_MODE_COUNT; i++) {
+      if (SYSMODE_NAMES[i] && value == SYSMODE_NAMES[i]) {
         mode = i;
         break;
       }
@@ -37,9 +39,9 @@ void InfinitESPSelect::on_register_update(uint8_t device_addr, uint16_t register
     if (data && data->size() >= REG3B02_STAGMODE + 1) {
       uint8_t stagmode = data->at(REG3B02_STAGMODE);
       uint8_t mode = stagmode & 0x0F;
-      if (mode != current_mode_ && mode <= 4) {
+      if (mode != current_mode_ && mode < SYSTEM_MODE_COUNT && SYSMODE_NAMES[mode]) {
         current_mode_ = mode;
-        publish_state(SYSTEM_MODES[mode]);
+        publish_state(SYSMODE_NAMES[mode]);
       }
     }
   } else if (select_type_ == "fan_mode" && register_key == REG_SAM_ZONES) {

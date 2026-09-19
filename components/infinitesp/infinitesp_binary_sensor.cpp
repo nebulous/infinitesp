@@ -11,12 +11,9 @@ void InfinitESPBinarySensor::on_register_update(uint8_t device_addr, uint16_t re
     return;
   }
 
-  // Electric heat: from IDU register 0316 (passive snoop)
-  if (sensor_type_ == "electric_heat" && register_key == REG_IDU_CONFIG) {
-    auto *data = parent_->get_register(device_addr, REG_IDU_CONFIG);
-    if (data && !data->empty())
-      publish_state(parent_->idu_electric_heat_(*data));
-  }
+  // electric_heat is deprecated (see binary_sensor/__init__.py): 0316[0] is
+  // the IDU heat stage, source-blind. Publishes nothing; the idu_heat_stage
+  // sensor and heat_source text sensor carry the fact and interpretation.
 
   // Compressor running: from ODU register 0604 (passive snoop).
   // Uses actual (measured) RPM [2..3], not the commanded target —

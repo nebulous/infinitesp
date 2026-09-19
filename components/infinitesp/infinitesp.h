@@ -164,12 +164,23 @@ static const uint8_t CHANGE_COOL = 0x08;
 static const uint8_t CHANGE_MODE = 0x10;
 static const uint8_t CHANGE_OVERRIDE = 0x80;
 
-// System modes (stagmode low nibble)
+// System modes (stagmode low nibble; heat sources per infinitive's decode,
+// live-verified 2026-09-09/10). 0 = heat with the configured source (furnace
+// on gas gear), 3 = electric-only (fan-coil aux), 4 = heat-pump-only
+// (dual-fuel). Writing 3/4 on gear lacking the source: the thermostat ACKs
+// and normalizes to system heat. 5 = off and fanonly (shared; the blower
+// command IDU 0305 distinguishes them). Nibble 4 is never served on reads by
+// our AC-only rig; read paths render it as heat_pump.
 static const uint8_t SYSMODE_HEAT = 0;
 static const uint8_t SYSMODE_COOL = 1;
 static const uint8_t SYSMODE_AUTO = 2;
 static const uint8_t SYSMODE_EHEAT = 3;
-static const uint8_t SYSMODE_OFF = 4;
+static const uint8_t SYSMODE_HEATPUMP = 4;
+static const uint8_t SYSMODE_OFF = 5;
+// Shared name table, index-aligned with the SYSMODE_* constants above.
+// Used by the select and the mode-write adoption WARN in loop(); keep in
+// sync with the nibble semantics in PROTOCOL (stagmode section).
+static const char *const SYSMODE_NAMES[] = {"heat", "cool", "auto", "emergency_heat", "heat_pump", "off"};
 
 // Fan modes
 static const uint8_t FAN_AUTO = 0;
@@ -300,7 +311,8 @@ static const uint8_t REG3B06_SIZE = 52;
 //
 // Table 0x03 RLCSMAIN:
 static const uint16_t REG_IDU_STATUS = 0x0306;     // Blower RPM, operating info (10 bytes)
-static const uint16_t REG_IDU_CONFIG = 0x0316;      // Airflow CFM, electric heat (14 bytes)
+static const uint16_t REG_IDU_CONFIG = 0x0316;      // Heat stage [0], airflow CFM [4..5] (14 bytes)
+static const uint16_t REG_IDU_AIRFLOW_CMD = 0x0305; // tstat->IDU blower CFM command, BE16 [4..5], write-only
 static const uint16_t REG_IDU_CYCLES = 0x0310;     // Cycle counters (4-byte key-value entries)
 static const uint16_t REG_IDU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-value entries)
 
@@ -397,6 +409,23 @@ struct ZCZoneConfig {
 
 class InfinitESPComponent;
 
+// Sink for the optional bus_jsonl stream component: receives every
+// dispatched RX frame (post-validate) and every TX frame at transmit time.
+// Abstract so the hub carries no dependency on the streaming component —
+// external-component staging only pulls what a user's yaml references.
+// The hub redacts before the call: credential/dealer registers are never
+// offered, and serial-bearing registers arrive with serial suffixes masked
+// ('*' bytes; the WWYY manufacture prefix survives).
+class BusFrameSink {
+ public:
+  virtual ~BusFrameSink() = default;
+  virtual void offer_frame(uint32_t ms, uint8_t src, uint8_t dst, uint8_t func,
+                           uint16_t reg, const uint8_t *data, size_t len) = 0;
+  // Contract: data != nullptr renders a data string ("" when the frame has
+  // no data section, i.e. reads); data == nullptr renders null, reserved
+  // for anomalous omissions.
+};
+
 class InfinitESPEntity {
  public:
   virtual void on_register_update(uint8_t device_addr, uint16_t register_key) = 0;
@@ -431,6 +460,18 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void setup() override;
   void loop() override;
 
+  // True when the thermostat's blower CFM command (IDU 0305) is nonzero.
+  // Distinguishes fan-only (nonzero) from off (0) while both share mode
+  // nibble 5. Returns false when 0305 has not been captured yet.
+  bool idu_blower_commanded_() const;
+  // Class-scoped register store lookup for IDU registers, tolerant of the
+  // commissioned address varying across installs (0x40 here, 0x3E on some).
+  const std::vector<uint8_t> *get_idu_register(uint16_t key) const;
+  // Same for ODU registers (class 5; first matching node wins - installs
+  // with a second class-5 node like the 0x5F refrig board return whichever
+  // serves the key, which in practice is the commissioned ODU).
+  const std::vector<uint8_t> *get_odu_register(uint16_t key) const;
+
   // Timed-hold setter debounce, owned by the hub (the setter entities are
   // plain entities, NOT Components: auto-spawned Component registrations
   // corrupt the loop-slot scheduling and stall this loop entirely — the
@@ -441,6 +482,9 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_sam_address(uint8_t addr) { sam_address_ = addr; }
   uint8_t get_sam_address() const { return sam_address_; }
   bool sam_enabled() const { return sam_address_ != 0; }
+  // Attach the bus_jsonl stream (see BusFrameSink above). Single sink; a
+  // second bus_jsonl block in yaml would silently replace the first.
+  void set_bus_jsonl(BusFrameSink *sink) { frame_sink_ = sink; }
   void set_zc_address(uint8_t addr) { zc_address_ = addr; }
   uint8_t get_zc_address() const { return zc_address_; }
   bool zc_enabled() const { return zc_address_ != 0; }
@@ -889,13 +933,17 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t func,
                        const std::vector<uint8_t> &payload);
   void send_frame_(uint8_t dst, uint8_t dst_bus, uint8_t func, const std::vector<uint8_t> &payload);
-  // Send a WRITE frame now and queue one retransmit RETRANSMIT_DELAY_MS later.
-  // Rides through sporadic bus drops without readback verification. All callers
-  // write idempotent values (setpoints/fan/mode/permanent holds); timed holds
-  // see a sub-minute countdown reset, below the field's minute resolution.
+  // Queue a WRITE frame for transmission from loop(). Entries drain FIFO,
+  // bus-idle gated, with up to WRITE_ATTEMPTS sends per frame. Callers write
+  // idempotent values (setpoints/fan/mode/permanent holds); timed holds see a
+  // sub-minute countdown reset, below the field's minute resolution.
+  // Immediate transmission is NOT done here: an unguarded send can collide
+  // with the thermostat's reply window right after a preceding frame (lost
+  // 3B02 mode write, captured 2026-09-10). The idle gate plus retries rides
+  // out bus contention instead.
   // Coupling: RETRANSMIT_DELAY_MS must stay <= PENDING_SETPOINT_WINDOW_MS/2
-  // (InfinitESPClimate) so a retransmit always lands inside the newest
-  // change's overlay window and cannot cause UI snapback.
+  // (InfinitESPClimate) so a retry always lands inside the newest change's
+  // overlay window and cannot cause UI snapback.
   void send_write_frame_(uint8_t dst, uint8_t dst_bus, const std::vector<uint8_t> &payload);
   void send_reply_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, const std::vector<uint8_t> &payload);
   void send_exception_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t table, uint8_t row, uint8_t code);
@@ -965,6 +1013,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     }
   };
   std::map<TrafficKey, TrafficEntry> traffic_log_;
+  // Optional bus_jsonl stream sink (set_bus_jsonl).
+  BusFrameSink *frame_sink_{nullptr};
   void log_traffic_(uint8_t src, uint8_t dst, uint8_t func, uint16_t reg_key,
                      const std::vector<uint8_t> &payload);
 
@@ -1071,17 +1121,25 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   };
   std::vector<PendingPoll> pending_polls_;
 
-  // Queued write retransmits. Each entry fires once from loop() at fire_ms.
-  // Drained FIFO; with RETRANSMIT_DELAY_MS <= overlay/2, the last-sent value
-  // for a zone always wins on the bus regardless of rapid change ordering.
+  // Queued write frames. Each entry transmits from loop() at fire_ms behind
+  // the bus-idle gate, up to attempts_left + 1 sends total. Drained FIFO; with
+  // RETRANSMIT_DELAY_MS <= overlay/2, the last-sent value for a zone always
+  // wins on the bus regardless of rapid change ordering.
   struct PendingRetransmit {
     uint8_t dst;
     uint8_t dst_bus;
     uint8_t func;   // FUNC_WRITE
     std::vector<uint8_t> payload;
     uint32_t fire_ms;
+    uint8_t attempts_left;
   };
   std::deque<PendingRetransmit> pending_retransmits_;
+
+  // Deferred mode-write adoption check: armed when the retransmit queue
+  // drains a 3B02 mode write, checked MODE_ADOPT_VERIFY_MS later against
+  // the served stagmode nibble (see loop()).
+  uint32_t mode_verify_deadline_ms_ = 0;
+  uint8_t mode_verify_nibble_ = 0;
 
   // Debounced timed-hold sets from the setter entities (queue_hold_set).
   struct PendingHoldSet {

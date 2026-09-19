@@ -11,7 +11,7 @@ InfinitESPSelect = infinitesp_ns.class_("InfinitESPSelect", select.Select, Infin
 SELECT_TYPES = {
     "system_mode": {
         "key": "system_mode",
-        "options": ["heat", "cool", "auto", "emergency_heat", "off"],
+        "options": ["heat", "cool", "auto", "emergency_heat", "heat_pump", "off"],
     },
     "fan_mode": {
         "key": "fan_mode",

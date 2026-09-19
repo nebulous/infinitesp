@@ -203,7 +203,8 @@ void InfinitESPClimate::on_system_mode_commanded(uint8_t sys) {
     case SYSMODE_HEAT:  this->mode = climate::CLIMATE_MODE_HEAT; break;
     case SYSMODE_COOL:  this->mode = climate::CLIMATE_MODE_COOL; break;
     case SYSMODE_AUTO:  this->mode = climate::CLIMATE_MODE_HEAT_COOL; break;
-    case SYSMODE_EHEAT: this->mode = climate::CLIMATE_MODE_HEAT; break;
+    case SYSMODE_EHEAT:
+    case SYSMODE_HEATPUMP: this->mode = climate::CLIMATE_MODE_HEAT; break;
     case SYSMODE_OFF:
     default:            this->mode = climate::CLIMATE_MODE_OFF; break;
   }
@@ -246,7 +247,8 @@ bool InfinitESPClimate::compute_action_() {
     switch (last_mode_) {
       case SYSMODE_HEAT:  action = climate::CLIMATE_ACTION_HEATING; break;
       case SYSMODE_COOL:  action = climate::CLIMATE_ACTION_COOLING; break;
-      case SYSMODE_EHEAT: action = climate::CLIMATE_ACTION_HEATING; break;
+      case SYSMODE_EHEAT:
+      case SYSMODE_HEATPUMP: action = climate::CLIMATE_ACTION_HEATING; break;
       case SYSMODE_AUTO:
         // Demand of this zone (the one being served, damper open). Bus-fresh
         // cached values from 3B02/3B03, not HA-side attributes. Use >= / <= not
@@ -271,6 +273,20 @@ bool InfinitESPClimate::compute_action_() {
 
 void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t register_key) {
   bool changed = false;
+
+  // A blower-command change re-resolves the off/fan-only display while the
+  // mode nibble stays 5: off and fan-only share the nibble, and IDU 0305
+  // (nonzero only while the blower is commanded) separates them. Without
+  // this, the display latches whichever state it saw when the nibble flipped.
+  if (register_key == REG_IDU_AIRFLOW_CMD && sys_mode_ == SYSMODE_OFF) {
+    climate::ClimateMode display = parent_->idu_blower_commanded_()
+                                       ? climate::CLIMATE_MODE_FAN_ONLY
+                                       : climate::CLIMATE_MODE_OFF;
+    if (this->mode != display) {
+      this->mode = display;
+      changed = true;
+    }
+  }
 
   if (register_key == REG_SAM_STATE) {
     auto *data = parent_->get_register(parent_->get_sam_address(), REG_SAM_STATE);
@@ -340,11 +356,20 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       if (can_update_mode && mode != sys_mode_) {
         sys_mode_ = mode;
         switch (mode) {
-          case SYSMODE_HEAT: this->mode = climate::CLIMATE_MODE_HEAT; break;
+          case SYSMODE_HEAT:
+          case SYSMODE_EHEAT:
+          case SYSMODE_HEATPUMP: this->mode = climate::CLIMATE_MODE_HEAT; break;
           case SYSMODE_COOL: this->mode = climate::CLIMATE_MODE_COOL; break;
           case SYSMODE_AUTO: this->mode = climate::CLIMATE_MODE_HEAT_COOL; break;
-          case SYSMODE_EHEAT: this->mode = climate::CLIMATE_MODE_HEAT; break;
           case SYSMODE_OFF:
+            // Off and fan-only share nibble 5. The thermostat's blower CFM
+            // command (IDU 0305, nonzero only while the blower is commanded)
+            // separates them: display fan_only when it is running. Display
+            // only - there is no bus path to command fan-only (2026-09-09
+            // investigation; wall UI and cloud only).
+            this->mode = parent_->idu_blower_commanded_() ? climate::CLIMATE_MODE_FAN_ONLY
+                                                          : climate::CLIMATE_MODE_OFF;
+            break;
           default: this->mode = climate::CLIMATE_MODE_OFF; break;
         }
         // Update setpoints based on mode: single target for heat/cool, dual for heat_cool

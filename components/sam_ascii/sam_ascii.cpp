@@ -7,9 +7,10 @@ namespace sam_ascii {
 
 static const char *const TAG = "sam_ascii";
 
-// Mode names indexed by SYSMODE_* values (0=HEAT, 1=COOL, 2=AUTO, 3=EHEAT, 4=OFF)
-static const char *const MODE_NAMES[] = {"HEAT", "COOL", "AUTO", "EHEAT", "OFF"};
-static const uint8_t MODE_COUNT = 5;
+// Mode names indexed by SYSMODE_* values (0=HEAT, 1=COOL, 2=AUTO, 3=EHEAT,
+// 4=HEATPUMP, 5=OFF). Fully dense.
+static const char *const MODE_NAMES[] = {"HEAT", "COOL", "AUTO", "EHEAT", "HEATPUMP", "OFF"};
+static const uint8_t MODE_COUNT = 6;
 
 // Fan mode names indexed by FAN_* values (0=AUTO, 1=LOW, 2=MED, 3=HIGH)
 static const char *const FAN_NAMES[] = {"AUTO", "LOW", "MED", "HIGH"};

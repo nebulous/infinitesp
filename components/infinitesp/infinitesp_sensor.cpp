@@ -191,6 +191,15 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
+  // IDU heat stage from register 0316 byte 0: 0 off, 1/2/3 low/med/hi.
+  // Source-blind (gas burners on furnace gear, elements on fan-coil); the
+  // heat_source text sensor carries the interpretation, this carries the fact.
+  if (register_key == REG_IDU_CONFIG && sensor_type_ == "idu_heat_stage") {
+    auto *data = parent_->get_register(device_addr, REG_IDU_CONFIG);
+    if (data && !data->empty())
+      value = (float) ((*data)[0] & 0x0F);
+  }
+
   // ODU (Outdoor Unit) passively snooped registers
   // Compressor RPM from register 0604. Two uint16 BE pairs per stage:
   //   target (commanded) at [0..1], actual (measured) at [2..3].

@@ -16,6 +16,13 @@ def _warn_deprecated(config):
             "exists on the bus (its old decode misread a transient flag). It will not "
             "publish. Use the 'fault_timestamp' sensor instead."
         )
+    if config[CONF_TYPE] == "electric_heat":
+        _LOGGER.warning(
+            "The 'electric_heat' binary sensor is deprecated: 0316[0] is the IDU heat "
+            "stage and is source-blind (it fires on gas heat too on furnace gear). It "
+            "will not publish. Use the 'idu_heat_stage' sensor and the 'heat_source' "
+            "text sensor instead."
+        )
     return config
 
 CONF_ZONE = "zone"
@@ -25,7 +32,6 @@ InfinitESPBinarySensor = infinitesp_ns.class_("InfinitESPBinarySensor", binary_s
 # value = {"bus_class": <device-class nibble>, "device_class": optional HA default}
 BINARY_SENSOR_TYPES = {
     "bus_status": {"bus_class": 0},          # not register-based
-    "electric_heat": {"bus_class": 4},       # IDU register
     "compressor_running": {"bus_class": 5},  # ODU register
     # Per-zone: SAM 3B02 offset-21 zones_unoccupied flag (occupied = bit clear).
     # NOTE this is the thermostat's occupied/away schedule state, not motion.
@@ -34,6 +40,10 @@ BINARY_SENSOR_TYPES = {
     # decode read a transient newborn flag). Kept for config compatibility only:
     # warns at validation and publishes nothing. Use the fault_timestamp sensor.
     "active_fault": {"bus_class": 0},
+    # DEPRECATED: 0316[0] is the IDU heat stage, source-blind (fires on gas
+    # heat on furnace gear). Kept for config compatibility only: warns at
+    # validation and publishes nothing. Use idu_heat_stage + heat_source.
+    "electric_heat": {"bus_class": 4},
 }
 
 CONFIG_SCHEMA = cv.All(

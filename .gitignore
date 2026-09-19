@@ -1,16 +1,15 @@
-# ESPHome build artifacts
-.esphome/
 
-# Secrets
-secrets.yaml
-
-# Python cache
 __pycache__/
+.claude/
+.esphome/
 *.pyc
-
+*.swp
 # Dev-only files
+# ESPHome build artifacts
+# Python cache
+# Secrets
 AGENTS.md
 DEVLOG.md
-.claude/
-private/
 infinitesp-*.yaml
+private/
+secrets.yaml
