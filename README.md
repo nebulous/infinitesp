@@ -91,7 +91,7 @@ ssid: "YourWiFiNetwork"
 password: "YourWiFiPassword"
 ```
 
-Review `infinitesp.yaml` and set up one `climate:` block per zone you have (1-8). Everything else — per-zone sensors, hold state, fan and damper entities, and the full system sensor set — is generated automatically from your zone list. Declare any entity explicitly only if you want to customize its name or behavior.
+Review `infinitesp.yaml` and set up one `climate:` block per zone you have (1-8). Everything else — per-zone sensors, hold state, fan and damper entities, and the full system sensor set — is generated automatically from your zone list. Declare any entity explicitly only if you want to customize its name or behavior. The config enables SAM emulation only; zone controller emulation ships commented out and is for zoned systems with real dampers (see the [Zone Controller](#zone-controller-optional) section).
 
 ### 3. First Flash (USB)
 
@@ -277,8 +277,11 @@ Notes:
 infinitesp:
   id: infinitesp_hub
   uart_id: bus_uart
-  sam_address: 0x92  # SAM address. 0x93 = FakeSAM test mode, 0 = disabled (passive monitor)
-  zone_controller_address: 0x60  # Zone Controller address. 0 = no emulation (passive monitor of a real ZC if present)
+  sam_address: 0x92  # SAM address. 0x93 = FakeSAM test mode, 0 = disabled (passive monitor; set 0 if a physical SAM is installed)
+  # Zone controller emulation, OFF by default: enable only on a zoned system
+  # with real dampers wired to the cover on_change trigger (see the warning
+  # below). At 0 a real ZC is still passively monitored.
+  # zone_controller_address: 0x60
   # Optional: pin the indoor/outdoor unit to an exact bus node (default 0 = class
   # matching). For installs whose unit sits off the usual class nibble, e.g. a
   # furnace at 0x3E, or to keep a second class-5 node (refrigerant board) out of

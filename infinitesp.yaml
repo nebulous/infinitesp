@@ -192,12 +192,15 @@ bus_jsonl:
 
 # SAM and zone-controller emulation are independent and each gated on its
 # address being nonzero. Set sam_address to enable SAM emulation (climate,
-# selects, holds, system mode). Set zone_controller_address to EMULATE a zone
-# controller at 0x60 (lets you inject external zone temp sensors and actuate
-# dampers). Leave either at 0 to only snoop the bus without emulating that
-# device: with zone_controller_address at 0, InfinitESP still passively
-# monitors a real physical ZC already on the bus. Damper covers and per-zone
-# climate heating/cooling action then reflect the real damper state.
+# selects, holds, system mode); set it to 0 if a physical SAM is installed.
+# Set zone_controller_address to EMULATE a zone controller at 0x60 (lets you
+# inject external zone temp sensors and actuate dampers). It ships commented
+# out because emulation is only for zoned systems with real dampers wired to
+# the cover on_change trigger: the thermostat's recurring damper checkout
+# stops conditioning while it runs and never validates without real dampers
+# (see README, Zone Controller). With zone_controller_address at 0,
+# InfinitESP still passively monitors a real physical ZC already on the bus,
+# and damper covers and per-zone action reflect the real damper state.
 #
 # WARNING: ZC EMULATION REQUIRES REAL DAMPERS. When the thermostat commissions
 # a zone it runs a duct checkout that maps damper position to airflow by
@@ -214,8 +217,13 @@ bus_jsonl:
 infinitesp:
   id: infinitesp_hub
   uart_id: bus_uart           # Change to bus_cdcuart or bus_tcpuart if using those
-  sam_address: 0x92               # Nonzero = SAM emulation active. 0x92 = SAM, 0x93 = FakeSAM (test), 0 = passive
-  zone_controller_address: 0x60   # Nonzero = emulate ZC at 0x60. 0 = no emulation (still passively monitors a real ZC if present)
+  sam_address: 0x92               # Nonzero = SAM emulation active. 0x92 = SAM, 0x93 = FakeSAM (test), 0 = passive (use 0 if a physical SAM is installed)
+  # Zone controller emulation, OFF by default: enable only on a zoned system
+  # with real dampers wired to the cover on_change trigger. The damper
+  # checkout stops conditioning while it runs and never validates without
+  # real dampers (README, Zone Controller). At 0 a real ZC is still passively
+  # monitored.
+  # zone_controller_address: 0x60
   # flow_control_pin: GPIO13   # RS485 DE/RE control (available if needed, but better to use the same option on your uart: config)
   # status_light_id: rgb_led  # Status LED reference (see light: section below)
 
