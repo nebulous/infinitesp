@@ -2,7 +2,13 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import select
 from esphome.const import CONF_ID, CONF_TYPE
-from .. import InfinitESPEntity, CONF_INFINITESP_ID, infinitesp_ns, register_infinitesp_entity
+from .. import (
+    InfinitESPEntity,
+    CONF_INFINITESP_ID,
+    infinitesp_ns,
+    register_infinitesp_entity,
+    system_mode_options,
+)
 
 CONF_ZONE = "zone"
 
@@ -11,7 +17,10 @@ InfinitESPSelect = infinitesp_ns.class_("InfinitESPSelect", select.Select, Infin
 SELECT_TYPES = {
     "system_mode": {
         "key": "system_mode",
-        "options": ["heat", "cool", "auto", "emergency_heat", "heat_pump", "off"],
+        # Base options only; emergency_heat/heat_pump are appended by
+        # system_mode_options() when a hub sets experimental_heat_source_modes
+        # (they do not select the heat source and misbehave on some tstats).
+        "options": ["heat", "cool", "auto", "off"],
     },
     "fan_mode": {
         "key": "fan_mode",
@@ -31,7 +40,8 @@ async def to_code(config):
     stype = config[CONF_TYPE]
     info = SELECT_TYPES[stype]
     var = cg.new_Pvariable(config[CONF_ID])
-    await select.register_select(var, config, options=info["options"])
+    options = system_mode_options() if stype == "system_mode" else info["options"]
+    await select.register_select(var, config, options=options)
     cg.add(var.set_zone(config[CONF_ZONE]))
     cg.add(var.set_select_type(info["key"]))
     await register_infinitesp_entity(var, config)

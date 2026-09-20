@@ -500,6 +500,11 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_odu_address(uint8_t addr) { odu_address_ = addr; }
   uint8_t get_odu_address() const { return odu_address_; }
 
+  // Opt-in for the emergency_heat/heat_pump mode writes (nibbles 3/4). Off by
+  // default; set_system_mode() refuses those modes unless enabled.
+  void set_experimental_heat_source_modes(bool enable) { experimental_heat_source_modes_ = enable; }
+  bool heat_source_modes_enabled() const { return experimental_heat_source_modes_; }
+
   // Device-role matchers: exact node when pinned, else the class nibble.
   bool is_idu_addr_(uint8_t addr) const {
     return idu_address_ != 0 ? addr == idu_address_ : (addr >> 4) == CLASS_INDOOR_UNIT;
@@ -1068,6 +1073,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint8_t zc_address_{0};  // 0 = zone controller emulation disabled
   uint8_t idu_address_{0};  // 0 = IDU class matching (default)
   uint8_t odu_address_{0};  // 0 = ODU class matching (default)
+  bool experimental_heat_source_modes_{false};
   ZCZoneConfig zc_zones_[9];  // index 0=unused, 1-8=zones (2-8 may have external sensors)
   ZCZoneConfig zc_lat_;       // LAT thermistor (register 0302 id 0x14)
   ZCZoneConfig zc_hpt_;       // HPT thermistor (register 0302 id 0x1C)

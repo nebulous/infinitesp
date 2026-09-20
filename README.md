@@ -16,7 +16,7 @@ InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address 
 | **Covers** | Per-zone damper position (0–100%) from the zone controller (either an emulated or a real physical zone controller) |
 | **Sensors** | Zone temperature, zone humidity, outdoor air temp, blower RPM, airflow CFM, compressor RPM, ODU demand/stage/modulation, expansion valve position, superheat/subcooling targets & actuals, ODU temperatures (outdoor/coil/suction/discharge) plus suction superheat, vacation min/max temps |
 | **Binary Sensors** | Bus online/offline status, compressor running, electric heat active, per-zone occupancy (active_fault deprecated) |
-| **Selects** | System mode (heat/cool/auto/off/emergency heat), per-zone fan speed (auto/low/med/high) |
+| **Selects** | System mode (heat/cool/auto/off; emergency heat/heat pump behind an experimental flag), per-zone fan speed (auto/low/med/high) |
 | **Text Sensors** | Zone names, hold state, thermostat WiFi SSID/hostname/MAC, proxy server, dealer info, comfort profile dump |
 
 
@@ -287,6 +287,12 @@ infinitesp:
   # odu_address: 0x57
   # Optional: temperature unit detection (default: auto)
   # temperature_unit: auto     # read from bus, or force F / C
+  # Experimental, off by default: adds emergency_heat / heat_pump to the System
+  # Mode select and the MODE! command. These writes do not select the heat source
+  # (that setting lives in the thermostat; the bus only carries the result), and on
+  # Next Gen Infinity thermostats the heat_pump write has been observed turning the
+  # system off. Enable only for protocol experiments, not for control.
+  # experimental_heat_source_modes: true
   # Optional status LED (mutually exclusive):
   status_light_id: rgb_led    # Reference an existing ESPHome light (RGB supported)
   # status_led_pin: GPIO2      # Or just a GPIO pin for a simple LED
@@ -493,7 +499,9 @@ select:
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
     name: "System Mode"
-    type: system_mode      # system_mode (global): heat/cool/auto/emergency_heat/heat_pump/off
+    type: system_mode      # system_mode (global): heat/cool/auto/off
+                           # (+ emergency_heat/heat_pump only with
+                           #  experimental_heat_source_modes, see the note below)
 
   - platform: infinitesp
     infinitesp_id: infinitesp_hub
@@ -501,6 +509,8 @@ select:
     type: fan_mode         # fan_mode (per-zone, requires zone:)
     zone: 1
 ```
+
+**Heat-source control is not on the bus.** The `heat_source` text sensor reports what the system is running (furnace / heat_pump / electric / none), but no bus path sets it: the selection lives in the thermostat (wall or Carrier app), and the emergency_heat / heat_pump mode writes never select it. On Next Gen Infinity thermostats the `heat_pump` write has additionally been observed turning the system off mid-call, and `off` writes can be ignored while heating. Those two options are hidden from the System Mode select unless `experimental_heat_source_modes` is set on the hub, and every use logs a warning. Treat them as protocol experiments, not control.
 
 ### Text Sensors
 
@@ -618,7 +628,7 @@ Prefix with `Z#` for other zones (e.g., `Z2HTSP?`).
 Append `!` and a value to set parameters:
 
 ```
-MODE!COOL           # Set system mode (HEAT/COOL/AUTO/EHEAT/HEATPUMP/OFF)
+MODE!COOL           # Set system mode (HEAT/COOL/AUTO/OFF; EHEAT/HEATPUMP need experimental_heat_source_modes and NAK otherwise)
 Z1HTSP!72            # Set zone 1 heat setpoint
 Z1CLSP!68            # Set zone 1 cool setpoint
 Z1FAN!AUTO           # Set zone 1 fan mode

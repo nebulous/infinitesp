@@ -87,6 +87,10 @@ void InfinitESPComponent::setup() {
     ESP_LOGI("InfinitESP", "IDU pinned at 0x%02X (exact match, class matching off)", idu_address_);
   if (odu_address_ != 0)
     ESP_LOGI("InfinitESP", "ODU pinned at 0x%02X (exact match, class matching off)", odu_address_);
+  if (experimental_heat_source_modes_)
+    ESP_LOGW("InfinitESP",
+             "EXPERIMENTAL heat-source modes enabled: emergency_heat/heat_pump writes do not "
+             "select the heat source and can stop conditioning on some thermostats");
 
   // Hub-pinned unit addresses: push the exact node into every IDU/ODU-scoped
   // entity (bus_class 4/5 — the role marker the curated entity types spawn
@@ -1798,6 +1802,25 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
 
 void InfinitESPComponent::set_system_mode(uint8_t mode) {
   if (!sam_enabled()) return;
+  // Heat-source mode writes (nibbles 3/4) are opt-in. They do not select the
+  // heat source: no tstat has ever served either value, and the selection
+  // appears to live in the thermostat itself (PROTOCOL, Stagmode). On a Next
+  // Gen UI tstat the heat_pump write has been observed shutting a running
+  // system off entirely (issue #18, 2026-09-19). Gated here so every input
+  // surface (select, ASCII MODE!) is covered at one choke point.
+  if (mode == SYSMODE_EHEAT || mode == SYSMODE_HEATPUMP) {
+    if (!experimental_heat_source_modes_) {
+      ESP_LOGW("InfinitESP",
+               "Refusing %s mode write: heat-source modes are experimental and disabled "
+               "(hub experimental_heat_source_modes)",
+               SYSMODE_NAMES[mode]);
+      return;
+    }
+    ESP_LOGW("InfinitESP",
+             "%s mode write is experimental: it does not select the heat source and behaves "
+             "inconsistently across thermostat models",
+             SYSMODE_NAMES[mode]);
+  }
   auto *state_data = get_register(sam_address_, REG_SAM_STATE);
   if (!state_data || state_data->size() < REG3B02_SIZE) {
     ESP_LOGW("InfinitESP", "Set system mode=%d FAILED: no cached 3B02 data", mode);

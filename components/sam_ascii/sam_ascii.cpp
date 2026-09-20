@@ -216,6 +216,17 @@ void SamAsciiComponent::process_line_(const std::string &line) {
         if (write_val == MODE_NAMES[i]) { new_mode = i; break; }
       }
       if (new_mode == 0xFF) { respond_nak_(prefix, "VAL"); return; }
+      // EHEAT/HEATPUMP are experimental and off by default: they do not select
+      // the heat source, and the HEATPUMP write has shut down a Next Gen
+      // tstat mid-call (issue #18). set_system_mode() gates the same modes
+      // for the select path.
+      if ((new_mode == SYSMODE_EHEAT || new_mode == SYSMODE_HEATPUMP) &&
+          !parent_->heat_source_modes_enabled()) {
+        ESP_LOGW(TAG, "MODE %s refused: experimental heat-source modes disabled "
+                      "(hub experimental_heat_source_modes)", write_val.c_str());
+        respond_nak_(prefix, "VAL");
+        return;
+      }
       parent_->set_system_mode(new_mode);
       respond_(prefix, "ACK");
       return;

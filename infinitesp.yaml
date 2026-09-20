@@ -24,7 +24,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: infinitesp.esp32-s3-relay-6ch
-    version: 2026.9.4
+    version: 2026.9.5
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -234,6 +234,14 @@ infinitesp:
   # zc_hpt:
   #   temperature_sensor: my_hpt_sensor
   #   sensor_unit: F
+
+  # Experimental, off by default: adds emergency_heat / heat_pump to the
+  # System Mode select and the MODE! command. These writes do not select the
+  # heat source (that setting lives in the thermostat; the bus only carries
+  # the result), and on Next Gen Infinity thermostats the heat_pump write has
+  # been observed turning the system off. Enable only for protocol
+  # experiments, not for control.
+  # experimental_heat_source_modes: true
 
 # ──────────────────────────────────────────────
 # Climate zones

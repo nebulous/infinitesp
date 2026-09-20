@@ -135,6 +135,19 @@ def _validate_status_led(config):
 
 
 CONF_AUTO_DIAGNOSTICS = "auto_diagnostics"
+CONF_EXPERIMENTAL_HEAT_SOURCE_MODES = "experimental_heat_source_modes"
+
+
+def _validate_experimental_modes(config):
+    """Warn when the experimental heat-source mode options are enabled."""
+    if config.get(CONF_EXPERIMENTAL_HEAT_SOURCE_MODES):
+        _LOGGER.warning(
+            "experimental_heat_source_modes is enabled: emergency_heat/heat_pump "
+            "writes are experimental and unreliable. They do not select the heat "
+            "source on dual-fuel systems, and on some Next Gen thermostats the "
+            "heat_pump write turns the system off. Do not rely on them for control"
+        )
+    return config
 
 
 CONFIG_SCHEMA = cv.All(
@@ -165,6 +178,13 @@ CONFIG_SCHEMA = cv.All(
             # fault timestamp). Core and equipment-conditional entities always
             # spawn; see auto_entities.py.
             cv.Optional(CONF_AUTO_DIAGNOSTICS, default=True): cv.boolean,
+            # Opt-in for the emergency_heat/heat_pump system-mode options. Off
+            # by default: those mode writes do not select the heat source (the
+            # selection lives in the thermostat), and on Next Gen Infinity
+            # tstats the heat_pump write has been observed turning the system
+            # off (issue #18). Gated at set_system_mode(), the choke point for
+            # every input surface.
+            cv.Optional(CONF_EXPERIMENTAL_HEAT_SOURCE_MODES, default=False): cv.boolean,
             # ZC zone temperature sensor references (requires zone_controller_address).
             # Zones 2-4 are on the primary controller (0x60); 5-8 on a second
             # controller at +1 (0x61). Zone 1 is always thermostat-direct.
@@ -186,6 +206,7 @@ CONFIG_SCHEMA = cv.All(
     _validate_unit_addresses,
     _validate_status_led,
     _validate_zc_config,
+    _validate_experimental_modes,
 )
 
 INFINITESP_DEVICE_SCHEMA = cv.Schema(
@@ -193,6 +214,26 @@ INFINITESP_DEVICE_SCHEMA = cv.Schema(
         cv.GenerateID(CONF_INFINITESP_ID): cv.use_id(InfinitESPComponent),
     }
 )
+
+
+# System-mode select options. The base four are reliable everywhere tested.
+# emergency_heat/heat_pump (mode nibbles 3/4) never select the heat source and
+# behave inconsistently across thermostat families, so they appear only when a
+# hub sets experimental_heat_source_modes. Read at to_code time from the hub
+# blocks because the select platform (auto-spawned or manual) only sees its own
+# config.
+BASE_SYSTEM_MODE_OPTIONS = ["heat", "cool", "auto", "off"]
+EXPERIMENTAL_SOURCE_MODE_OPTIONS = ["emergency_heat", "heat_pump"]
+
+
+def system_mode_options():
+    from esphome.core import CORE
+
+    blocks = CORE.config.get("infinitesp") or []
+    if any(isinstance(b, dict) and b.get(CONF_EXPERIMENTAL_HEAT_SOURCE_MODES)
+           for b in blocks):
+        return BASE_SYSTEM_MODE_OPTIONS + EXPERIMENTAL_SOURCE_MODE_OPTIONS
+    return list(BASE_SYSTEM_MODE_OPTIONS)
 
 
 async def register_infinitesp_entity(var, config):
@@ -213,6 +254,8 @@ async def to_code(config):
 
     if config[CONF_ZONE_CONTROLLER_ADDRESS] != 0:
         cg.add(var.set_zc_address(config[CONF_ZONE_CONTROLLER_ADDRESS]))
+
+    cg.add(var.set_experimental_heat_source_modes(config[CONF_EXPERIMENTAL_HEAT_SOURCE_MODES]))
 
     # Wire up ZC zone temperature sensor references. Zones 2-4 → primary
     # controller (0x60); 5-8 → secondary controller (0x61).
