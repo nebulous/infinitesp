@@ -1871,6 +1871,49 @@ void InfinitESPComponent::set_system_mode(uint8_t mode) {
     e->on_system_mode_commanded(mode);
 }
 
+void InfinitESPComponent::set_displayed_zone(uint8_t zone) {
+  if (!sam_enabled())
+    return;
+  if (zone < 1 || zone > 8) {
+    ESP_LOGW("InfinitESP", "Displayed zone %u out of range (1-8)", zone);
+    return;
+  }
+  auto *state_data = get_register(sam_address_, REG_SAM_STATE);
+  // A short or missing 3B02 means the mirror has not filled yet. Writing a
+  // partial register would zero every field we do not carry (time, stagmode,
+  // zone temps), so refuse instead.
+  if (!state_data || state_data->size() < REG3B02_SIZE) {
+    ESP_LOGW("InfinitESP", "Set displayed zone=%u FAILED: no cached 3B02 data", zone);
+    return;
+  }
+
+  std::vector<uint8_t> data = *state_data;
+  // Time bytes (weekday/minutes) ride along verbatim from the cached mirror.
+  // The UIZ generation resets its internal seconds on any 3B02 write, and
+  // carrying the last broadcast time bounds the skew the way infinitive does
+  // (issue #37).
+  data[REG3B02_DISPLAYED_ZONE] = zone;
+  mirror_to_sam_(REG_SAM_STATE, data);
+
+  // Same two-pronged recipe as set_system_mode: the 3B03 notify with the
+  // mode flag primes the notify-pull path, then the 3B02 write delivers the
+  // data. All four experiment variants were ACKed on 2026-09-20; adoption of
+  // byte 28 works on the UIZ family and is ignored by newer touch units, so
+  // an ACK here does not imply the display changed.
+  auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
+  if (zones_data && zones_data->size() >= 11) {
+    std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, 0x00, 0x00, CHANGE_MODE};
+    payload.insert(payload.end(), zones_data->begin() + 3, zones_data->end());
+    send_write_frame_(ADDR_THERMOSTAT, 0x01, payload);
+  }
+  {
+    std::vector<uint8_t> payload_3b02 = {0x00, 0x3B, 0x02, 0x00, 0x00, CHANGE_MODE};
+    payload_3b02.insert(payload_3b02.end(), data.begin() + 3, data.end());
+    send_write_frame_(ADDR_THERMOSTAT, 0x01, payload_3b02);
+  }
+  ESP_LOGI("InfinitESP", "Set displayed zone=%u", zone);
+}
+
 // --- Default Register Initialization ---
 
 // Pad/zero-fill a fixed-width ASCII field into a register buffer. Carrier's

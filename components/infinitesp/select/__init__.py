@@ -26,6 +26,15 @@ SELECT_TYPES = {
         "key": "fan_mode",
         "options": ["auto", "low", "med", "high"],
     },
+    # Which zone the wall control displays (SAM 3B02 byte 28). Manual-only,
+    # system-wide, zone key ignored (same as system_mode). Reads track the
+    # display; writes are ACKed by every tstat tested and adopted only by the
+    # older UI family (issue #37). Options are plain strings so the state maps
+    # straight to the register byte.
+    "displayed_zone": {
+        "key": "displayed_zone",
+        "options": ["1", "2", "3", "4", "5", "6", "7", "8"],
+    },
 }
 
 CONFIG_SCHEMA = select.select_schema(InfinitESPSelect).extend(

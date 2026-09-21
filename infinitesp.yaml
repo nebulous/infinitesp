@@ -24,7 +24,7 @@ esphome:
   name_add_mac_suffix: false
   project:
     name: infinitesp.esp32-s3-relay-6ch
-    version: 2026.9.5
+    version: 2026.9.6
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -397,6 +397,19 @@ text_sensor:
   # manufacture_date replaces the generated one for its class: device_address
   # pins one exact bus node (two devices in one class), bus_class selects a
   # class, bare covers the thermostat; the two keys are mutually exclusive.
+
+select:
+  # System mode and per-zone fan mode selects are generated automatically.
+  # The displayed-zone select is manual and system-wide: it reads which zone
+  # the wall control shows (3B02 byte 28) and sets it the way a real SAM01's
+  # S1ZONE! command does. ACKed by every thermostat tested; the display only
+  # switches on the older UI family (issue #37: useful when the wall
+  # control's Zone button is broken). Newer touch controls ACK and ignore,
+  # and the entity reverts on the next bus poll (~6 s).
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Displayed Zone"
+    type: displayed_zone
 
 button:
   - platform: restart

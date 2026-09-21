@@ -594,6 +594,10 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zone_fan(uint8_t zone, uint8_t fan_mode);
   void set_zone_hold(uint8_t zone, uint16_t duration_minutes);
   void set_system_mode(uint8_t mode);
+  // Sets SAM 3B02 byte 28 (which zone the wall unit displays). ACKed by every
+  // tstat tested; adoption is generation-dependent (UIZ family yes, newer
+  // SYSTXCC touch units ignore it). Issue #37, verified 2026-09-20.
+  void set_displayed_zone(uint8_t zone);
 
   // --- Vacation (SAM 3B04) ASCII domain methods ---
   // Each setter updates the vacation_* member (the source of truth for sam_ascii

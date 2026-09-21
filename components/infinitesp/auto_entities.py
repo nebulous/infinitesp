@@ -124,7 +124,9 @@ SYSTEM_CONDITIONAL = [
 
 # Zone-scoped types per domain: suppression matches on (type, zone). Every
 # other type is system-wide for suppression purposes: any explicit block of
-# that type suppresses the auto spawn.
+# that type suppresses the auto spawn. The select's displayed_zone flavor is
+# manual-only (never spawns); zone is fan_mode-scoped like the cover/datetime
+# None types.
 _ZONE_SCOPED = {
     "sensor": {"temperature", "humidity"},
     "binary_sensor": {"occupancy"},

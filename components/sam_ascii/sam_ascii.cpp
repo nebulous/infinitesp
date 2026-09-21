@@ -232,6 +232,18 @@ void SamAsciiComponent::process_line_(const std::string &line) {
       return;
     }
 
+    if (write_cmd == "ZONE") {
+      int zone = atoi(write_val.c_str());
+      // System-level: sets 3B02 byte 28 regardless of any S<N>/zone prefix
+      // in the command. Adoption is generation-dependent (works on UIZ,
+      // ACKed-but-ignored by newer touch units); the ACK reflects transport,
+      // not adoption.
+      if (zone < 1 || zone > 8) { respond_nak_(prefix, "VAL"); return; }
+      parent_->set_displayed_zone((uint8_t) zone);
+      respond_(prefix, "ACK");
+      return;
+    }
+
     if (write_cmd == "HTSP") {
       int temp = atoi(write_val.c_str());
       if (temp < 40 || temp > 99) { respond_nak_(prefix, "VAL"); return; }

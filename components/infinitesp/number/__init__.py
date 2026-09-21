@@ -10,6 +10,7 @@ InfinitESPNumber = infinitesp_ns.class_("InfinitESPNumber", number.Number, Infin
 # One flavor ("hold_minutes" — remaining timed-hold minutes, settable), so no
 # `type` key. Zone-scoped like the cover and datetime platforms. NOT a
 # Component: see infinitesp_number.h for why the hub owns the debounce.
+# (Displayed zone is a select, not a number.)
 CONFIG_SCHEMA = number.number_schema(
     InfinitESPNumber, unit_of_measurement="min", icon="mdi:timer-outline"
 ).extend(

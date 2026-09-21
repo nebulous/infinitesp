@@ -186,6 +186,19 @@ generated twin for that class.
 |---|---|---|---|
 | `system_mode` | - | core | heat, cool, auto, emergency_heat, off |
 | `fan_mode` | yes | per-zone | auto, low, med, high |
+| `displayed_zone` | ignored | manual | 1-8 |
+
+`displayed_zone` is which zone the wall control displays: SAM register 3B02
+byte 28, options "1"-"8" mapped straight to the byte. Manual-only and
+system-wide (the zone key is ignored, same as system_mode). Reads follow the
+wall control's zone button: byte 28 changes within a few seconds of a press,
+and the entity publishes on the next 3B02 poll (~6 s fast poll, ~1 min
+broadcast). It requires SAM emulation (`sam_address` nonzero); on passive
+installs the register is never served and the entity stays unknown. Setting
+it sends the same write a real SAM01 makes for `S1ZONE!`. Every thermostat
+tested ACKs the write; whether the display switches depends on the wall
+control's generation. The older UI family (UIZ-era) are said to adopt it(issue #37)
+and newer touch models ack and revert without changing the displayed value.
 
 ## Covers
 
@@ -196,7 +209,7 @@ on the bus it stays unknown.
 
 ## Time and number entities
 
-Both per zone, generated:
+Time entities and hold-minutes numbers are per zone, generated:
 
 - Hold until (`time` entity): clock time the hold ends at.
 - Hold minutes (`number`, 0-1425 in steps of 15): remaining or to-arm minutes. 0 cancels.

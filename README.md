@@ -511,7 +511,15 @@ select:
     name: "Zone 1 Fan Mode"
     type: fan_mode         # fan_mode (per-zone, requires zone:)
     zone: 1
+
+  # Which zone the wall control displays. Manual, system-wide, zone key ignored.
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Displayed Zone"
+    type: displayed_zone   # options 1-8
 ```
+
+Setting the displayed zone is the same write a real SAM01 makes for `S1ZONE!`. Whether the wall control switches is generation-dependent: older UI-family controls adopt it, newer SYSTXCC touch controls ACK and ignore it, and the entity reverts on the next bus poll. Details and the read-side requirements: [entity reference](docs/entity-reference.md#select-types).
 
 **Heat-source control is not on the bus.** The `heat_source` text sensor reports what the system is running (furnace / heat_pump / electric / none), but no bus path sets it: the selection lives in the thermostat (wall or Carrier app), and the emergency_heat / heat_pump mode writes never select it. On Next Gen Infinity thermostats the `heat_pump` write has additionally been observed turning the system off mid-call, and `off` writes can be ignored while heating. Those two options are hidden from the System Mode select unless `experimental_heat_source_modes` is set on the hub, and every use logs a warning. Treat them as protocol experiments, not control.
 
@@ -534,6 +542,19 @@ text_sensor:
 
   # Full text sensor type list and the manufacture_date matching rules:
   # docs/entity-reference.md
+```
+
+### Numbers
+
+```yaml
+number:
+  # Per-zone hold-minutes numbers are generated automatically from the
+  # climate blocks (see Timed holds). Declare one explicitly only to override
+  # its name or icon:
+  - platform: infinitesp
+    infinitesp_id: infinitesp_hub
+    name: "Zone 1 Hold Minutes"
+    zone: 1
 ```
 
 ### Fault entities
@@ -596,7 +617,7 @@ The rest of this section shows the commands, which work identically over either 
 | `OAT?` | Outdoor air temperature (°F) |
 | `TIME?` | Current time from bus clock |
 | `DAY?` | Current day of week |
-| `ZONE?` | Active zone bitmask |
+| `ZONE?` | Displayed zone number (1-8) |
 | `BLIGHT?` | Backlight (ON/OFF) |
 | `CFGEM?` | Display units (F/C) |
 | `CFGDEAD?` | Heat/cool deadband (0-6) |
@@ -632,6 +653,7 @@ Append `!` and a value to set parameters:
 
 ```
 MODE!COOL           # Set system mode (HEAT/COOL/AUTO/OFF; EHEAT/HEATPUMP need experimental_heat_source_modes and NAK otherwise)
+ZONE!2               # Set displayed zone (1-8; ACKed on every tstat tested, adopted by older UI-family controls)
 Z1HTSP!72            # Set zone 1 heat setpoint
 Z1CLSP!68            # Set zone 1 cool setpoint
 Z1FAN!AUTO           # Set zone 1 fan mode
