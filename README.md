@@ -278,6 +278,11 @@ infinitesp:
   id: infinitesp_hub
   uart_id: bus_uart
   sam_address: 0x92  # SAM address. 0x93 = FakeSAM test mode, 0 = disabled (passive monitor; set 0 if a physical SAM is installed)
+  # Note on 0: it disables emulation, not all transmission. The firmware
+  # still sends an 0x93 table-name discovery probe to identify observed
+  # devices, and with temperature_unit: auto it polls the thermostat's 3B05
+  # to detect the display unit. Writes (setpoints, holds, mode, vacation)
+  # are refused in this mode.
   # Zone controller emulation, OFF by default: enable only on a zoned system
   # with real dampers wired to the cover on_change trigger (see the warning
   # below). At 0 a real ZC is still passively monitored.
@@ -649,7 +654,9 @@ Prefix with `Z#` for other zones (e.g., `Z2HTSP?`).
 
 ### Write Commands
 
-Append `!` and a value to set parameters:
+Append `!` and a value to set parameters. Write commands need SAM emulation
+(`sam_address` nonzero); on a passive install they ACK but send nothing and
+change no state.
 
 ```
 MODE!COOL           # Set system mode (HEAT/COOL/AUTO/OFF; EHEAT/HEATPUMP need experimental_heat_source_modes and NAK otherwise)

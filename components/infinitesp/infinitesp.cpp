@@ -900,6 +900,15 @@ void InfinitESPComponent::send_frame_(uint8_t dst, uint8_t dst_bus, uint8_t func
 
 void InfinitESPComponent::send_write_frame_(uint8_t dst, uint8_t dst_bus,
                                              const std::vector<uint8_t> &payload) {
+  // Backstop (issue #38): a queued write transmits with sam_address_ as the
+  // frame source and the loop() drain is not sam_enabled()-gated, so a
+  // passive install (sam_address: 0) must refuse to queue one at all.
+  // Domain setters guard themselves first; this catches any future setter
+  // that forgets.
+  if (!sam_enabled()) {
+    ESP_LOGW("InfinitESP", "Dropping WRITE to %02X: SAM emulation disabled", dst);
+    return;
+  }
   // Queue-only: loop() transmits behind the bus-idle gate (see header). An
   // immediate send here collides with the thermostat's post-reply window
   // after a preceding frame; the 2026-09-10 capture shows a 3B02 mode write
@@ -1639,6 +1648,7 @@ void InfinitESPComponent::push_vacation_frame_(uint8_t flag, uint8_t off, uint8_
 }
 
 void InfinitESPComponent::set_vacation_days(uint16_t days) {
+  if (!sam_enabled()) return;
   if (days > 365)
     days = 365;
   vacation_days_ = days;
@@ -1657,6 +1667,7 @@ void InfinitESPComponent::set_vacation_days(uint16_t days) {
 }
 
 void InfinitESPComponent::set_vacation_temp(bool is_min, uint8_t temp) {
+  if (!sam_enabled()) return;
   if (is_min)
     vacation_min_temp_ = temp;
   else
@@ -1666,6 +1677,7 @@ void InfinitESPComponent::set_vacation_temp(bool is_min, uint8_t temp) {
 }
 
 void InfinitESPComponent::set_vacation_humidity(bool is_min, uint8_t value) {
+  if (!sam_enabled()) return;
   if (is_min)
     vacation_min_humidity_ = value;
   else
@@ -1675,6 +1687,7 @@ void InfinitESPComponent::set_vacation_humidity(bool is_min, uint8_t value) {
 }
 
 void InfinitESPComponent::set_vacation_fan(uint8_t fan_mode) {
+  if (!sam_enabled()) return;
   vacation_fan_ = fan_mode;
   push_vacation_frame_(REG3B04_FLAG_FAN, 10, fan_mode);
   ESP_LOGI("InfinitESP", "Vacation fan=%u", fan_mode);
