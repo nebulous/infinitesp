@@ -44,7 +44,7 @@ PER_ZONE_ENTITIES = [
     {"domain": "select", "type": "fan_mode", "label": "Fan Mode", "flag": "fan_mode"},
     {"domain": "cover", "type": None, "label": "Damper", "flag": "damper"},
     {"domain": "datetime", "type": None, "label": "Hold Until", "flag": "hold_until"},
-    {"domain": "number", "type": None, "label": "Hold Minutes", "flag": "hold_minutes"},
+    {"domain": "number", "type": "hold_minutes", "label": "Hold Minutes", "flag": "hold_minutes"},
 ]
 
 # System-wide, always spawned.
@@ -57,6 +57,7 @@ SYSTEM_CORE = [
     ("sensor", "idu_heat_stage", "IDU Heat Stage"),
     ("sensor", "vacation_min_temp", "Vacation Min Temp"),
     ("sensor", "vacation_max_temp", "Vacation Max Temp"),
+    ("number", "vacation_hours", "Vacation Hours"),
     ("sensor", "odu_outdoor_temp", "ODU Outdoor Temp"),
     ("sensor", "odu_coil_temp", "ODU Coil Temp"),
     ("sensor", "odu_stage", "ODU Stage"),
@@ -134,7 +135,10 @@ _ZONE_SCOPED = {
     "select": {"fan_mode"},
     "cover": {None},
     "datetime": {None},
-    "number": {None},
+    # Keyed by flavor name, not None: the number schema fills a default
+    # "hold_minutes" into validated configs, and _explicit reads the
+    # validated value — both sides must spell it the same way.
+    "number": {"hold_minutes"},
 }
 
 # Variant types: one entity per device class, fourth tuple element in the

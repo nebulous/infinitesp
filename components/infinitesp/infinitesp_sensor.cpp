@@ -158,16 +158,19 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     return;  // handled; skip the generic publish below
   }
 
-  // Thermostat vacation settings (4012)
+  // Thermostat vacation settings (4012). Vacation bytes are °C×2 in °C mode
+  // (half-degree), NOT whole-degree setpoints — vacation_byte_to_celsius is
+  // the dedicated accessor (roadmap °C bug #2; setpoint_to_celsius read them
+  // 2× high in °C mode).
   if (register_key == REG_TSTAT_VACATION && sensor_type_ == "vacation_min_temp") {
     auto *data = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_VACATION);
     if (data && data->size() >= 2)
-      value = parent_->setpoint_to_celsius(data->at(0));
+      value = parent_->vacation_byte_to_celsius(data->at(0));
   }
   if (register_key == REG_TSTAT_VACATION && sensor_type_ == "vacation_max_temp") {
     auto *data = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_VACATION);
     if (data && data->size() >= 2)
-      value = parent_->setpoint_to_celsius(data->at(1));
+      value = parent_->vacation_byte_to_celsius(data->at(1));
   }
 
   // IDU (Indoor Unit) passively snooped registers

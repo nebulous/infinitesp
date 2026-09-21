@@ -214,6 +214,14 @@ Time entities and hold-minutes numbers are per zone, generated:
 - Hold until (`time` entity): clock time the hold ends at.
 - Hold minutes (`number`, 0-1425 in steps of 15): remaining or to-arm minutes. 0 cancels.
 
+One system-wide number is generated alongside them:
+
+- Vacation hours (`number`, 0-8760 in steps of 1): vacation duration in hours at the
+  bus's native resolution; 0 clears. The read side is the last commanded value —
+  the thermostat serves no countdown (4012 is config-only). The climate entities'
+  "Vacation" preset reports activity; any other preset command clears it. Zone key
+  ignored (system-wide) if you declare one explicitly.
+
 ## Deprecated
 
 - `compressor_frequency` sensor: alias of `odu_requested_cfm`. Warns at validation.

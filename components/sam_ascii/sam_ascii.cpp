@@ -154,8 +154,8 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     respond_(prefix, "COMMANDS: MODE RT RH HTSP CLSP FAN HOLD OAT TIME DAY ZONE NAME BLIGHT CFGEM REPORT");
     respond_(prefix, "ZONE: Z#RT Z#RH Z#HTSP Z#CLSP Z#FAN Z#HOLD Z#UNOCC Z#RHTG Z#OVR Z#OTMR Z#NAME");
     respond_(prefix, "ACCESSORY: FILTRLVL UVLVL HUMLVL VENTLVL FILTRRMD UVRMD HUMRMD VENTRMD");
-    respond_(prefix, "VACATION: VACAT VACDAYS VACMINT VACMAXT VACMINH VACMAXH VACFAN  CONFIG: CFGDEAD CFGCPH CFGPER CFGPGM DEALER DEALERPH");
-    respond_(prefix, "SET: MODE!<mode> Z#HTSP!<temp> Z#CLSP!<temp> Z#FAN!<mode> Z#HOLD!<on|off|minutes> VACDAYS!<days> VACMINT!<temp> VACMAXT!<temp> VACFAN!<mode>");
+    respond_(prefix, "VACATION: VACAT VACDAYS VACHOURS VACMINT VACMAXT VACMINH VACMAXH VACFAN  CONFIG: CFGDEAD CFGCPH CFGPER CFGPGM DEALER DEALERPH");
+    respond_(prefix, "SET: MODE!<mode> Z#HTSP!<temp> Z#CLSP!<temp> Z#FAN!<mode> Z#HOLD!<on|off|minutes> VACDAYS!<days> VACHOURS!<hours> VACMINT!<temp> VACMAXT!<temp> VACFAN!<mode>");
     return;
   }
 
@@ -294,6 +294,16 @@ void SamAsciiComponent::process_line_(const std::string &line) {
       int days = atoi(write_val.c_str());
       if (days < 0 || days > 365) { respond_nak_(prefix, "VAL"); return; }
       parent_->set_vacation_days((uint16_t) days);
+      respond_(prefix, "ACK");
+      return;
+    }
+    // Native 1-h resolution (issue #33). InfinitESP extension — the vendor
+    // SAM01 grammar has no hours verb; rides the same setter as the number
+    // entity. 8760 = the 365-day UI/SAM ceiling.
+    if (write_cmd == "VACHOURS") {
+      int hours = atoi(write_val.c_str());
+      if (hours < 0 || hours > 8760) { respond_nak_(prefix, "VAL"); return; }
+      parent_->set_vacation_hours((uint16_t) hours);
       respond_(prefix, "ACK");
       return;
     }
@@ -518,12 +528,17 @@ void SamAsciiComponent::process_line_(const std::string &line) {
   // ---- Vacation ----
   // Config lives in InfinitESP vacation_* members and is pushed to the
   // thermostat as SAM.0x3B04 change-frames (see REG3B04_FLAG_* in the header).
-  // VACAT is derived from days-remaining (>0 = active).
+  // VACAT is derived from hours (>0 = active); VACDAYS is the rounded-up
+  // whole-days view, VACHOURS the native resolution.
   } else if (body == "VACAT") {
     respond_(prefix, parent_->get_vacation_days() > 0 ? "ON" : "OFF");
   } else if (body == "VACDAYS") {
     char buf[8];
     snprintf(buf, sizeof(buf), "%03u", parent_->get_vacation_days());
+    respond_(prefix, buf);
+  } else if (body == "VACHOURS") {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%04u", parent_->get_vacation_hours());
     respond_(prefix, buf);
   } else if (body == "VACMINT" || body == "VACMAXT") {
     uint8_t t = (body == "VACMINT") ? parent_->get_vacation_min_temp() : parent_->get_vacation_max_temp();

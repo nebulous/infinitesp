@@ -152,6 +152,19 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     }
   }
 
+  // Any explicit preset command other than Vacation ends an active vacation
+  // (issue #33): the tstat's vacation override would otherwise keep forcing
+  // setpoints to 4012 min/max and the read-side matcher would flap the preset
+  // straight back. Covers wall-armed vacations too (vacation_active_ from the
+  // setpoint-match), not just ones InfinitESP commanded (member > 0). The
+  // clear is a flag-0x02 hours=0 write, harmless when no vacation runs.
+  if ((call.get_preset().has_value() || call.has_custom_preset()) &&
+      !(call.has_custom_preset() && call.get_custom_preset() == PRESET_VACATION) &&
+      (vacation_active_ || parent_->get_vacation_days() > 0)) {
+    parent_->set_vacation_hours(0);
+    ESP_LOGI("InfinitESP", "Zone %d: preset command cleared vacation", zone_);
+  }
+
   // Handle custom presets
   if (call.has_custom_preset()) {
     auto custom = call.get_custom_preset();
@@ -169,11 +182,15 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
       this->set_custom_preset_(PRESET_WAKE);
       ESP_LOGI("InfinitESP", "Zone %d: preset WAKE → permanent hold", zone_);
     } else if (custom == PRESET_VACATION) {
-      // Vacation is reported FROM the bus (setpoint-override detection below);
-      // setting it from HA isn't supported yet (would require writing the vacation
-      // config and triggering the system-wide override). No-op — the detected
-      // state reasserts on the next bus poll.
-      ESP_LOGW("InfinitESP", "Zone %d: setting Vacation from HA is not yet supported", zone_);
+      // Vacation is reported FROM the bus (setpoint-override detection below)
+      // and armed/cleared via a duration, which a preset cannot supply — the
+      // same read-only contract as Hold Timer/Indefinitely. Point users at the
+      // Vacation Hours number entity (or ASCII VACHOURS!); the detected state
+      // reasserts on the next bus poll.
+      ESP_LOGW("InfinitESP",
+               "Zone %d: arming Vacation needs a duration — set the Vacation Hours number "
+               "(or VACHOURS! on the ASCII port) instead",
+               zone_);
     }
     // Hold Timer and Hold Indefinitely are read-only states set from bus data.
     // Users cancel holds via the Per Schedule preset.
@@ -483,6 +500,9 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
           this->set_custom_preset_(PRESET_VACATION);
         }
       }
+      // Cache the verdict for the set side (clear-on-preset rule above):
+      // true even for wall-armed vacations the hub member knows nothing of.
+      vacation_active_ = vacation_active;
 
       if (!vacation_active && hold_duration_ > 0) {
         // Hold is active — show hold preset and compute end time

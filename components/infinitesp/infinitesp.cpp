@@ -1648,12 +1648,23 @@ void InfinitESPComponent::push_vacation_frame_(uint8_t flag, uint8_t off, uint8_
 }
 
 void InfinitESPComponent::set_vacation_days(uint16_t days) {
-  if (!sam_enabled()) return;
+  // Whole-day wrapper (ASCII VACDAYS!): the UI/SAM01 vocabulary. Clamped to
+  // the 365-day ceiling both enforce; delegates to the native-hours setter.
   if (days > 365)
     days = 365;
-  vacation_days_ = days;
+  set_vacation_hours((uint16_t) days * 24);
+}
+
+void InfinitESPComponent::set_vacation_hours(uint16_t hours) {
+  if (!sam_enabled())
+    return;
+  // Native 1-h resolution (issue #33). The bus field accepts up to 32767, but
+  // the UI and SAM01 cap at 365 days; enforce their 8760-hour ceiling. 0 clears
+  // an active vacation.
+  if (hours > 8760)
+    hours = 8760;
+  vacation_hours_ = hours;
   // hours remaining is a 16-bit BE field at data[4..5] (flag 0x02).
-  uint16_t hours = (uint16_t) days * 24;
   std::vector<uint8_t> data(REG3B04_DATA_BYTES, 0xFF);
   data[0] = 0;
   data[1] = 0;
@@ -1663,7 +1674,11 @@ void InfinitESPComponent::set_vacation_days(uint16_t days) {
   std::vector<uint8_t> payload = {0x00, 0x3B, 0x04};
   payload.insert(payload.end(), data.begin(), data.end());
   send_write_frame_(ADDR_THERMOSTAT, 0x01, payload);
-  ESP_LOGI("InfinitESP", "Vacation days=%u (hours=%u) active=%d", days, hours, days > 0);
+  // Refresh vacation-scoped entities (the number) immediately: a clear that
+  // arrives via a climate preset command would otherwise leave the entity
+  // showing the old duration until the next 4012 slow poll (~2.5 min).
+  notify_entities_(ADDR_THERMOSTAT, REG_TSTAT_VACATION);
+  ESP_LOGI("InfinitESP", "Vacation hours=%u (days view %u)", hours, get_vacation_days());
 }
 
 void InfinitESPComponent::set_vacation_temp(bool is_min, uint8_t temp) {
@@ -2195,6 +2210,15 @@ float InfinitESPComponent::comfort_byte_to_celsius(uint8_t raw) const {
   if (bus_uses_celsius())
     return (float) raw / 2.0f;  // half-degree °C
   // °F mode: raw is whole °F, convert to °C
+  return ((float) raw - 32.0f) * (5.0f / 9.0f);
+}
+
+float InfinitESPComponent::vacation_byte_to_celsius(uint8_t raw) const {
+  // 4012 vacation bytes: °C×2 in °C mode, whole °F otherwise (verified
+  // 2026-06-14 F/C register diff). Same math as comfort rows — see the header
+  // comment for why this stays a separate function.
+  if (bus_uses_celsius())
+    return (float) raw / 2.0f;
   return ((float) raw - 32.0f) * (5.0f / 9.0f);
 }
 

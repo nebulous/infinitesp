@@ -156,6 +156,12 @@ static const uint8_t COMFORT_SLEEP = 2;
 static const uint8_t COMFORT_WAKE = 3;
 static const uint8_t COMFORT_MANUAL = 4;
 
+// Number entity flavors (see number/__init__.py and infinitesp_number.h).
+enum NumberType : uint8_t {
+  NUMBER_HOLD_MINUTES = 0,
+  NUMBER_VACATION_HOURS = 1,
+};
+
 // Change flags for 3B03 writes
 static const uint8_t CHANGE_FAN = 0x01;
 static const uint8_t CHANGE_HOLD = 0x02;
@@ -599,12 +605,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // SYSTXCC touch units ignore it). Issue #37, verified 2026-09-20.
   void set_displayed_zone(uint8_t zone);
 
-  // --- Vacation (SAM 3B04) ASCII domain methods ---
-  // Each setter updates the vacation_* member (the source of truth for sam_ascii
-  // reads) AND pushes a SAM.0x3B04 change-frame to the thermostat so the value
-  // propagates to the enforced vacation setpoints/fan (verified 2026-07-09; see
-  // the REG3B04_FLAG_* constants). VACDAYS>0 marks vacation active.
-  void set_vacation_days(uint16_t days);
+  // --- Vacation (SAM 3B04) domain methods ---
+  // Each setter updates the vacation_* member (the source of truth for entity
+  // and sam_ascii reads) AND pushes a SAM.0x3B04 change-frame to the thermostat
+  // so the value propagates to the enforced vacation setpoints/fan (verified
+  // 2026-07-09, reconfirmed 2026-09-21; see the REG3B04_FLAG_* constants).
+  // Hours>0 marks vacation active. All setters guard on sam_enabled() (#38).
+  void set_vacation_days(uint16_t days);     // whole days (ASCII VACDAYS!)
+  void set_vacation_hours(uint16_t hours);   // native 1-h resolution (issue #33)
   void set_vacation_temp(bool is_min, uint8_t temp);
   void set_vacation_humidity(bool is_min, uint8_t value);
   void set_vacation_fan(uint8_t fan_mode);
@@ -673,6 +681,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // Inverse of comfort_byte_to_celsius.
   uint8_t celsius_to_comfort_byte(float celsius) const;
 
+  // Convert a 4012 vacation temp byte to °C for HA display.
+  // Vacation bytes are °C×2 (half-degree) in °C mode and whole °F otherwise
+  // (verified 2026-06-14 F/C register diff) — the same encoding as comfort
+  // rows, NOT the whole-degree setpoint encoding. Keep separate from
+  // comfort_byte_to_celsius: its °C branch is wrong for 400A (always °F);
+  // this one is correct for 4012 only.
+  float vacation_byte_to_celsius(uint8_t raw) const;
+
   // Convert a whole-degree bus setpoint to °C for HA display.
   // Setpoints (3B03) are always whole degrees in both modes.
   float setpoint_to_celsius(uint8_t raw) const;
@@ -708,7 +724,9 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 
   // Vacation config (source of truth for sam_ascii reads; pushed to the
   // thermostat as 3B04 change-frames). days remaining is not auto-counted-down.
-  uint16_t get_vacation_days() const { return vacation_days_; }
+  // Days view rounds UP to whole days (SAM01/UI display semantics, issue #33).
+  uint16_t get_vacation_days() const { return (vacation_hours_ + 23) / 24; }
+  uint16_t get_vacation_hours() const { return vacation_hours_; }
   uint8_t get_vacation_min_temp() const { return vacation_min_temp_; }
   uint8_t get_vacation_max_temp() const { return vacation_max_temp_; }
   uint8_t get_vacation_min_humidity() const { return vacation_min_humidity_; }
@@ -746,8 +764,10 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void push_vacation_frame_(uint8_t flag, uint8_t off, uint8_t val);
 
   // Vacation config (source of truth). Pushed to the thermostat as 3B04
-  // change-frames; the thermostat never reads 3B04 from the SAM.
-  uint16_t vacation_days_{0};        // VACDAYS remaining (0 = inactive)
+  // change-frames; the thermostat never reads 3B04 from the SAM, and serves
+  // no countdown back (4012 is config-only — wire-proven 2026-09-21), so the
+  // hours value is what was last commanded, not a ticking remaining.
+  uint16_t vacation_hours_{0};       // configured duration, hours (0 = inactive)
   uint8_t vacation_min_temp_{60};    // °F or °C per bus unit
   uint8_t vacation_max_temp_{85};
   uint8_t vacation_min_humidity_{0};   // 0 = NONE

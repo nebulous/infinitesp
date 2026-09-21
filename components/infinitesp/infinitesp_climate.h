@@ -56,6 +56,12 @@ class InfinitESPClimate : public climate::Climate, public InfinitESPEntity {
   uint8_t last_activity_{NO_ACTIVITY};  // last activity we applied (for readback)
   std::string hold_end_time_;  // "HH:MM AP" or "Permanent" for text_sensor
 
+  // Last read-side vacation verdict (setpoint-match against 4012, see
+  // on_register_update). Powers the clear-on-preset rule: any preset command
+  // other than Vacation ends an active vacation, including one armed at the
+  // wall unit (hub member still 0).
+  bool vacation_active_{false};
+
   // Pending setpoint overlay — suppresses stale poll data after a write
   uint32_t pending_until_ms_{0};   // millis() deadline: ignore bus setpoints until this time
   uint8_t pending_heat_{0};        // the setpoint we just wrote

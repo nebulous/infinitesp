@@ -245,7 +245,7 @@ Full type-by-type reference for every hub option and entity type: [docs/entity-r
 Each zone's sensors and controls, plus the system-wide entities, are generated automatically from the `climate:` blocks you declare. You only need to declare them if you want to change defaults.
 
 - **Per zone** (from each climate block): temperature, humidity, occupancy, zone name, hold state, comfort profile, fan mode select, hold-until time, hold-minutes number, and the damper cover (generated on every zone; it publishes only when a zone controller is on the bus, see [Covers](#covers)).
-- **System-wide**: outdoor temperature, blower RPM, airflow, IDU heat stage, compressor running, bus status, ODU temperature/stage sensors, vacation setpoints, heat source (furnace / heat_pump / electric / none), fault history and fault timestamp. The deprecated `electric_heat` binary sensor no longer publishes (0316[0] is the source-blind IDU heat stage; use `idu_heat_stage` + `heat_source`).
+- **System-wide**: outdoor temperature, blower RPM, airflow, IDU heat stage, compressor running, bus status, ODU temperature/stage sensors, vacation setpoints, vacation duration (number, see below), heat source (furnace / heat_pump / electric / none), fault history and fault timestamp. The deprecated `electric_heat` binary sensor no longer publishes (0316[0] is the source-blind IDU heat stage; use `idu_heat_stage` + `heat_source`).
 - **Diagnostics** (entity category diagnostic): IDU/ODU cycle and hour counters, thermostat wifi/dealer strings, thermostat/IDU/ODU manufacture dates, firmware version. Disable the whole group with `auto_diagnostics: false` in the `infinitesp:` block.
 - **Equipment-conditional** (generated disabled by default, enable in HA if your hardware serves them): the variable-speed ODU family — compressor RPM, ODU requested CFM, expansion valve, float registers, discharge/suction temperatures, superheat.
 
@@ -270,6 +270,39 @@ Notes:
 - A hold-until target within 15 minutes of now means tomorrow.
 - While a timed hold runs, both entities mirror it. After the hold ends or is cancelled they keep their last value until the next hold is set.
 - Cancel with either zero minutes or the climate entity's "Per Schedule" preset.
+
+### Vacation control from Home Assistant
+
+A system-wide "Vacation Hours" number (0-8760 in steps of 1) arms and clears
+vacation: set it to the duration in hours and the thermostat clamps every zone's
+setpoints to its configured vacation min/max; set 0 to end vacation and return to
+schedule. It uses the bus's native one-hour resolution, so durations the wall UI
+cannot express ("away for 5 hours") work. The matching ASCII verbs are
+`VACDAYS!`/`VACHOURS!`.
+
+Notes:
+
+- **Tstat-family caveat on sub-day durations:** some thermostat families (our
+  SYSTXCC-reference among them) floor the hours value to whole days when
+  adopting the write — anything under 24 hours reads as 0 days and *clears* an
+  active vacation instead of arming one (`VACHOURS!5` ends vacation on these;
+  24 and 48 arm normally). Older UI-family controls honor native hours
+  (verified by a real-SAM01 user). Durations under 24 h are sent exactly as
+  commanded; whether they arm depends on the wall control. If a short duration
+  does not take, this is why.
+- The thermostat does not report the countdown on the bus — register 4012 carries
+  only the vacation config, so the number shows the duration you last set, not a
+  ticking remaining. Vacation activity itself is visible on the climate entities
+  as the "Vacation" preset, and the wall unit's own vacation banner keeps counting
+  down normally.
+- Any preset command other than Vacation (Per Schedule, Wake, the standard home/
+  away/sleep presets) ends an active vacation, including one armed at the wall unit.
+  Arming vacation needs a duration, so setting the Vacation preset itself from HA
+  is a no-op — use the number.
+- Vacation min/max setpoints come from the thermostat's own config (visible as the
+  vacation min/max temp sensors); `VACMINT!`/`VACMAXT!` can change them.
+- Requires SAM emulation; on a passive install the number accepts the value but
+  sends nothing (it snaps back), like all write verbs.
 
 ### Core Component
 
@@ -634,6 +667,8 @@ The rest of this section shows the commands, which work identically over either 
 | `FILTRLVL?` / `UVLVL?` / `HUMLVL?` / `VENTLVL?` | Accessory life used % |
 | `FILTRRMD?` / `UVRMD?` / `HUMRMD?` / `VENTRMD?` | Accessory reminder (ON/OFF) |
 | `VACAT?` | Vacation state (ON/OFF) |
+| `VACDAYS?` | Vacation duration, whole days (rounded up) |
+| `VACHOURS?` | Vacation duration, hours (last commanded) |
 | `VACMINT?` / `VACMAXT?` | Vacation min/max temperature |
 | `VACMINH?` / `VACMAXH?` | Vacation min/max humidity |
 | `VACFAN?` | Vacation fan mode |
@@ -661,6 +696,8 @@ change no state.
 ```
 MODE!COOL           # Set system mode (HEAT/COOL/AUTO/OFF; EHEAT/HEATPUMP need experimental_heat_source_modes and NAK otherwise)
 ZONE!2               # Set displayed zone (1-8; ACKed on every tstat tested, adopted by older UI-family controls)
+VACDAYS!7           # Arm vacation for 7 whole days (0-365; 0 clears)
+VACHOURS!48         # Arm vacation for 48 hours at native resolution (0-8760; 0 clears)
 Z1HTSP!72            # Set zone 1 heat setpoint
 Z1CLSP!68            # Set zone 1 cool setpoint
 Z1FAN!AUTO           # Set zone 1 fan mode
