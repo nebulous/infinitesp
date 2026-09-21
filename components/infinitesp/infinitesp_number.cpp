@@ -9,6 +9,8 @@ namespace infinitesp {
 
 // Set path: normalize (0 passes through — it means cancel, not a zero-minute
 // hold), publish optimistically, enqueue the debounced write on the hub.
+// last_published_ follows the optimistic publish so the readback dedupe never
+// mistakes the pre-command value for "no change" and suppresses the revert.
 void InfinitESPNumber::control(float value) {
   float clamped = fminf(fmaxf(value, 0.0f), (float) InfinitESPComponent::HOLD_TIMED_MAX);
   uint16_t minutes = (uint16_t) (clamped + 0.5f);
@@ -17,13 +19,14 @@ void InfinitESPNumber::control(float value) {
   ESP_LOGD("InfinitESP", "Zone %u hold minutes set %u (debounced)", zone_, minutes);
   parent_->queue_hold_set(zone_, minutes, 1500);
   this->readback_holdoff_ms_ = millis() + 10000;
+  this->last_published_ = (float) minutes;
   this->publish_state((float) minutes);
 }
 
 // Readback: remaining minutes while a timed hold runs, 0 otherwise
 // (schedule-following or permanent — the datetime entity is the end-time
 // view, this one is purely the countdown). Raw served value: during descent
-// it is the true remaining (15 -> 14 -> ... ), never re-snapped.
+// it is the true remaining (15 -> 14 -> ...), never re-snapped.
 void InfinitESPNumber::on_register_update(uint8_t device_addr, uint16_t register_key) {
   if (register_key != REG_SAM_ZONES)
     return;
