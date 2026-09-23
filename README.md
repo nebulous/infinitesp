@@ -4,7 +4,7 @@ ESPHome firmware for ESP32 that emulates Carrier/Bryant/ICP devices on the "ABCD
 
 No cloud or Carrier API required, just a serial bus and a microcontroller.
 
-> **Disclaimer:** This firmware was developed by reverse-engineering a proprietary protocol. Everything described below has been confirmed working in the author's system. Your mileage may vary with different equipment, firmware versions, or bus configurations.
+> **Disclaimer:** This firmware was developed by reverse-engineering a proprietary protocol. Everything has been confirmed working on the author's system; your mileage may vary with different equipment, firmware versions, or bus configurations. Read the [full disclaimer](#disclaimer) before wiring anything.
 
 ## Design
 
@@ -19,6 +19,15 @@ InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address 
 | **Selects** | System mode (heat/cool/auto/off; emergency heat/heat pump behind an experimental flag), per-zone fan speed (auto/low/med/high) |
 | **Text Sensors** | Zone names, hold state, thermostat WiFi SSID/hostname/MAC, proxy server, dealer info, comfort profile dump |
 
+## Targeted Systems
+
+InfinitESP targets Carrier Infinity / Bryant Evolution / ICP systems that communicate over the ABCD RS485 bus. The protocol is shared across this family. Only the author's own system has been confirmed working. The model numbers below identify the kinds of devices found on that bus. They are not a verified compatibility list, and behavior can vary across firmware revisions:
+
+- **SAM modules** (the device InfinitESP emulates): SYSTXCCSAM01, SYSTXCCSAMC01
+- **Thermostats**: Infinity Touch (SYSTXCCITC01), Evolution Connex (SYSTXBBECC01), legacy UID/UIZ controls with firmware 14+
+- **HVAC equipment**: Infinity/Evolution furnace, air handler, or heat pump on the ABCD bus
+
+See the [NOTICE](NOTICE).
 
 ## Hardware Options
 
@@ -28,7 +37,7 @@ The author's setup uses the **[Waveshare ESP32-S3-Relay-6CH](https://amzn.to/4mX
 [<img src="https://www.waveshare.com/w/upload/thumb/e/ee/ESP32-S3-Relay-6CH.jpg/1200px-ESP32-S3-Relay-6CH.jpg" width="400" />](https://amzn.to/4mX6tLp)
 
 The Waveshare board was chosen as a reference design for its case, onboard RS485 interface, and 6 relay outputs. The relays open the door to emulating other devices beyond the SAM, notably the NIM (Network Interface Module, SYSTXCCNIM01). The Damper Control Module (SYSTXCC4ZC01) is already part of InfinitESP. Damper actuation works through a trigger callback: each zone's cover fires `on_change` whenever the thermostat commands a new damper position, handing the new position to whatever relay or motor driver your hardware uses (see the [Covers](#covers) examples). When emulating the zone controller, each zone also takes a temperature sensor so the thermostat sees a room reading, falling back to the zone 1 temperature when no sensor is configured (see [Zone Controller](#zone-controller-optional)). The relay GPIOs are exposed in the example YAML config but are not part of the core SAM emulation. The firmware is hardware-agnostic. It just needs a `uart::UARTComponent`. The RS485 transceiver, ESP32 variant, and relay hardware are all irrelevant to the protocol engine.
-Generic ESP32 dev boards with a separate RS485 transceiver module should also work.
+Generic ESP32 dev boards with a separate RS485 transceiver module should also work. Community reports of boards and transceivers working in the field are collected on the wiki's [Known-Working Hardware](https://github.com/nebulous/infinitesp/wiki/Known-Working-Hardware) page.
 
 > **Note:** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an insufficiently-biased bus, the line voltage collapses and the receiver reads garbage.
 >
@@ -37,10 +46,6 @@ Generic ESP32 dev boards with a separate RS485 transceiver module should also wo
 > A live Carrier ABCD bus may tolerate the flaw without any fix, depending on bus topology. If `uart_rmtx` does not resolve it, any other fix requires adding or modifying hardware (for example, bypassing the onboard transceiver with a separate RS485 module).
 >
 > Not every "auto-direction" module has this flaw. The Waveshare's comes from its RS485 chip (SP485EEN) being driven by a discrete RC one-shot, which is what drops out. Modules built around a transceiver with built-in AutoDirection control do it on-chip with a state machine instead. The MAX13487E found on the common HiLetgo and generic "TTL to RS485 hardware automatic flow control" boards is the usual one. They transmit long frames cleanly on a properly biased bus and do **not** need `uart_rmtx`. Their tradeoff is bias and loading: they depend on correct bus biasing for the idle state, and some setups report bus disruption from their collision sensing. If you see CRC errors clustered around your own transmissions with a MAX13487E-class module, look at wiring, bus loading, or biasing rather than the one-shot dropout.
-
-### 📣 Calling all users:
-If you have hardware such as a Carrier NIM (SYSTXCCNIM01), ~Damper Control Module (SYSTXCC4ZC01)~(implemented, but new logs are always good validation), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Understanding and emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be valuable. See [Reporting Issues](#reporting-issues) for how to collect them. A `REPORT?` snapshot helps too, but full protocol logs are best for emulation work since they show the timing and framing that static register dumps miss. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
-
 
 ## Wiring
 
@@ -175,66 +180,7 @@ infinitesp:
 
 The TCP and USB CDC transports are provided by [esphome-uart-link](https://github.com/nebulous/esphome-uart-link), a companion ESPHome component that implements UART-over-TCP and UART-over-USB transports. InfinitESP neither knows nor cares which transport backs the UART. They're all interchangeable.
 
-### Bus Capture Stream (JSONL, default on, port 2373)
-
-Streams every bus frame as one JSON object per line with timestamps. This is the capture format to attach to issues: it has timing (unlike REPORT?), and is redacted (unlike the raw tap). The port number spells room temperature: 23°C / 73°F.
-
-```bash
-nc infinitesp.local 2373 | tee capture.jsonl
-```
-
-Each line is one wire frame, like so:
-
-```json
-{"ts":"2026-09-13T17:37:54.226Z","src":"20","dst":"52","func":"0B","reg":"0104","data":"564152205350..."}
-```
-
-`ts` is ISO8601 UTC, taken from the config's `time:` platform automatically (until the clock syncs, or on time-less configs, lines carry boot-relative `"ms"` instead). `src`/`dst` are bus addresses, `func` is the frame function (`0B` read, `0C` write, `06` reply), `reg` is the register number, and `data` is the register payload in hex. Reads carry no payload and show `"data":""`; `null` appears only when a payload had to be omitted (an anomaly worth reporting). The port is output-only: anything a client sends is discarded, so typing into the connection does nothing (the interactive command interface is the SAM ASCII port on 23).
-
-Privacy filtering is applied before anything leaves the device: registers carrying WiFi credentials or dealer information produce no lines at all, and serial-bearing registers keep only the first four serial characters (Carrier serials lead with the week and year of manufacture, which is useful for diagnostics) with the rest masked for safer sharing in public forums.
-
-```yaml
-uart_tcp_server:
-  - id: jsonl_uart
-    port: 2373
-    ...
-
-bus_jsonl:
-  infinitesp_id: infinitesp_hub
-  uart_id: jsonl_uart
-```
-
-Timestamps use whatever `time:` platform the config declares to avoid extra wiring. Leaving it enabled costs little: with no client connected the stream costs almost no cpu and about a kilobyte of RAM. To disable it anyway, comment out the `jsonl_uart` server entry and the `bus_jsonl` block.
-
-### Raw Bus Tap (Network)
-
-Expose the raw ABCD serial bus over TCP so external tools (Infinitude, Wireshark dissector, custom scripts) can observe the bus in real time. This is useful for protocol analysis and for running Infinitude alongside InfinitESP.
-
-```yaml
-# Add these alongside the normal infinitesp config.
-# IMPORTANT: infinitesp must read from the bridge, not the hardware UART.
-# Change uart_id on the infinitesp: block from bus_uart to bus_bridge.
-
-uart_tcp_server:
-  - id: raw_bus_tap
-    port: 4242
-    max_clients: 2
-    client_mode: fanout
-    idle_timeout: 30s
-
-uart_bridge:
-  id: bus_bridge
-  uarts:
-    - bus_uart                                           # hardware RS485 (bidirectional)
-    - uart: raw_bus_tap
-      flow: from_bridge      # monitor-only (use 'both' to allow TCP client writes)
-```
-
-Connect with `nc infinitesp.local 4242` to see raw hex traffic. The `from_bridge` flow direction means TCP clients can only observe, not inject bytes onto the bus. This is the safer default. Change to `both` for bidirectional access (e.g., running Infinitude through the tap).
-
-> **Warning:** the raw tap is wire-exact: it includes WiFi credentials (registers 4608/4609 travel the bus) and equipment serials. It is a maintainer and bench tool. Never post a raw-tap capture in an issue; use the JSONL stream on port 2373 instead.
-
-> **Warning:** When using `flow: both`, TCP clients share the bus with InfinitESP. The ABCD bus has no arbitration. Simultaneous transmits will collide. Only use bidirectional mode if your tool understands the protocol timing.
+The JSONL capture stream (port 2373) and the raw bus tap (port 4242) are diagnostics outputs, not transports. They are documented in [Bus Capture and Diagnostics](docs/bus-capture.md).
 
 ## Configuration Reference
 
@@ -254,55 +200,7 @@ Rules:
 - **Explicit definitions get priority.** An entity you declare yourself (same type and zone) replaces the generated one, keeping your name and options. Existing fully-explicit configs compile unchanged.
 - **Per-zone opt-outs.** Each generated per-zone entity can be disabled with an option on its climate block, default true, named after the entity (`temperature: false`, `damper: false`; full list in the [reference](docs/entity-reference.md#climate-block)). The option affects that zone only. System-wide entities have no individual switches: declare one explicitly to take control of it, or set `auto_diagnostics: false` to drop the diagnostics group.
 - **Manual-only**: `raw_register` sensors and the zone controller sensor feeds (`zc_zone_temperature`, `zc_lat`, `zc_hpt`).
-- **Manufacture-date matching.** The three generated date sensors each cover one device class (thermostat, IDU, ODU). A manual `manufacture_date` block replaces the generated one for its class. `device_address` is an exact node match and must be the device's real address: an ODU often answers at 0x52, not 0x50, so check against a `REPORT?` dump. Matching rules and `bus_class`: [reference](docs/entity-reference.md#manufacture_date-matching).
-
-### Timed holds from Home Assistant
-
-Each zone gets two entities that read and set the same native bus timed hold — the thermostat owns the countdown, the same mechanism the wall unit uses:
-
-- "Zone N Hold Until" (a `time` entity): set a clock time and the hold ends then. Good for people thinking in absolute terms ("hold until bedtime").
-- "Zone N Hold Minutes" (a `number`, steps of 15): remaining minutes, 0 when no timed hold is running. Set it to arm a hold for N minutes; set 0 to cancel and return to Per Schedule. Good for durations ("hold two hours") and for automations.
-
-Notes:
-
-- Both show the value the bus will actually produce: a requested 20 minutes displays as 15 immediately (the thermostat's grid is quarter-hours), and a requested 8:40 PM end may hold until 8:45 PM. The `hold_state` sensor always shows the true end.
-- Sets are debounced for about a second and a half after you stop adjusting, because Home Assistant's pickers send every intermediate value. One bus write arms the hold after the value settles.
-- A hold-until target within 15 minutes of now means tomorrow.
-- While a timed hold runs, both entities mirror it. After the hold ends or is cancelled they keep their last value until the next hold is set.
-- Cancel with either zero minutes or the climate entity's "Per Schedule" preset.
-
-### Vacation control from Home Assistant
-
-A system-wide "Vacation Hours" number (0-8760 in steps of 1) arms and clears
-vacation: set it to the duration in hours and the thermostat clamps every zone's
-setpoints to its configured vacation min/max; set 0 to end vacation and return to
-schedule. It uses the bus's native one-hour resolution, so durations the wall UI
-cannot express ("away for 5 hours") work. The matching ASCII verbs are
-`VACDAYS!`/`VACHOURS!`.
-
-Notes:
-
-- **Tstat-family caveat on sub-day durations:** some thermostat families (our
-  SYSTXCC-reference among them) floor the hours value to whole days when
-  adopting the write — anything under 24 hours reads as 0 days and *clears* an
-  active vacation instead of arming one (`VACHOURS!5` ends vacation on these;
-  24 and 48 arm normally). Older UI-family controls honor native hours
-  (verified by a real-SAM01 user). Durations under 24 h are sent exactly as
-  commanded; whether they arm depends on the wall control. If a short duration
-  does not take, this is why.
-- The thermostat does not report the countdown on the bus — register 4012 carries
-  only the vacation config, so the number shows the duration you last set, not a
-  ticking remaining. Vacation activity itself is visible on the climate entities
-  as the "Vacation" preset, and the wall unit's own vacation banner keeps counting
-  down normally.
-- Any preset command other than Vacation (Per Schedule, Wake, the standard home/
-  away/sleep presets) ends an active vacation, including one armed at the wall unit.
-  Arming vacation needs a duration, so setting the Vacation preset itself from HA
-  is a no-op — use the number.
-- Vacation min/max setpoints come from the thermostat's own config (visible as the
-  vacation min/max temp sensors); `VACMINT!`/`VACMAXT!` can change them.
-- Requires SAM emulation; on a passive install the number accepts the value but
-  sends nothing (it snaps back), like all write verbs.
+- **Manufacture-date matching.** The three generated date sensors each cover one device class (thermostat, IDU, ODU); a manual `manufacture_date` block replaces the generated one for its class. Matching rules: [reference](docs/entity-reference.md#manufacture_date-matching).
 
 ### Core Component
 
@@ -310,34 +208,22 @@ Notes:
 infinitesp:
   id: infinitesp_hub
   uart_id: bus_uart
-  sam_address: 0x92  # SAM address. 0x93 = FakeSAM test mode, 0 = disabled (passive monitor; set 0 if a physical SAM is installed)
-  # Note on 0: it disables emulation, not all transmission. The firmware
-  # still sends an 0x93 table-name discovery probe to identify observed
-  # devices, and with temperature_unit: auto it polls the thermostat's 3B05
-  # to detect the display unit. Writes (setpoints, holds, mode, vacation)
-  # are refused in this mode.
+  sam_address: 0x92    # 0x93 = FakeSAM test mode, 0 = disabled (passive
+                       # monitor; set 0 if a physical SAM is installed)
   # Zone controller emulation, OFF by default: enable only on a zoned system
-  # with real dampers wired to the cover on_change trigger (see the warning
-  # below). At 0 a real ZC is still passively monitored.
+  # with real dampers (see the warning below).
   # zone_controller_address: 0x60
-  # Optional: pin the indoor/outdoor unit to an exact bus node (default 0 = class
-  # matching). For installs whose unit sits off the usual class nibble, e.g. a
-  # furnace at 0x3E, or to keep a second class-5 node (refrigerant board) out of
-  # ODU entities and slow polls:
+  # Pin the indoor/outdoor unit to an exact bus node when the unit sits off
+  # the usual class nibble, or to keep a second class-5 node out of ODU
+  # entities (e.g. a furnace at 0x3E, an ODU at 0x57):
   # idu_address: 0x3E
   # odu_address: 0x57
-  # Optional: temperature unit detection (default: auto)
-  # temperature_unit: auto     # read from bus, or force F / C
-  # Experimental, off by default: adds emergency_heat / heat_pump to the System
-  # Mode select and the MODE! command. These writes do not select the heat source
-  # (that setting lives in the thermostat; the bus only carries the result), and on
-  # Next Gen Infinity thermostats the heat_pump write has been observed turning the
-  # system off. Enable only for protocol experiments, not for control.
-  # experimental_heat_source_modes: true
-  # Optional status LED (mutually exclusive):
-  status_light_id: rgb_led    # Reference an existing ESPHome light (RGB supported)
-  # status_led_pin: GPIO2      # Or just a GPIO pin for a simple LED
+  # temperature_unit: auto    # auto (default), F, or C
+  # status_light_id: rgb_led  # or status_led_pin: GPIO2 (see Status LED)
+  # experimental_heat_source_modes: true   # protocol experiment, see Selects
 ```
+
+Full option list with semantics, including what passive mode (`sam_address: 0`) still transmits: [entity reference](docs/entity-reference.md#hub-block-infinitesp).
 
 #### Zone Controller (optional)
 
@@ -351,84 +237,34 @@ Carrier zoned systems put a Damper Control Module (SYSTXCC4ZC01) on the bus at a
 In either case the damper `cover` entities (see [Covers](#covers)) and per-zone climate heating/cooling action reflect the real damper state.
 
 **Injecting external zone temperature sensors (emulation only).**
-When emulating the zone controller, the thermostat expects each zone to report a temperature. InfinitESP can source these from any ESPHome sensor (a local Dallas 1-Wire or DHT/BME wired to the ESP32, or a Home Assistant entity via the `homeassistant` platform) instead of letting the thermostat read its own remote sensors. Configure one block per zone for zones 2–8 (zone 1 is reported by the thermostat itself):
-
-Systems with more than four zones use a second controller at `0x61`. InfinitESP emulates both the primary (`0x60`, zones 1–4) and secondary (`0x61`, zones 5–8) when `zone_controller_address` is set. Zone 5 maps to local zone 1 on the secondary controller, zone 6 to local 2, and so on. A thermostat commissioned for only four zones never polls `0x61`, so the secondary stays inert unless you wire sensors into `zc_zone_5` through `zc_zone_8`.
+When emulating the zone controller, the thermostat expects each zone to report a temperature. InfinitESP can source these from any ESPHome sensor (a local Dallas 1-Wire or DHT/BME wired to the ESP32, or a Home Assistant entity via the `homeassistant` platform) instead of letting the thermostat read its own remote sensors. Configure one block per zone for zones 2-8 (zone 1 is reported by the thermostat itself):
 
 ```yaml
-# Option A: local Dallas 1-Wire sensor wired to the ESP32
-dallas:
-  - pin: GPIO4
-
-sensor:
-  - platform: dallas
-    address: 0x1c000003ebee    # unique ROM address (run without this to log discovered addresses)
-    id: upstairs_temp
-    internal: true
-
-  # Option B: a temperature entity already in Home Assistant
-  # - platform: homeassistant
-  #   id: upstairs_temp
-  #   entity_id: sensor.upstairs_temperature
-  #   internal: true
-
 infinitesp:
   zone_controller_address: 0x60
   zc_zone_2:
-    temperature_sensor: upstairs_temp
-    staleness_timeout: 120   # seconds (fall back to bus/thermostat value if no update)
-    sensor_unit: F           # REQUIRED. "C" or "F": the unit your sensor publishes in
-  zc_zone_3:
-    temperature_sensor: ...
-  zc_zone_4:
-    temperature_sensor: ...
-  # Zones 5-8 live on a second emulated controller at 0x61 (only if the
-  # thermostat is commissioned for more than four zones).
-  # zc_zone_5:
-  #   temperature_sensor: office_temp
-  #   sensor_unit: F
+    temperature_sensor: upstairs_temp   # any ESPHome sensor id (set internal: true on it)
+    sensor_unit: F                      # REQUIRED: the unit your sensor publishes
+    # staleness_timeout: 120            # seconds before the value reverts (default 120)
 ```
 
-Only one `sensor:` block is needed per zone. InfinitESP reads whichever `id` you wire in. `internal: true` keeps the raw sensor out of Home Assistant since its value surfaces through the zone controller emulation. If `temperature_sensor` is omitted, InfinitESP reports whatever the bus last reported for that zone. `staleness_timeout` (default 120s) controls how long to keep using the external value before falling back.
+**Set `sensor_unit` explicitly for every zone.** It declares the unit your sensor *publishes*, not the thermostat's display setting; a wrong guess causes silent mis-conversion. After configuring, check the zone temperatures on your thermostat and confirm they match the room: out-of-band readings fall back to the zone-1 ambient value, which looks plausible without being that zone's reading.
 
-**Set `sensor_unit` explicitly for every zone.** It declares the unit your sensor *publishes*, not the thermostat's display setting. For example, `F` for a sensor that emits °F, `C` for one that emits °C. The two are unrelated: flipping the thermostat between °F/°C display does not change what your sensor publishes. ESPHome emits a config warning for any zone where `sensor_unit` is missing. The default is the system unit, and a wrong guess causes silent mis-conversion (see below).
+Systems with more than four zones use a second controller at `0x61` (`zc_zone_5` through `zc_zone_8`). The LAT/HPT thermistor ports, the 40-99 °F sanity band, staleness behavior, and the secondary-controller mapping: [entity reference](docs/entity-reference.md#zone-controller-sensor-feeds).
 
-**Why it matters / sanity check.** InfinitESP rejects any injected reading that converts to values outside of the **40-99 °F** band (the indoor range the thermostat itself uses for setpoints) and falls back to the primary zone-1 ambient value until a plausible reading returns. A wrong `sensor_unit` always lands outside this band. For example, a °F sensor treated as °C reports a 70 °F room as ~160 °F, so the zone reads zone-1 ambient instead of garbage. The range check is a safety net, not a correctness test: **after configuring, check the zone temperatures on your thermostat and confirm they match the room.** A reading that silently fell back to zone-1 because of a mis-set unit looks "fine" (a real temperature, just not *that* zone's), so visual confirmation is the only reliable validation.
+### Status LED
 
-**LAT/HPT thermistor ports (emulation only).** The zone board also has leaving-air-temperature (LAT) and HPT thermistor ports, reported as TLV entries in the same register (ids `0x14` and `0x1C`). `zc_lat` and `zc_hpt` feed external sensors into those ports. Unlike zone temperatures, supply-air temp has no sane ambient fallback: when the fed sensor goes stale (past `staleness_timeout`), the entry reverts to not-installed so the thermostat stops seeing it rather than reading a bogus value. These sensors are disabled by default in Home Assistant. Enable them if your board reports them.
-
-This sensor-injection feature requires emulation. With a passive (physical) zone controller, the real hardware owns temperature reporting and these blocks have no effect.
-
-#### Temperature Unit Detection
-
-The Carrier ABCD bus encodes temperatures differently depending on the thermostat's display unit setting (°F or °C). InfinitESP reads the active unit from the bus and applies it automatically.
-
-The unit flag lives at data offset 1 of every table-0x3B register the thermostat serves (state, zones, accessories, dealer): `0x00` = English/°F, `0x01` = Metric/°C. In `auto` mode InfinitESP reads that flag:
-
-- When emulating the SAM, the thermostat pushes its dealer register (3B06) to InfinitESP on every poll cycle. InfinitESP reads the flag from it.
-- When not emulating the SAM, InfinitESP polls the thermostat's accessories register (3B05) and reads the flag from the reply.
-
-Until the first authoritative read lands (a few seconds after boot), InfinitESP falls back to a heuristic: any active zone temperature byte ≤ 50 means °C. No plausible HVAC zone exceeds 50°C (122°F).
-
-The `temperature_unit` option forces a unit instead of reading it:
-
-| Value | Behavior |
-|-------|----------|
-| `auto` (default) | Read the unit from the bus (3B06 when emulating the SAM, else a polled 3B05), with the zone-temperature heuristic as a boot-time fallback. |
-| `F` | Force Fahrenheit. |
-| `C` | Force Celsius. |
-
-Most users never change this from `auto`. The explicit options exist for edge cases or debugging.
-
-All temperature sensors publish in °C with `device_class: temperature`, so Home Assistant converts to the user's preferred display unit.
-
-The status LED indicates system health:
+Optional, set on the hub: `status_light_id` (an existing ESPHome light, RGB supported) or `status_led_pin` (a simple GPIO). Mutually exclusive.
 
 | Status | RGB Color | Simple LED | Meaning |
 |--------|-----------|------------|---------|
 | Bus not online | Yellow blink (1s) | Slow blink (1s) | Bus not yet established |
 | Bus online, no WiFi | Blue blink (500ms) | Fast blink (250ms) | Bus good, WiFi connecting |
 | Both online | Solid green | Solid on | Everything working |
+
+### Temperature Units
+
+Temperature sensors publish in °C and Home Assistant converts for display. InfinitESP reads the thermostat's °F/°C setting from the bus automatically and decodes accordingly. Force a unit with `temperature_unit: F` or `C` if the detection misbehaves. Register mechanics and the boot-time heuristic: [entity reference](docs/entity-reference.md#temperature-unit-detection).
 
 ### Climate (per zone)
 
@@ -557,9 +393,9 @@ select:
     type: displayed_zone   # options 1-8
 ```
 
-Setting the displayed zone is the same write a real SAM01 makes for `S1ZONE!`. Whether the wall control switches is generation-dependent: older UI-family controls adopt it, newer SYSTXCC touch controls ACK and ignore it, and the entity reverts on the next bus poll. Details and the read-side requirements: [entity reference](docs/entity-reference.md#select-types).
+Setting the displayed zone sends the same write a real SAM01 makes for `S1ZONE!`. Whether the wall control switches is generation-dependent: older UI-family controls adopt it, newer SYSTXCC touch controls ACK and revert. Details: [entity reference](docs/entity-reference.md#select-types).
 
-**Heat-source control is not on the bus.** The `heat_source` text sensor reports what the system is running (furnace / heat_pump / electric / none), but no bus path sets it: the selection lives in the thermostat (wall or Carrier app), and the emergency_heat / heat_pump mode writes never select it. On Next Gen Infinity thermostats the `heat_pump` write has additionally been observed turning the system off mid-call, and `off` writes can be ignored while heating. Those two options are hidden from the System Mode select unless `experimental_heat_source_modes` is set on the hub, and every use logs a warning. Treat them as protocol experiments, not control.
+**Heat-source control is not on the bus.** The `heat_source` text sensor reports what the system is running, but no bus path sets it: the selection lives in the thermostat (wall or Carrier app). The `emergency_heat` / `heat_pump` select options are hidden unless `experimental_heat_source_modes` is set on the hub, and on Next Gen Infinity thermostats the `heat_pump` write has been observed turning the system off mid-call. Treat them as protocol experiments, not control. Details: [entity reference](docs/entity-reference.md#select-types).
 
 ### Text Sensors
 
@@ -582,129 +418,50 @@ text_sensor:
   # docs/entity-reference.md
 ```
 
-### Numbers
+### Timed Holds
 
-```yaml
-number:
-  # Per-zone hold-minutes numbers are generated automatically from the
-  # climate blocks (see Timed holds). Declare one explicitly only to override
-  # its name or icon:
-  - platform: infinitesp
-    infinitesp_id: infinitesp_hub
-    name: "Zone 1 Hold Minutes"
-    zone: 1
-```
+Each zone gets two entities that read and set the same native bus timed hold, with the thermostat owning the countdown (the same mechanism the wall unit uses):
 
-### Fault entities
+- **Zone N Hold Until** (a `time` entity): set a clock time and the hold ends then. Good for absolute terms ("hold until bedtime").
+- **Zone N Hold Minutes** (a `number`, 0-1425 in steps of 15): remaining minutes, 0 when no timed hold is running. Set it to arm a hold for N minutes; set 0 to cancel and return to Per Schedule. Good for durations ("hold two hours") and for automations.
 
-`fault_timestamp` (sensor, timestamp device class) is the time the most recent
-fault was logged (thermostat register 0x4202). A state change means a new fault
-was logged. Detection can lag by one slow-poll rotation (~5-7 min): the state is
-the fault's logging time, not the observation time. One-minute granularity: two
-faults logged within the same minute produce one state change. Requires `time_id`
-pointing at your `time:` source. No fault-active/cleared state exists on the bus;
-the wall thermostat's fault banner and Carrier's cloud `active` field are
-internal to the thermostat and are never published to the bus.
+Both entities mirror a running hold, land on the thermostat's quarter-hour grid (a requested 20 minutes holds for 15), and debounce picker chatter before writing the bus. Full semantics, including the within-15-minutes-means-tomorrow rule: [entity reference](docs/entity-reference.md#timed-holds).
 
-`fault_history` (text) renders the ten-entry log, newest first:
-`102(x2) today 13:08; 68 ODU yesterday 14:33; ...` — fault code (with
-occurrence count when >1), source when not the thermostat, day-relative date,
-and time. The status byte also carries a high bit we have not fully
-characterized; it is not rendered.
+### Vacation
 
-`active_fault` (binary) is deprecated: it warns at validation and publishes
-nothing. It can be removed from your yaml and/or disabled in HA.
+A system-wide **Vacation Hours** number (0-8760) arms and clears vacation: set the duration in hours and the thermostat clamps every zone's setpoints to its vacation min/max; set 0 to end it and return to schedule. It works at the bus's native one-hour resolution, so durations the wall UI cannot express ("away for 5 hours") are available.
+
+One caveat before you rely on short durations: some thermostat families (the SYSTXCC reference among them) floor sub-day values to whole days, so anything under 24 hours *clears* an active vacation instead of arming one. 24 and 48 hours arm normally.
+
+Any preset command other than Vacation also ends an active vacation. Full rules and the ASCII verbs: [entity reference](docs/entity-reference.md#vacation).
+
+### Fault Entities
+
+`fault_timestamp` (sensor) changes state each time the thermostat logs a new fault (register 0x4202); it needs `time_id`. `fault_history` (text sensor) renders the ten-entry fault log. No fault-active/cleared state exists on the bus, so these are event-style entities, not liveness flags. Semantics: [entity reference](docs/entity-reference.md#fault-entities).
 
 ## SAM ASCII Interface
 
-InfinitESP implements the Carrier SAM ASCII serial protocol, the same text command/response interface a real SYSTXCCSAM01 exposes on its DB-9 RS-232 port (9600 8N1, CRLF). The `sam_ascii` component is a plain ESPHome `UARTDevice`: it speaks the protocol over whatever `uart_id` you bind it to and has no transport of its own. The command set works the same way regardless of transport.
-
-**Over the network (the default in the example config).** The bundled config binds `sam_ascii` to a `uart_tcp_server` on port 23, so you can drive it with any telnet client:
+InfinitESP implements the Carrier SAM ASCII serial protocol, the same text command/response interface a real SYSTXCCSAM01 exposes on its DB-9 RS-232 port (9600 8N1, CRLF). The bundled config binds it to a TCP server on port 23, so you can drive it with any telnet client:
 
 ```bash
 nc infinitesp.local 23
 ```
 
-**Over a real RS-232 port (a true SAM replacement).** Point `sam_ascii` at a second hardware UART wired to an RS-232 transceiver and it behaves like the physical SAM's serial port, useful for replacing a faulty module or feeding a legacy automation controller that expects a SAM:
-
-```yaml
-uart:
-  - id: bus_uart       # ABCD RS485 bus (38400)
-    # ... RS485 pins ...
-    baud_rate: 38400
-  - id: ascii_uart     # SAM RS-232 port (9600 8N1)
-    tx_pin: GPIO4
-    rx_pin: GPIO5
-    baud_rate: 9600
-    data_bits: 8
-    parity: NONE
-    stop_bits: 1
-
-sam_ascii:
-  infinitesp_id: infinitesp_hub
-  uart_id: ascii_uart
-```
-
-The rest of this section shows the commands, which work identically over either transport.
-
-### Read Commands
-
-| Command | Description |
-|---------|-------------|
-| `MODE?` | System mode (HEAT/COOL/AUTO/OFF/EMERGENCY HEAT) |
-| `OAT?` | Outdoor air temperature (°F) |
-| `TIME?` | Current time from bus clock |
-| `DAY?` | Current day of week |
-| `ZONE?` | Displayed zone number (1-8) |
-| `BLIGHT?` | Backlight (ON/OFF) |
-| `CFGEM?` | Display units (F/C) |
-| `CFGDEAD?` | Heat/cool deadband (0-6) |
-| `CFGCPH?` | Cycles per hour (2-6) |
-| `CFGPER?` | Schedule periods per day (2 or 4) |
-| `CFGPGM?` | Programming enabled (ON/OFF) |
-| `DEALER?` | Dealer name |
-| `DEALERPH?` | Dealer phone |
-| `FILTRLVL?` / `UVLVL?` / `HUMLVL?` / `VENTLVL?` | Accessory life used % |
-| `FILTRRMD?` / `UVRMD?` / `HUMRMD?` / `VENTRMD?` | Accessory reminder (ON/OFF) |
-| `VACAT?` | Vacation state (ON/OFF) |
-| `VACDAYS?` | Vacation duration, whole days (rounded up) |
-| `VACHOURS?` | Vacation duration, hours (last commanded) |
-| `VACMINT?` / `VACMAXT?` | Vacation min/max temperature |
-| `VACMINH?` / `VACMAXH?` | Vacation min/max humidity |
-| `VACFAN?` | Vacation fan mode |
-| `Z1RT?` | Zone 1 room temperature (°F) |
-| `Z1RH?` | Zone 1 humidity (%) |
-| `Z1RHTG?` | Zone 1 humidification target (%) |
-| `Z1HTSP?` | Zone 1 heat setpoint (°F) |
-| `Z1CLSP?` | Zone 1 cool setpoint (°F) |
-| `Z1FAN?` | Zone 1 fan mode (AUTO/LOW/MED/HIGH) |
-| `Z1HOLD?` | Hold state (OFF / ON until HH:MM PM / PERMANENT) |
-| `Z1OVR?` | Timed override active (ON/OFF) |
-| `Z1OTMR?` | Override timer (HH:MM) |
-| `Z1UNOCC?` | Zone unoccupied (ON/OFF) |
-| `Z1NAME?` | Zone 1 name |
-| `HELP` | List all commands |
-
-Prefix with `Z#` for other zones (e.g., `Z2HTSP?`).
-
-### Write Commands
-
-Append `!` and a value to set parameters. Write commands need SAM emulation
-(`sam_address` nonzero); on a passive install they ACK but send nothing and
-change no state.
+Every `?` verb reads state; appending `!` and a value writes (writes need SAM emulation):
 
 ```
-MODE!COOL           # Set system mode (HEAT/COOL/AUTO/OFF; EHEAT/HEATPUMP need experimental_heat_source_modes and NAK otherwise)
-ZONE!2               # Set displayed zone (1-8; ACKed on every tstat tested, adopted by older UI-family controls)
-VACDAYS!7           # Arm vacation for 7 whole days (0-365; 0 clears)
-VACHOURS!48         # Arm vacation for 48 hours at native resolution (0-8760; 0 clears)
-Z1HTSP!72            # Set zone 1 heat setpoint
-Z1CLSP!68            # Set zone 1 cool setpoint
-Z1FAN!AUTO           # Set zone 1 fan mode
-Z1HOLD!120           # Hold zone 1 for 120 minutes
-Z1HOLD!on            # Permanent hold
-Z1HOLD!off           # Cancel hold, resume schedule
+MODE?                # system mode
+OAT?                 # outdoor air temperature (°F)
+Z1RT? / Z1HTSP?      # zone 1 room temp / heat setpoint
+Z1HOLD!120           # hold zone 1 for 120 minutes
+VACDAYS!7            # arm vacation for 7 days
+REPORT?              # full bus snapshot as JSON
+HELP                 # all commands
 ```
+
+Prefix zone verbs with `Z#` for other zones (`Z2HTSP?`, `Z3FAN!`, ...).
+
+`sam_ascii` is a plain ESPHome `UARTDevice`: it can also bind to a second hardware UART wired to an RS-232 transceiver, acting as a true SAM replacement for legacy automation controllers. Full verb tables, the RS-232 binding, and the `REPORT?` capture recipe with privacy notes: [SAM ASCII interface](docs/sam-ascii.md).
 
 ## How It Works
 
@@ -747,16 +504,6 @@ When using hardware UART transport, InfinitESP can automatically discover the th
 
 This feature is not available with the TCP serial bridge transport (circular dependency: need WiFi to reach the TCP bridge, need the bus to get WiFi credentials).
 
-## Targeted Systems
-
-InfinitESP targets Carrier Infinity / Bryant Evolution / ICP systems that communicate over the ABCD RS485 bus. The protocol is shared across this family. Only the author's own system has been confirmed working. The model numbers below identify the kinds of devices found on that bus. They are not a verified compatibility list, and behavior can vary across firmware revisions:
-
-- **SAM modules** (the device InfinitESP emulates): SYSTXCCSAM01, SYSTXCCSAMC01
-- **Thermostats**: Infinity Touch (SYSTXCCITC01), Evolution Connex (SYSTXBBECC01), legacy UID/UIZ controls with firmware 14+
-- **HVAC equipment**: Infinity/Evolution furnace, air handler, or heat pump on the ABCD bus
-
-See the [Disclaimer](#disclaimer) and [NOTICE](NOTICE).
-
 ## Troubleshooting
 
 ### Thermostat shows "SAM Communication Fault"
@@ -787,43 +534,22 @@ See the [Disclaimer](#disclaimer) and [NOTICE](NOTICE).
 - Check the STATS line in logs every 5 seconds
 - Healthy: `crc_fail=0`, `stale=0`, `overflow_evts=0`, `reply_got ≈ reply_exp`
 - `crc_fail > 0` → bus noise or bad wiring
+- `overflow_evts > 0` → main loop not keeping up (reduce logging verbosity)
+- `stale > 0` → bytes arriving with gaps > 100ms (transport issue)
+- Counter-by-counter decoding: [Bus Capture and Diagnostics](docs/bus-capture.md#stats-bus-health)
 
 ### A manufacture-date sensor stays unknown
 
 - Generated date sensors cover a whole device class and populate on their own. A manually declared one with `device_address` matches that exact node only: verify the address against a `REPORT?` dump (an ODU often answers at 0x52, not 0x50).
 - The IDU/ODU dates decode from register 0104 or, on two-stage ODUs, 3E09. If the thermostat never polls device info, no date ever arrives.
-- `overflow_evts > 0` → main loop not keeping up (reduce logging verbosity)
-- `stale > 0` → bytes arriving with gaps > 100ms (transport issue)
 
 ## Reporting Issues
 
-To help diagnose the problem, it's useful to include any of the following that you can gather:
+To help diagnose the problem, include any of the following you can gather:
 
-**ESPHome logs** are the most useful for protocol issues:
-
-```bash
-esphome logs infinitesp.yaml --device infinitesp.local
-```
-
-30 seconds of output is usually plenty. The `STATS` line printed every 5 seconds contains bus health diagnostics (`crc_fail`, `reply_exp`, `reply_got`, etc.).
-
-**The REPORT? command** provides a quick bus snapshot and often eliminates the need for full logs. It produces a JSON dump of all observed bus traffic, device info, cached registers, and diagnostic counters: a self-contained snapshot of the bus state.
-
-For timing-sensitive problems (mode changes that don't stick, flapping entities, suspected collisions), a JSONL stream capture is better than REPORT? - see [Bus Capture Stream](#bus-capture-stream-jsonl-default-on): `nc infinitesp.local 2373 | tee capture.jsonl` for 30 seconds around the behavior.
-
-To save a clean snapshot to `report.json`, run this one-liner from any machine that can reach the device (Python ships with the ESPHome toolchain. On Windows use `python` instead of `python3`):
-
-```bash
-python3 -c "import socket;s=socket.create_connection(('infinitesp.local',23),5);s.sendall(b'REPORT?\r\n');open('report.json','wb').write(next(l for l in s.makefile('rb') if l.startswith(b'{')))"
-```
-
-Attach `report.json` to your issue. To explore interactively instead (querying live values like `MODE?`, `Z1RT?`), connect with netcat and type commands:
-
-```bash
-nc infinitesp.local 23
-```
-
-> **Privacy note:** serials and dealer information are redacted in the REPORT output as of v2026.9.4. Device serials keep their first four characters (the week and year of manufacture); the rest of each serial field is masked. WiFi, cloud-account, and dealer registers are omitted entirely. No manual scrubbing is needed before posting. On older versions, open the file and remove the `serial` fields and any register data from `0104`, `060A`, `4608`, `4609`, and `460A` before posting publicly.
+- **`capture.jsonl`** (best for timing-sensitive problems: mode changes that don't stick, flapping entities, suspected collisions): `nc infinitesp.local 2373 | tee capture.jsonl` for 30 seconds around the behavior. Format spec: [Bus Capture and Diagnostics](docs/bus-capture.md).
+- **`report.json`**: a `REPORT?` snapshot over the SAM ASCII port, a self-contained JSON dump of observed bus traffic, cached registers, and counters. Redacted for public posting. Recipe: [SAM ASCII interface](docs/sam-ascii.md#report).
+- **ESPHome logs**: `esphome logs infinitesp.yaml --device infinitesp.local` for 30 seconds. The `STATS` line printed every 5 seconds carries bus health counters.
 
 **Hardware details** help narrow down firmware-specific issues:
 
@@ -832,6 +558,10 @@ nc infinitesp.local 23
 - Outdoor unit model (condenser/heat pump)
 - Zone controller (installed or not)
 - RS485 transport (direct UART or TCP serial bridge)
+
+### 📣 Calling all users:
+
+If you have hardware such as a Carrier NIM (SYSTXCCNIM01), ~Damper Control Module (SYSTXCC4ZC01)~(implemented, but new logs are always good validation), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Understanding and emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be valuable. A `REPORT?` snapshot helps too, but the [JSONL capture stream](docs/bus-capture.md) is best for emulation work since it shows the timing and framing that static register dumps miss. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
 
 ## Project Structure
 

@@ -153,7 +153,7 @@ sam_ascii:
 #   nc infinitesp.local 2373 | tee capture.jsonl
 # Credentials and identifying serials are removed before anything leaves
 # the device, so the file is safer to attach to an issue as-is.
-# see README "Bus Capture Stream" section for detail
+# see docs/bus-capture.md for detail
 bus_jsonl:
   infinitesp_id: infinitesp_hub
   uart_id: jsonl_uart

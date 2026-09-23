@@ -13,16 +13,24 @@ for variant types); opt-out flags on the climate block remove generated entities
 |---|---|---|
 | `id` | auto | Hub id, referenced by every entity's `infinitesp_id`. |
 | `uart_id` | required | UART or bridge the bus runs on. |
-| `sam_address` | `0x92` | Bus address for SAM emulation. `0` disables. |
+| `sam_address` | `0x92` | Bus address for SAM emulation. `0` disables (see [passive mode](#passive-mode-sam_address-0)). |
 | `address` | - | Deprecated alias for `sam_address`. |
 | `zone_controller_address` | `0` | `0x60` emulates a zone controller. `0` passively monitors a real one. |
 | `idu_address` | `0` | Pin the indoor unit to an exact bus node instead of device-class matching. |
 | `odu_address` | `0` | Pin the outdoor unit to an exact bus node instead of device-class matching. |
-| `temperature_unit` | `auto` | `auto` (bus heuristic), `F`, or `C`. The thermostat's unit setting is authoritative once read. |
+| `temperature_unit` | `auto` | `auto` (read from the bus), `F`, or `C`. See [temperature unit detection](#temperature-unit-detection). |
 | `auto_diagnostics` | `true` | `false` drops the generated diagnostics group (below). |
+| `experimental_heat_source_modes` | `false` | Adds `emergency_heat` / `heat_pump` to the system mode select and `MODE!`. Protocol experiment, not control. See [select types](#select-types). |
 | `status_light_id` | - | Existing light entity for status. Mutually exclusive with `status_led_pin`. |
 | `status_led_pin` | - | GPIO for a simple status LED. |
 | `flow_control_pin` | - | RS485 transmit-enable (DE/RE) GPIO. |
+
+### Passive mode (`sam_address: 0`)
+
+Passive mode disables emulation, not all transmission. The firmware still sends an
+`0x93` table-name discovery probe to identify observed devices, and with
+`temperature_unit: auto` it polls the thermostat's 3B05 to detect the display unit.
+Writes (setpoints, holds, mode, vacation) are refused in this mode.
 
 ### Zone controller sensor feeds
 
@@ -37,6 +45,64 @@ sensors into zone controller emulation. Each takes:
 
 These require `zone_controller_address`. Zones 2-4 sit on the primary controller (0x60),
 zones 5-8 on a second controller (0x61, seeded only when a zone 5-8 feed is wired).
+A thermostat commissioned for only four zones never polls `0x61`, so the secondary
+stays inert unless you wire sensors into `zc_zone_5` through `zc_zone_8`.
+
+**Set `sensor_unit` explicitly for every zone.** It declares the unit your sensor
+*publishes*, not the thermostat's display setting. The two are unrelated: flipping
+the thermostat between °F/°C display does not change what your sensor publishes.
+ESPHome emits a config warning for any zone where `sensor_unit` is missing. The
+default is the system unit, and a wrong guess causes silent mis-conversion.
+
+**Sanity band.** InfinitESP rejects any injected reading that converts to values
+outside of the 40-99 °F band (the indoor range the thermostat itself uses for
+setpoints) and falls back to the primary zone-1 ambient value until a plausible
+reading returns. A wrong `sensor_unit` always lands outside this band: a °F sensor
+treated as °C reports a 70 °F room as ~160 °F, so the zone reads zone-1 ambient
+instead of garbage. The range check is a safety net, not a correctness test: after
+configuring, check the zone temperatures on your thermostat and confirm they match
+the room. A reading that silently fell back to zone-1 because of a mis-set unit
+looks "fine" (a real temperature, just not *that* zone's), so visual confirmation
+is the only reliable validation.
+
+**LAT/HPT thermistor ports.** The zone board also has leaving-air-temperature (LAT)
+and HPT thermistor ports, reported as TLV entries in the same register (ids `0x14`
+and `0x1C`). `zc_lat` and `zc_hpt` feed external sensors into those ports. Unlike
+zone temperatures, supply-air temp has no sane ambient fallback: when the fed sensor
+goes stale (past `staleness_timeout`), the entry reverts to not-installed so the
+thermostat stops seeing it rather than reading a bogus value. These sensors are
+disabled by default in Home Assistant. Enable them if your board reports them.
+
+Sensor injection requires emulation. With a passive (physical) zone controller,
+the real hardware owns temperature reporting and these blocks have no effect.
+If `temperature_sensor` is omitted for a zone, InfinitESP reports whatever the
+bus last reported for that zone.
+
+### Temperature unit detection
+
+The Carrier ABCD bus encodes temperatures differently depending on the thermostat's
+display unit setting (°F or °C). In `auto` mode InfinitESP reads the active unit
+from the bus and applies it automatically.
+
+The unit flag lives at data offset 1 of every table-0x3B register the thermostat
+serves (state, zones, accessories, dealer): `0x00` = English/°F, `0x01` = Metric/°C.
+
+- When emulating the SAM, the thermostat pushes its dealer register (3B06) to InfinitESP on every poll cycle. InfinitESP reads the flag from it.
+- When not emulating the SAM, InfinitESP polls the thermostat's accessories register (3B05) and reads the flag from the reply.
+
+Until the first authoritative read lands (a few seconds after boot), InfinitESP falls
+back to a heuristic: any active zone temperature byte ≤ 50 means °C. No plausible
+HVAC zone exceeds 50°C (122°F).
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Read the unit from the bus (3B06 when emulating the SAM, else a polled 3B05), with the zone-temperature heuristic as a boot-time fallback. |
+| `F` | Force Fahrenheit. |
+| `C` | Force Celsius. |
+
+The explicit options exist for edge cases or debugging. All temperature sensors
+publish in °C with `device_class: temperature`, so Home Assistant converts to the
+user's preferred display unit.
 
 ## Climate block
 
@@ -200,6 +266,15 @@ tested ACKs the write; whether the display switches depends on the wall
 control's generation. The older UI family (UIZ-era) are said to adopt it(issue #37)
 and newer touch models ack and revert without changing the displayed value.
 
+**Heat-source control is not on the bus.** The `heat_source` text sensor reports what
+the system is running (furnace / heat_pump / electric / none), but no bus path sets
+it: the selection lives in the thermostat (wall or Carrier app), and the
+emergency_heat / heat_pump mode writes never select it. On Next Gen Infinity
+thermostats the `heat_pump` write has additionally been observed turning the system
+off mid-call, and `off` writes can be ignored while heating. Those two options are
+hidden from the System Mode select unless `experimental_heat_source_modes` is set on
+the hub, and every use logs a warning. Treat them as protocol experiments, not control.
+
 ## Covers
 
 Damper cover, one per zone. `zone` required. `on_change` trigger fires with the new
@@ -209,21 +284,78 @@ on the bus it stays unknown.
 
 ## Time and number entities
 
-Time entities and hold-minutes numbers are per zone, generated:
+Time entities and hold-minutes numbers are per zone, generated. One system-wide
+vacation-hours number is generated alongside them.
 
-- Hold until (`time` entity): clock time the hold ends at.
-- Hold minutes (`number`, 0-1425 in steps of 15): remaining or to-arm minutes. 0 cancels.
+### Timed holds
 
-One system-wide number is generated alongside them:
+Two entities read and set the same native bus timed hold. The thermostat owns
+the countdown, the same mechanism the wall unit uses:
 
-- Vacation hours (`number`, 0-8760 in steps of 1): vacation duration in hours at the
-  bus's native resolution; 0 clears. The read side is the last commanded value —
-  the thermostat serves no countdown (4012 is config-only). The climate entities'
-  "Vacation" preset reports activity; any other preset command clears it. Zone key
-  ignored (system-wide) if you declare one explicitly.
+- **Hold until** (`time` entity): set a clock time and the hold ends then. Good for absolute terms ("hold until bedtime").
+- **Hold minutes** (`number`, 0-1425 in steps of 15): remaining minutes, 0 when no timed hold is running. Set it to arm a hold for N minutes; set 0 to cancel and return to Per Schedule. Good for durations ("hold two hours") and for automations.
+
+Behavior both entities share:
+
+- They show the value the bus will actually produce: a requested 20 minutes displays as 15 immediately (the thermostat's grid is quarter-hours), and a requested 8:40 PM end may hold until 8:45 PM. The `hold_state` sensor always shows the true end.
+- Sets are debounced for about a second and a half after you stop adjusting, because Home Assistant's pickers send every intermediate value. One bus write arms the hold after the value settles.
+- A hold-until target within 15 minutes of now means tomorrow.
+- While a timed hold runs, both entities mirror it. After the hold ends or is cancelled they keep their last value until the next hold is set.
+- Cancel with either zero minutes or the climate entity's "Per Schedule" preset.
+
+### Vacation
+
+**Vacation hours** (`number`, 0-8760 in steps of 1, system-wide, zone key ignored)
+arms and clears vacation: set it to the duration in hours and the thermostat clamps
+every zone's setpoints to its configured vacation min/max; set 0 to end vacation and
+return to schedule. It uses the bus's native one-hour resolution, so durations the
+wall UI cannot express ("away for 5 hours") work. The matching ASCII verbs are
+`VACDAYS!`/`VACHOURS!`.
+
+- **Tstat-family caveat on sub-day durations:** some thermostat families (our
+  SYSTXCC-reference among them) floor the hours value to whole days when
+  adopting the write. Anything under 24 hours reads as 0 days and *clears* an
+  active vacation instead of arming one (`VACHOURS!5` ends vacation on these;
+  24 and 48 arm normally). Older UI-family controls honor native hours
+  (verified by a real-SAM01 user). Durations under 24 h are sent exactly as
+  commanded; whether they arm depends on the wall control. If a short duration
+  does not take, this is why.
+- The thermostat does not report the countdown on the bus. Register 4012 carries
+  only the vacation config, so the number shows the duration you last set, not a
+  ticking remaining. Vacation activity itself is visible on the climate entities
+  as the "Vacation" preset, and the wall unit's own vacation banner keeps counting
+  down normally.
+- Any preset command other than Vacation (Per Schedule, Wake, the standard home/
+  away/sleep presets) ends an active vacation, including one armed at the wall unit.
+  Arming vacation needs a duration, so setting the Vacation preset itself from HA
+  is a no-op. Use the number.
+- Vacation min/max setpoints come from the thermostat's own config (visible as the
+  vacation min/max temp sensors); `VACMINT!`/`VACMAXT!` can change them.
+- Requires SAM emulation; on a passive install the number accepts the value but
+  sends nothing (it snaps back), like all write verbs.
+
+## Fault entities
+
+`fault_timestamp` (sensor, timestamp device class) is the time the most recent
+fault was logged (thermostat register 0x4202). A state change means a new fault
+was logged. Detection can lag by one slow-poll rotation (~5-7 min): the state is
+the fault's logging time, not the observation time. One-minute granularity: two
+faults logged within the same minute produce one state change. Requires `time_id`
+pointing at your `time:` source. No fault-active/cleared state exists on the bus;
+the wall thermostat's fault banner and Carrier's cloud `active` field are
+internal to the thermostat and are never published to the bus.
+
+`fault_history` (text) renders the ten-entry log, newest first:
+`102(x2) today 13:08; 68 ODU yesterday 14:33; ...` — fault code (with
+occurrence count when >1), source when not the thermostat, day-relative date,
+and time. The status byte also carries a high bit we have not fully
+characterized; it is not rendered.
+
+`active_fault` (binary) is deprecated: it warns at validation and publishes
+nothing. It can be removed from your yaml and/or disabled in HA.
 
 ## Deprecated
 
 - `compressor_frequency` sensor: alias of `odu_requested_cfm`. Warns at validation.
 - `active_fault` binary sensor: publishes nothing.
-- `address` hub key: alias of `sam_address`. Warns at validation.
+- `address` hub key: alias for `sam_address`. Warns at validation.
