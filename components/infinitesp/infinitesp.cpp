@@ -1975,6 +1975,26 @@ void InfinitESPComponent::initialize_defaults_() {
       store_register_(sam_address_, REG_SAM_STATUS, data);
     }
 
+    // Register 040E - interface software P/N "P3534315" (17 bytes). Byte-exact
+    // capture from the physical SAM (2026-06-26 full-table scan, re-confirmed
+    // 2026-09-28). UID01 thermostats read this during INSTALL commissioning
+    // (issue #41): an exception there makes the tstat disown the SAM entirely.
+    {
+      std::vector<uint8_t> data = {'P', '3', '5', '3', '4', '3', '1', '5'};
+      data.resize(16, 0x00);
+      data.push_back(0x02);
+      store_register_(sam_address_, REG_SAM_INTF_PN, data);
+    }
+
+    // Register 0420 - interface config (20 bytes, byte-exact physical-SAM capture).
+    // Undecoded; seeded so reads match real hardware instead of excepting.
+    {
+      std::vector<uint8_t> data = {0x00, 0x00, 0x73, 0xFF, 0xFF, 0x57, 0xFF, 0x57,
+                                   0x00, 0xFF, 0xFF, 0x03, 0x18, 0x54, 0x18, 0x6A,
+                                   0x54, 0x54, 0x00, 0x00};
+      store_register_(sam_address_, REG_SAM_INTF_CFG, data);
+    }
+
     // Register 3B02 - System state (29 bytes)
     {
       std::vector<uint8_t> data(REG3B02_SIZE, 0);

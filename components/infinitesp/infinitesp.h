@@ -66,6 +66,13 @@ static const uint8_t FUNC_EXCEPTION = 0x15;
 // Register keys (table<<8 | row)
 static const uint16_t REG_DEVICE_INFO = 0x0104;
 static const uint16_t REG_SAM_STATUS = 0x030D;
+// Table 0x04 "SAM INTF" (interface). UID01-generation thermostats probe 040E during
+// INSTALL ("searching for remote access") and refuse to register a SAM that excepts
+// it (issue #41). Values below captured from the physical SAM; table 3F is refused
+// outright by real hardware (FUNC 0x15 code 0x04) — the store's unknown-register
+// exception already matches that answer.
+static const uint16_t REG_SAM_INTF_PN = 0x040E;    // interface software P/N (17 bytes)
+static const uint16_t REG_SAM_INTF_CFG = 0x0420;  // interface config (20 bytes)
 static const uint16_t REG_SAM_STATE = 0x3B02;
 static const uint16_t REG_SAM_ZONES = 0x3B03;
 // 0x3B04 = SAM vacation — NOT stored as a register (pushed as a change-frame; see REG3B04_FLAG_*).
