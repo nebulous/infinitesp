@@ -239,6 +239,11 @@ static const uint8_t REG3B02_MINUTES = 26;           // uint16 BE, minutes since
 static const uint8_t REG3B02_DISPLAYED_ZONE = 28;
 static const uint8_t REG3B02_SIZE = 29;
 
+// Change flags for 3B02 fields
+static const uint16_t CHANGE_WEEKDAY = 0x080;
+static const uint16_t CHANGE_MINUTES = 0x100;
+static const uint16_t CHANGE_DISPLAYED_ZONE = 0x200;
+
 // Register 3B03 layout offsets (see AGENTS.md for full layout)
 static const uint8_t REG3B03_ACTIVE_ZONES = 0;
 static const uint8_t REG3B03_CHANGE_FLAGS = 2;

@@ -1923,19 +1923,14 @@ void InfinitESPComponent::set_displayed_zone(uint8_t zone) {
   data[REG3B02_DISPLAYED_ZONE] = zone;
   mirror_to_sam_(REG_SAM_STATE, data);
 
-  // Same two-pronged recipe as set_system_mode: the 3B03 notify with the
-  // mode flag primes the notify-pull path, then the 3B02 write delivers the
+  // The 3B02 write delivers the
   // data. All four experiment variants were ACKed on 2026-09-20; adoption of
   // byte 28 works on the UIZ family and is ignored by newer touch units, so
   // an ACK here does not imply the display changed.
-  auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
-  if (zones_data && zones_data->size() >= 11) {
-    std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, 0x00, 0x00, CHANGE_MODE};
-    payload.insert(payload.end(), zones_data->begin() + 3, zones_data->end());
-    send_write_frame_(ADDR_THERMOSTAT, 0x01, payload);
-  }
+
   {
-    std::vector<uint8_t> payload_3b02 = {0x00, 0x3B, 0x02, 0x00, 0x00, CHANGE_MODE};
+    uint16_t modeword = CHANGE_DISPLAYED_ZONE | CHANGE_MINUTES | CHANGE_WEEKDAY;
+    std::vector<uint8_t> payload_3b02 = {0x00, 0x3B, 0x02, 0x00, (uint8_t) (modeword >> 8), (uint8_t) (modeword & 0xff)};
     payload_3b02.insert(payload_3b02.end(), data.begin() + 3, data.end());
     send_write_frame_(ADDR_THERMOSTAT, 0x01, payload_3b02);
   }
