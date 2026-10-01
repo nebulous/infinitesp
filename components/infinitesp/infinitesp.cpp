@@ -1929,7 +1929,7 @@ void InfinitESPComponent::set_displayed_zone(uint8_t zone) {
   // an ACK here does not imply the display changed.
 
   {
-    uint16_t modeword = CHANGE_DISPLAYED_ZONE | CHANGE_MINUTES | CHANGE_WEEKDAY;
+    uint16_t modeword = CHANGE_DISPLAYED_ZONE;
     std::vector<uint8_t> payload_3b02 = {0x00, 0x3B, 0x02, 0x00, (uint8_t) (modeword >> 8), (uint8_t) (modeword & 0xff)};
     payload_3b02.insert(payload_3b02.end(), data.begin() + 3, data.end());
     send_write_frame_(ADDR_THERMOSTAT, 0x01, payload_3b02);
