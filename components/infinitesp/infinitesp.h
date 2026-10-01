@@ -239,7 +239,8 @@ static const uint8_t REG3B02_MINUTES = 26;           // uint16 BE, minutes since
 static const uint8_t REG3B02_DISPLAYED_ZONE = 28;
 static const uint8_t REG3B02_SIZE = 29;
 
-// Change flags for 3B02 fields
+// 3B02 change-flag word (BE16 at register offsets 1-2): which fields the
+// thermostat adopts from a write
 static const uint16_t CHANGE_WEEKDAY = 0x080;
 static const uint16_t CHANGE_MINUTES = 0x100;
 static const uint16_t CHANGE_DISPLAYED_ZONE = 0x200;
