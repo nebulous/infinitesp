@@ -1916,26 +1916,19 @@ void InfinitESPComponent::set_displayed_zone(uint8_t zone) {
   }
 
   std::vector<uint8_t> data = *state_data;
-  // Time bytes (weekday/minutes) ride along verbatim from the cached mirror.
-  // The UIZ generation resets its internal seconds on any 3B02 write, and
-  // carrying the last broadcast time bounds the skew the way infinitive does
-  // (issue #37).
+  // Time bytes ride along unflagged: the thermostat applies only fields
+  // whose change flag is set, and flagged time from the mirror (always
+  // slightly stale) would set its clock back. The UIZ generation resets its
+  // seconds counter on any 3B02 write regardless of flags (issue #37).
   data[REG3B02_DISPLAYED_ZONE] = zone;
   mirror_to_sam_(REG_SAM_STATE, data);
 
-  // Same two-pronged recipe as set_system_mode: the 3B03 notify with the
-  // mode flag primes the notify-pull path, then the 3B02 write delivers the
-  // data. All four experiment variants were ACKed on 2026-09-20; adoption of
-  // byte 28 works on the UIZ family and is ignored by newer touch units, so
-  // an ACK here does not imply the display changed.
-  auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
-  if (zones_data && zones_data->size() >= 11) {
-    std::vector<uint8_t> payload = {0x00, 0x3B, 0x03, 0x00, 0x00, CHANGE_MODE};
-    payload.insert(payload.end(), zones_data->begin() + 3, zones_data->end());
-    send_write_frame_(ADDR_THERMOSTAT, 0x01, payload);
-  }
+  // Solo 3B02 write with the displayed-zone flag. UIZ-family controls apply
+  // it immediately. Touch units queue it while the display sleeps and apply
+  // it at the next wake, so the ACK only means the frame was accepted.
   {
-    std::vector<uint8_t> payload_3b02 = {0x00, 0x3B, 0x02, 0x00, 0x00, CHANGE_MODE};
+    uint16_t change_flags = CHANGE_DISPLAYED_ZONE;
+    std::vector<uint8_t> payload_3b02 = {0x00, 0x3B, 0x02, 0x00, (uint8_t) (change_flags >> 8), (uint8_t) (change_flags & 0xff)};
     payload_3b02.insert(payload_3b02.end(), data.begin() + 3, data.end());
     send_write_frame_(ADDR_THERMOSTAT, 0x01, payload_3b02);
   }
