@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/core/component.h"
+#include "esphome/core/automation.h"
 #include "esphome/core/preferences.h"
 #include "esphome/core/gpio.h"
 #include "esphome/components/uart/uart.h"
@@ -24,6 +25,9 @@ namespace esphome {
 namespace sensor {
 class Sensor;
 }  // namespace sensor
+namespace binary_sensor {
+class BinarySensor;
+}  // namespace binary_sensor
 namespace infinitesp {
 
 // Temperature unit configuration for decoding bus register values. This is
@@ -226,6 +230,30 @@ static const float ZC_TEMP_SCALE = 16.0f;
 // thermistor while still catching gross sensor_unit misconfigurations.
 static const float ZC_THERMISTOR_MIN_F = -40.0f;
 static const float ZC_THERMISTOR_MAX_F = 250.0f;
+
+// NIM registers (device address 0x80, class 8). Proven live over a full
+// call/defrost cycle — issue #41 16 h capture; layouts in PROTOCOL.md
+// "NIM (0x80)". The NIM bridges ONE non-communicating device (1-/2-stage HP
+// dual fuel, 2-speed R-22 ODU, or an HRV/ERV, plus optionally one ventilator
+// on YRGB) onto the ABCD bus. It never initiates traffic and never ACKs
+// writes (0 register-matched replies to 11,207 writes in the capture);
+// the tstat re-sends 0305/3404 as standing commands every ~10 s cycle.
+static const uint16_t REG_NIM_DEMAND = 0x0305;      // tstat write, 12 B: [0] heat stage, [2] cool stage
+static const uint16_t REG_NIM_CMD = 0x030B;         // 4 B one-off write (00 AA 00 00 seen once)
+static const uint16_t REG_NIM_DIAG = 0x030D;        // 7 B zeros (never seen nonzero)
+static const uint16_t REG_NIM_STATUS = 0x0316;      // 15 B reply: mirrors demand, defrost input
+static const uint16_t REG_NIM_CFG_STATUS = 0x030E;  // 8 B, read around heat-source config changes
+static const uint16_t REG_NIM_CONFIG = 0x031C;      // 28 B config push; real NIM NEVER answers reads of it
+// Table-34 handshake registers are shared with the ZC (REG_ZC_HEARTBEAT /
+// REG_ZC_PRESENCE): the tstat's INSTALL scan probes ZC slots and the NIM slot
+// with the same 3405 presence read.
+
+// NIM 0316 layout (offsets header-relative)
+static const uint8_t NIM_STATUS_SIZE = 15;
+static const uint8_t NIM_STATUS_HEAT = 0;     // heat stage — mirrors 0305 [0]
+static const uint8_t NIM_STATUS_COOL = 2;     // cool stage — mirrors 0305 [2] (demand, not actuals)
+static const uint8_t NIM_STATUS_CONST = 10;   // 0x01 always, idle included
+static const uint8_t NIM_STATUS_DEFROST = 14; // defrost flag — physical input from the HP defrost board
 
 // Register 3B02 layout offsets (see AGENTS.md for full layout)
 static const uint8_t REG3B02_ACTIVE_ZONES = 0;
@@ -580,6 +608,25 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
         return true;
     return false;
   }
+
+  // --- NIM emulation (branch-local experiment; PROTOCOL.md "NIM (0x80)") ---
+  void set_nim_address(uint8_t addr) { nim_address_ = addr; }
+  uint8_t get_nim_address() const { return nim_address_; }
+  bool nim_enabled() const { return nim_address_ != 0; }
+  bool is_emu_nim_addr_(uint8_t addr) const { return nim_enabled() && addr == nim_address_; }
+
+  // Defrost input: wire a binary_sensor (e.g. the HP's defrost signal via an
+  // optocoupler) into the emulation; its state drives 0316[14]. Emulation
+  // only — a passive install ignores it.
+  void set_nim_defrost_sensor(binary_sensor::BinarySensor *s);
+
+  // Hardware-control events, ZC-cover style (see infinitesp_cover.h): the hub
+  // reports demand/state, user yaml acts on it. Each fires with the new value
+  // as the lambda arg, on change only — the tstat re-sends 0305 every cycle,
+  // and per-write firing would spam automations.
+  Trigger<int> *get_nim_heat_stage_trigger() { return &nim_heat_stage_trigger_; }
+  Trigger<int> *get_nim_cool_stage_trigger() { return &nim_cool_stage_trigger_; }
+  Trigger<bool> *get_nim_defrost_trigger() { return &nim_defrost_trigger_; }
 
   // True if this zone's damper is open (receiving conditioned air). Reads the
   // damper COMMAND register 0308, not 0319: the secondary controller returns
@@ -1114,6 +1161,21 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   ZCZoneConfig zc_zones_[9];  // index 0=unused, 1-8=zones (2-8 may have external sensors)
   ZCZoneConfig zc_lat_;       // LAT thermistor (register 0302 id 0x14)
   ZCZoneConfig zc_hpt_;       // HPT thermistor (register 0302 id 0x1C)
+
+  // NIM emulation state
+  uint8_t nim_address_{0};  // 0 = NIM emulation disabled
+  Trigger<int> nim_heat_stage_trigger_;
+  Trigger<int> nim_cool_stage_trigger_;
+  Trigger<bool> nim_defrost_trigger_;
+  int8_t nim_last_heat_{-1};  // last heat stage fired; -1 = never (first demand fires)
+  int8_t nim_last_cool_{-1};
+  // Handle a 0305 demand write: store, mirror into 0316, fire triggers.
+  void handle_nim_demand_write_(const std::vector<uint8_t> &data);
+  // Update one byte of the stored NIM 0316; notifies entities. Returns true
+  // if the value changed.
+  bool update_nim_status_byte_(uint8_t offset, uint8_t value);
+  // Defrost input callback (set_nim_defrost_sensor wiring).
+  void on_nim_defrost_input_(bool state);
   uint32_t last_zc_sensor_check_{0};
   uint32_t last_rx_time_{0};
   uint32_t last_poll_time_{0};

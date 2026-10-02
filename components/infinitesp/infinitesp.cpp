@@ -1,6 +1,7 @@
 #include "infinitesp.h"
 #include "version.h"
 #include "esphome/components/sensor/sensor.h"
+#include "esphome/components/binary_sensor/binary_sensor.h"
 
 #include <algorithm>
 
@@ -593,9 +594,10 @@ void InfinitESPComponent::dispatch_frame_() {
     }
   }
 
-  // Check if addressed to us (SAM or optional zone controller)
+  // Check if addressed to us (SAM, optional zone controller, or optional NIM)
   bool to_us = (sam_enabled() && current_frame_.dst == sam_address_);
   bool to_zc = is_emu_zc_addr_(current_frame_.dst);
+  bool to_nim = is_emu_nim_addr_(current_frame_.dst);
 
   // Write-ACK handling: a bare [00] REPLY addressed to one of our
   // emulated addresses indicates acceptance of a WRITE we sent.
@@ -660,7 +662,7 @@ void InfinitESPComponent::dispatch_frame_() {
 
   if (current_frame_.func == FUNC_REPLY && current_frame_.dst == ADDR_FAKESAM) {
     handle_discovery_reply_();
-  } else if (!reply_handled && (to_us || to_zc)) {
+  } else if (!reply_handled && (to_us || to_zc || to_nim)) {
     switch (current_frame_.func) {
       case FUNC_READ:
         handle_read_request_();
@@ -963,11 +965,22 @@ void InfinitESPComponent::handle_read_request_() {
   uint8_t table = current_frame_.payload[1];
   uint8_t row = current_frame_.payload[2];
   uint16_t reg_key = (table << 8) | row;
-  uint8_t dest = current_frame_.dst;  // who they're talking to (SAM or ZC)
+  uint8_t dest = current_frame_.dst;  // who they're talking to (SAM, ZC, or NIM)
   bool is_zc = is_emu_zc_addr_(dest);
+  bool is_nim = is_emu_nim_addr_(dest);
+
+  // NIM 031C: the real NIM never answers reads of its config register — the
+  // tstat's own read-back after writing 031C got silence in the 16 h #41
+  // capture (0 replies), and it tolerates it. Stay silent too: no reply, no
+  // exception (an exception is a different, stronger signal — the #41 SAM
+  // story shows exceptions can make a tstat disown a device).
+  if (is_nim && reg_key == REG_NIM_CONFIG) {
+    ESP_LOGD("InfinitESP", "NIM READ %04X — staying silent (real-NIM behavior)", reg_key);
+    return;
+  }
 
   ESP_LOGD("InfinitESP", "%s READ %04X from %02X",
-           is_zc ? "ZC" : "SAM", reg_key, current_frame_.src);
+           is_nim ? "NIM" : (is_zc ? "ZC" : "SAM"), reg_key, current_frame_.src);
 
   const std::vector<uint8_t> *reg_data = get_register(dest, reg_key);
   if (reg_data != nullptr) {
@@ -977,14 +990,14 @@ void InfinitESPComponent::handle_read_request_() {
 
     // Debug: log model/serial fields from 0104 to verify register data before TX
     if (reg_key == REG_DEVICE_INFO && reg_data->size() >= 96) {
-      ESP_LOGI("InfinitESP", "%s 0104 model: %.*s", is_zc ? "ZC" : "SAM", 20, (const char *) &(*reg_data)[64]);
-      ESP_LOGI("InfinitESP", "%s 0104 serial: %.*s", is_zc ? "ZC" : "SAM", 24, (const char *) &(*reg_data)[96]);
+      ESP_LOGI("InfinitESP", "%s 0104 model: %.*s", is_nim ? "NIM" : (is_zc ? "ZC" : "SAM"), 20, (const char *) &(*reg_data)[64]);
+      ESP_LOGI("InfinitESP", "%s 0104 serial: %.*s", is_nim ? "NIM" : (is_zc ? "ZC" : "SAM"), 24, (const char *) &(*reg_data)[96]);
     }
 
     send_reply_(current_frame_.src, current_frame_.src_bus, dest, current_frame_.dst_bus, reply_payload);
   } else {
     ESP_LOGI("InfinitESP", "%s READ unknown register %04X — returning EXCEPTION",
-             is_zc ? "ZC" : "SAM", reg_key);
+             is_nim ? "NIM" : (is_zc ? "ZC" : "SAM"), reg_key);
     send_exception_(current_frame_.src, current_frame_.src_bus, dest, current_frame_.dst_bus, table, row, 0x04);
   }
 }
@@ -997,8 +1010,33 @@ void InfinitESPComponent::handle_write_request_() {
   uint8_t table = current_frame_.payload[1];
   uint8_t row = current_frame_.payload[2];
   uint16_t reg_key = (table << 8) | row;
-  uint8_t dest = current_frame_.dst;  // who they're writing to (SAM or ZC)
+  uint8_t dest = current_frame_.dst;  // who they're writing to (SAM, ZC, or NIM)
   bool is_zc = is_emu_zc_addr_(dest);
+  bool is_nim = is_emu_nim_addr_(dest);
+
+  // NIM write handling. The real NIM never ACKs ANY write (0 register-matched
+  // replies to 11,207 writes in the 16 h #41 capture — 0305, 3404, 031C, 030B
+  // all silent; the tstat re-sends as standing commands). So unlike the ZC
+  // branch below, every NIM write path ends in silence, never an ACK.
+  if (is_nim) {
+    ESP_LOGI("InfinitESP", "NIM WRITE %04X from %02X (%d bytes)",
+             reg_key, current_frame_.src, (int) current_frame_.payload.size() - 3);
+
+    if (current_frame_.payload.size() > 3 && reg_key != REG_DEVICE_INFO) {
+      std::vector<uint8_t> data(current_frame_.payload.begin() + 3,
+                                 current_frame_.payload.end());
+      store_register_(dest, reg_key, data);
+
+      if (reg_key == REG_NIM_DEMAND) {
+        // 12 B standing command: [0] heat stage, [2] cool stage. Mirror into
+        // 0316 and fire the on_heat_stage / on_cool_stage triggers.
+        handle_nim_demand_write_(data);
+      } else {
+        notify_entities_(dest, reg_key);
+      }
+    }
+    return;  // silence — real-NIM write behavior
+  }
 
   // ZC-specific write handling
   if (is_zc) {
@@ -1290,7 +1328,7 @@ void InfinitESPComponent::poll_discovery_() {
   uint32_t best_ts = UINT32_MAX;
   for (const auto &akv : device_registers_) {
     uint8_t addr = akv.first;
-    if (addr == sam_address_ || is_emu_zc_addr_(addr) || addr == ADDR_FAKESAM)
+    if (addr == sam_address_ || is_emu_zc_addr_(addr) || is_emu_nim_addr_(addr) || addr == ADDR_FAKESAM)
       continue;  // our own emulated roles, or the phantom itself
     for (const auto &rkv : akv.second) {
       uint8_t table = rkv.first >> 8;
@@ -2214,6 +2252,64 @@ void InfinitESPComponent::initialize_defaults_() {
       ESP_LOGI("InfinitESP", "No zones >4 configured — secondary ZC at 0x%02X not emulated",
                (uint8_t) (zc_address_ + 1));
   }
+
+  // --- NIM registers ---
+  // Seeds match the real SYSTXCCNIM01 byte-for-byte on every register we have
+  // observed (issue #41 16 h capture; PROTOCOL.md "NIM (0x80)"). The real
+  // device's idle 0316/030E/3404/3405 replies are constants; 0316 mutates only
+  // via the 0305 demand mirror and the defrost input.
+  if (nim_enabled()) {
+    // Register 0104 - Device info (120 bytes). Model is the real one so the
+    // tstat recognizes the device (same rationale as the ZC seed); serial
+    // follows the WWYY convention — week 40 2026, when NIM emulation first
+    // became functional.
+    {
+      std::vector<uint8_t> data;
+      data.reserve(120);
+      pad_str(data, "EXCALIBUR NIM", 24);        // device (real NIM's own string)
+      pad_str(data, "", 24);                       // location
+      pad_str(data, __DATE__, 16);                  // software (build date)
+      pad_str(data, "SYSTXCCNIM01", 20);           // model (real model)
+      pad_str(data, "INFD-NIM-01", 12);             // reference
+      pad_str(data, "4026ESP32NIM01", 24);          // serial
+      store_register_(nim_address_, REG_DEVICE_INFO, data);
+    }
+
+    // Register 0316 - Status (15 bytes): idle all-zero except [10]=0x01.
+    // [0]/[2] mirror the 0305 demand; [14] is the defrost input flag.
+    {
+      std::vector<uint8_t> data(NIM_STATUS_SIZE, 0);
+      data[NIM_STATUS_CONST] = 0x01;
+      store_register_(nim_address_, REG_NIM_STATUS, data);
+    }
+
+    // Register 0305 - Demand (12 bytes, tstat write): seed idle zeros so the
+    // register exists for raw_register sensors before the first write.
+    store_register_(nim_address_, REG_NIM_DEMAND, std::vector<uint8_t>(12, 0));
+
+    // Register 030D - Diagnostics (7 bytes, always zeros on the real device)
+    store_register_(nim_address_, REG_NIM_DIAG, std::vector<uint8_t>(7, 0));
+
+    // Register 030E - Config status (8 bytes). Byte-exact idle value from the
+    // capture (byte 1 was 01 only while Furnace-Only was active; 45/46/53
+    // stayed constant — settings, not live temperatures).
+    {
+      std::vector<uint8_t> data = {0x10, 0x00, 0x2D, 0x00, 0x2E, 0x00, 0x35, 0x00};
+      store_register_(nim_address_, REG_NIM_CFG_STATUS, data);
+    }
+
+    // Register 3404 - Heartbeat (1 byte) and 3405 - Presence (3 bytes):
+    // the table-34 handshake shared with the ZC.
+    store_register_(nim_address_, REG_ZC_HEARTBEAT, {0x00});
+    store_register_(nim_address_, REG_ZC_PRESENCE, {0x00, 0x00, 0x00});
+
+    // REG_NIM_CONFIG (031C) is intentionally NOT seeded: the real NIM never
+    // answers reads of it (handle_read_request_ stays silent), so a seed would
+    // be dead data. Writes are accepted and stored by the write handler.
+
+    ESP_LOGI("InfinitESP", "Initialized %d NIM registers at address 0x%02X",
+             device_registers_[nim_address_].size(), nim_address_);
+  }
 }
 
 bool InfinitESPComponent::bus_uses_celsius() const {
@@ -2779,6 +2875,59 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
     }
   }
   emit("]}\r\n");
+}
+
+// --- NIM Emulation ---
+
+void InfinitESPComponent::set_nim_defrost_sensor(binary_sensor::BinarySensor *s) {
+  s->add_on_state_callback([this](bool state) { this->on_nim_defrost_input_(state); });
+}
+
+void InfinitESPComponent::on_nim_defrost_input_(bool state) {
+  if (!nim_enabled())
+    return;
+  // Byte 14 of 0316. update_nim_status_byte_ notifies entities; fire the
+  // on_defrost trigger only on an actual change (a template sensor's initial
+  // false publish must not fire).
+  if (update_nim_status_byte_(NIM_STATUS_DEFROST, state ? 0x01 : 0x00))
+    nim_defrost_trigger_.trigger(state);
+}
+
+bool InfinitESPComponent::update_nim_status_byte_(uint8_t offset, uint8_t value) {
+  const auto *data = get_register(nim_address_, REG_NIM_STATUS);
+  if (!data || data->size() != NIM_STATUS_SIZE || offset >= NIM_STATUS_SIZE)
+    return false;
+  if ((*data)[offset] == value)
+    return false;
+  std::vector<uint8_t> new_data = *data;
+  new_data[offset] = value;
+  store_register_(nim_address_, REG_NIM_STATUS, new_data);
+  notify_entities_(nim_address_, REG_NIM_STATUS);
+  return true;
+}
+
+void InfinitESPComponent::handle_nim_demand_write_(const std::vector<uint8_t> &data) {
+  // 0305 payload: [0] heat stage, [2] cool stage (observed 0/1 heat, 0/1/2
+  // cool — stage-2 cool was commanded on a 1-stage HP, so the mirror is the
+  // demand, not equipment actuals). Guarded short writes: mirror the bytes
+  // that exist.
+  if (data.size() > NIM_STATUS_HEAT) {
+    uint8_t heat = data[NIM_STATUS_HEAT];
+    if (update_nim_status_byte_(NIM_STATUS_HEAT, heat) || nim_last_heat_ < 0) {
+      nim_last_heat_ = heat;
+      ESP_LOGI("InfinitESP", "NIM demand: heat stage %u", heat);
+      nim_heat_stage_trigger_.trigger((int) heat);
+    }
+  }
+  if (data.size() > NIM_STATUS_COOL) {
+    uint8_t cool = data[NIM_STATUS_COOL];
+    if (update_nim_status_byte_(NIM_STATUS_COOL, cool) || nim_last_cool_ < 0) {
+      nim_last_cool_ = cool;
+      ESP_LOGI("InfinitESP", "NIM demand: cool stage %u", cool);
+      nim_cool_stage_trigger_.trigger((int) cool);
+    }
+  }
+  notify_entities_(nim_address_, REG_NIM_DEMAND);
 }
 
 // --- ZC Zone Temperature Management ---
