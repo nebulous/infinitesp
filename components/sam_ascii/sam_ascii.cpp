@@ -1,6 +1,7 @@
 #include "sam_ascii.h"
 #include "esphome/core/log.h"
 #include "esphome/components/infinitesp/infinitesp.h"
+#include "esphome/components/time/real_time_clock.h"
 
 namespace esphome {
 namespace sam_ascii {
@@ -136,6 +137,92 @@ std::string SamAsciiComponent::format_time_(uint16_t minutes) {
   return std::string(buf);
 }
 
+// Day-of-week from a civil date (Howard Hinnant's days_from_civil).
+// Bus encoding: 0=Sunday..6=Saturday; 1970-01-01 was a Thursday (4).
+static uint8_t weekday_from_date_(int y, unsigned m, unsigned d) {
+  y -= m <= 2;
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = (unsigned) (y - era * 400);            // [0, 399]
+  const unsigned doy = (153u * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;  // [0, 365]
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+  const int days = (int) (era * 146097 + (int) doe - 719468);
+  return (uint8_t) (((days + 4) % 7 + 7) % 7);
+}
+
+static bool is_leap_year_(int y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0; }
+
+bool SamAsciiComponent::parse_clock_value_(const std::string &val, uint8_t &weekday, uint16_t &minutes) {
+  using namespace infinitesp;
+  weekday = InfinitESPComponent::CLOCK_KEEP_WEEKDAY;
+  minutes = InfinitESPComponent::CLOCK_KEEP_MINUTES;
+
+  // ISO8601 extension: strict naive local "YYYY-MM-DDTHH:MM" (16 chars;
+  // input is already uppercased, so a lowercase 't' separator also lands
+  // here). Anything longer ("...Z", "+HH:MM" offsets) is rejected rather
+  // than converted - the bus carries local wall time and a silent TZ
+  // conversion with the wrong zone would write a wrong clock.
+  if (val.size() == 16 && val[4] == '-' && val[7] == '-' && val[13] == ':') {
+    auto digits = [&](size_t from, size_t count) -> bool {
+      for (size_t i = from; i < from + count; i++)
+        if (val[i] < '0' || val[i] > '9')
+          return false;
+      return true;
+    };
+    if (!digits(0, 4) || !digits(5, 2) || !digits(8, 2) || !digits(11, 2) || !digits(14, 2))
+      return false;
+    auto num = [&](size_t from, size_t count) -> int {
+      int v = 0;
+      for (size_t i = from; i < from + count; i++)
+        v = v * 10 + (val[i] - '0');
+      return v;
+    };
+    int y = num(0, 4);
+    int mo = num(5, 2);
+    int d = num(8, 2);
+    int hh = num(11, 2);
+    int mm = num(14, 2);
+    static const int mdays[13] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    // Range-check the month BEFORE indexing mdays (a two-digit month can be
+    // up to 99; mdays[mo] would read out of bounds).
+    if (mo < 1 || mo > 12 || d < 1 || hh > 23 || mm > 59)
+      return false;
+    int dmax = (mo == 2 && is_leap_year_(y)) ? 29 : mdays[mo];
+    if (d > dmax)
+      return false;
+    weekday = weekday_from_date_(y, mo, d);
+    minutes = (uint16_t) (hh * 60 + mm);
+    return true;
+  }
+
+  // SAM-native 12-hour "HH:MM" + optional single space + 'A'/'P'
+  // (SAM01-04XA Table 1 ex 8: "08:10A" ACKs; ex 9: a missing leading zero
+  // NAKs VAL; the optional space before the meridiem is a lenient extension
+  // - the SAM's own read format prints "HH:MM A").
+  size_t len = val.size();
+  size_t meridiem_pos = len - 1;
+  if (len < 6 || len > 7)
+    return false;
+  char mer = val[meridiem_pos];
+  if (mer != 'A' && mer != 'P')
+    return false;
+  if (len == 7 && val[5] != ' ')
+    return false;
+  if (val[2] != ':')
+    return false;
+  for (int i : {0, 1, 3, 4})
+    if (val[i] < '0' || val[i] > '9')
+      return false;
+  int hh = (val[0] - '0') * 10 + (val[1] - '0');
+  int mm = (val[3] - '0') * 10 + (val[4] - '0');
+  if (hh < 1 || hh > 12 || mm > 59)
+    return false;
+  uint16_t m = (uint16_t) ((hh % 12) * 60 + mm);
+  if (mer == 'P')
+    m += 720;
+  minutes = m;
+  return true;
+}
+
 void SamAsciiComponent::process_line_(const std::string &line) {
   ESP_LOGD(TAG, "RX: '%s'", line.c_str());
 
@@ -156,6 +243,7 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     respond_(prefix, "ACCESSORY: FILTRLVL UVLVL HUMLVL VENTLVL FILTRRMD UVRMD HUMRMD VENTRMD");
     respond_(prefix, "VACATION: VACAT VACDAYS VACHOURS VACMINT VACMAXT VACMINH VACMAXH VACFAN  CONFIG: CFGDEAD CFGCPH CFGPER CFGPGM DEALER DEALERPH");
     respond_(prefix, "SET: MODE!<mode> Z#HTSP!<temp> Z#CLSP!<temp> Z#FAN!<mode> Z#HOLD!<on|off|minutes> VACDAYS!<days> VACHOURS!<hours> VACMINT!<temp> VACMAXT!<temp> VACFAN!<mode>");
+    respond_(prefix, "CLOCK: TIME!<HH:MM A/P | YYYY-MM-DDTHH:MM | NOW> DAY!<0-6>  (NOW = ESPHome time source; one 3B02 write; no auto-sync)");
     return;
   }
 
@@ -330,6 +418,68 @@ void SamAsciiComponent::process_line_(const std::string &line) {
       }
       if (fan == 0xFF) { respond_nak_(prefix, "VAL"); return; }
       parent_->set_vacation_fan(fan);
+      respond_(prefix, "ACK");
+      return;
+    }
+
+    // ---- Clock writes (3B02 time ride-along, issue #45 phase 1) ----
+    // TIME!/DAY! mimic the physical SAM01-04XA verbs (Table 1 ex 6-9, 22):
+    // TIME! takes 12-hour "HH:MM A/P" with leading zeros; DAY! takes a bare
+    // digit 0-6 (0=Sunday). The ISO8601 datetime form of TIME! is an
+    // InfinitESP extension that derives weekday + minutes and sets both in
+    // one write. One 3B02 write per command: every applied clock write
+    // resets the UIZ-family seconds counter, so the surface is deliberately
+    // manual-only (no auto-sync; Q11).
+    if (write_cmd == "TIME" || write_cmd == "DAY") {
+      // Without a filled 3B02 mirror there is nothing to carry and no write
+      // can be built - plain NAK, mirroring the read-side SYNC gate.
+      if (!parent_->has_real_state()) { respond_nak_(prefix, ""); return; }
+      if (write_cmd == "DAY") {
+        // Strict single digit (Table 1 ex 22: values outside 0-6 NAK VAL;
+        // bare atoi would silently read "SUNDAY" as 0).
+        if (write_val.size() != 1 || write_val[0] < '0' || write_val[0] > '6') {
+          respond_nak_(prefix, "VAL");
+          return;
+        }
+        parent_->set_displayed_clock((uint8_t) (write_val[0] - '0'),
+                                     InfinitESPComponent::CLOCK_KEEP_MINUTES);
+      } else {
+        // TIME!NOW — InfinitESP extension (clock phase 2): take the value
+        // from the hub's ESPHome time source (explicit time_id:, else the
+        // first declared time: platform) as LOCAL wall time. The bus carries
+        // local time; RealTimeClock::now() already applies the configured TZ.
+        // Refuses (plain NAK + log) when no source is configured or ESP time
+        // is not yet valid (no NTP/HA sync) — a garbage clock is never
+        // written. Single 0x180 write: weekday+minutes together.
+        if (write_val == "NOW") {
+          auto *clock = parent_->get_time_source();
+          if (clock == nullptr) {
+            ESP_LOGW(TAG, "TIME!NOW refused: no time source configured (add a time: platform or hub time_id:)");
+            respond_nak_(prefix, "");
+            return;
+          }
+          auto now = clock->now();
+          if (!now.is_valid()) {
+            ESP_LOGW(TAG, "TIME!NOW refused: ESP time not valid yet (no NTP/HA sync)");
+            respond_nak_(prefix, "");
+            return;
+          }
+          // ESPTime day_of_week: 1=Sunday..7=Saturday; bus: 0=Sunday..6=Saturday.
+          parent_->set_displayed_clock((uint8_t) (now.day_of_week - 1),
+                                       (uint16_t) (now.hour * 60 + now.minute));
+        } else {
+          uint8_t weekday;
+          uint16_t minutes;
+          if (!parse_clock_value_(write_val, weekday, minutes)) {
+            respond_nak_(prefix, "VAL");
+            return;
+          }
+          parent_->set_displayed_clock(weekday, minutes);
+        }
+      }
+      // ACK reflects transport (frame queued), not thermostat adoption -
+      // the Touch generation sleep-queues 3B02 writes until the wall UI
+      // wakes (same convention as ZONE!).
       respond_(prefix, "ACK");
       return;
     }

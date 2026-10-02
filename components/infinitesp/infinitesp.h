@@ -24,6 +24,9 @@ namespace esphome {
 namespace sensor {
 class Sensor;
 }  // namespace sensor
+namespace time {
+class RealTimeClock;
+}  // namespace time
 namespace infinitesp {
 
 // Temperature unit configuration for decoding bus register values. This is
@@ -501,6 +504,13 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_sam_address(uint8_t addr) { sam_address_ = addr; }
   uint8_t get_sam_address() const { return sam_address_; }
   bool sam_enabled() const { return sam_address_ != 0; }
+  // ESPHome time source backing the sam_ascii TIME!NOW verb (clock phase 2,
+  // issue #45). Null when no time: platform is configured and no time_id:
+  // resolves - TIME!NOW then refuses (plain NAK + log) rather than write an
+  // unvalidated clock. Never drives periodic writes: auto-sync is banned by
+  // human directive (Q11); this source is read only on explicit command.
+  void set_time_source(time::RealTimeClock *clock) { time_source_ = clock; }
+  time::RealTimeClock *get_time_source() const { return time_source_; }
   // Attach the bus_jsonl stream (see BusFrameSink above). Single sink; a
   // second bus_jsonl block in yaml would silently replace the first.
   void set_bus_jsonl(BusFrameSink *sink) { frame_sink_ = sink; }
@@ -617,6 +627,20 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // tstat tested; adoption is generation-dependent (UIZ family yes, newer
   // SYSTXCC touch units ignore it). Issue #37, verified 2026-09-20.
   void set_displayed_zone(uint8_t zone);
+
+  // Sets the thermostat's displayed clock: SAM 3B02 byte 25 weekday (0=Sunday)
+  // and bytes 26..27 minutes-since-midnight BE16, written with the matching
+  // CHANGE_WEEKDAY/CHANGE_MINUTES flags. Pass CLOCK_KEEP_* to leave a field
+  // unflagged (the tstat applies only flagged fields). Flagged fields MUST
+  // carry caller-fresh values, never the stale mirror: any applied write
+  // with time flags sets the clock to the carried bytes (PROTOCOL.md "Time
+  // ride-along", measured 2026-09-30). Every applied write of this class
+  // resets the UIZ-family seconds counter (issue #45), so call sparingly
+  // and deliberately. Resolution is whole minutes; seconds are tstat-
+  // internal and never travel the bus.
+  void set_displayed_clock(uint8_t weekday, uint16_t minutes);
+  static constexpr uint8_t CLOCK_KEEP_WEEKDAY = 0xFF;    // sentinel: don't flag/change weekday
+  static constexpr uint16_t CLOCK_KEEP_MINUTES = 0xFFFF; // sentinel: don't flag/change minutes
 
   // --- Vacation (SAM 3B04) domain methods ---
   // Each setter updates the vacation_* member (the source of truth for entity
@@ -1057,6 +1081,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   std::map<TrafficKey, TrafficEntry> traffic_log_;
   // Optional bus_jsonl stream sink (set_bus_jsonl).
   BusFrameSink *frame_sink_{nullptr};
+  time::RealTimeClock *time_source_{nullptr};  // TIME!NOW source; null = refuse (see set_time_source)
   void log_traffic_(uint8_t src, uint8_t dst, uint8_t func, uint16_t reg_key,
                      const std::vector<uint8_t> &payload);
 

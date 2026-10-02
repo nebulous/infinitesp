@@ -27,6 +27,13 @@ class SamAsciiComponent : public Component, public uart::UARTDevice {
   void respond_nak_(const std::string &prefix, const std::string &reason = "");
   std::string format_temp_(uint8_t temp_f);
   std::string format_time_(uint16_t minutes);
+  // Parses a TIME! write value into bus clock fields. Accepts the SAM-native
+  // 12-hour form "HH:MM A/P" (leading zeros required, per SAM01-04XA Table 1
+  // examples 8/9; weekday left as CLOCK_KEEP_WEEKDAY) and the InfinitESP
+  // ISO8601 extension "YYYY-MM-DDTHH:MM" (naive local wall time - the bus
+  // carries local time and no TZ conversion is performed; weekday derived
+  // from the date; both fields set). Returns false on any other form.
+  bool parse_clock_value_(const std::string &val, uint8_t &weekday, uint16_t &minutes);
 
  private:
   esphome::infinitesp::InfinitESPComponent *parent_{nullptr};

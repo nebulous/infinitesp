@@ -1959,6 +1959,63 @@ void InfinitESPComponent::set_displayed_zone(uint8_t zone) {
   ESP_LOGI("InfinitESP", "Set displayed zone=%u", zone);
 }
 
+void InfinitESPComponent::set_displayed_clock(uint8_t weekday, uint16_t minutes) {
+  if (!sam_enabled())
+    return;
+  const bool set_day = weekday != CLOCK_KEEP_WEEKDAY;
+  const bool set_time = minutes != CLOCK_KEEP_MINUTES;
+  if (!set_day && !set_time) {
+    ESP_LOGW("InfinitESP", "Set displayed clock: no field selected (both sentinels)");
+    return;
+  }
+  if (set_day && weekday > 6) {
+    ESP_LOGW("InfinitESP", "Set displayed clock: weekday %u out of range (0-6)", weekday);
+    return;
+  }
+  if (set_time && minutes > 1439) {
+    ESP_LOGW("InfinitESP", "Set displayed clock: minutes %u out of range (0-1439)", minutes);
+    return;
+  }
+  auto *state_data = get_register(sam_address_, REG_SAM_STATE);
+  // A short or missing 3B02 means the mirror has not filled yet. Writing a
+  // partial register would zero every field we do not carry (time, stagmode,
+  // zone temps), so refuse instead.
+  if (!state_data || state_data->size() < REG3B02_SIZE) {
+    ESP_LOGW("InfinitESP", "Set displayed clock FAILED: no cached 3B02 data");
+    return;
+  }
+
+  std::vector<uint8_t> data = *state_data;
+  uint16_t change_flags = 0;
+  if (set_day) {
+    data[REG3B02_WEEKDAY] = weekday;
+    change_flags |= CHANGE_WEEKDAY;
+  }
+  if (set_time) {
+    data[REG3B02_MINUTES] = (uint8_t) (minutes >> 8);
+    data[REG3B02_MINUTES + 1] = (uint8_t) (minutes & 0xFF);
+    change_flags |= CHANGE_MINUTES;
+  }
+  mirror_to_sam_(REG_SAM_STATE, data);
+
+  // Solo 3B02 write with only the clock flags (0x080/0x100/0x180). Flagged
+  // clock bytes carry the caller-fresh values; every other field rides
+  // unflagged and is not applied (Touch generation, PROTOCOL.md write-recipe
+  // notes). Wire-verified shape 2026-09-30: {00,3B,02,mask,flags_hi,flags_lo}
+  // + data[3..] is the adopted-write payload. Any applied write here resets
+  // the UIZ seconds counter (issue #45) - one write per deliberate change.
+  {
+    std::vector<uint8_t> payload_3b02 = {0x00, 0x3B, 0x02, 0x00,
+                                         (uint8_t) (change_flags >> 8), (uint8_t) (change_flags & 0xff)};
+    payload_3b02.insert(payload_3b02.end(), data.begin() + 3, data.end());
+    send_write_frame_(ADDR_THERMOSTAT, 0x01, payload_3b02);
+  }
+  ESP_LOGI("InfinitESP", "Set displayed clock: weekday=%s minutes=%s (%02u:%02u) flags=0x%03X",
+           set_day ? std::to_string(weekday).c_str() : "keep",
+           set_time ? std::to_string(minutes).c_str() : "keep",
+           set_time ? minutes / 60 : 0, set_time ? minutes % 60 : 0, change_flags);
+}
+
 // --- Default Register Initialization ---
 
 // Pad/zero-fill a fixed-width ASCII field into a register buffer. Carrier's

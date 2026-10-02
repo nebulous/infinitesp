@@ -3,7 +3,9 @@ import esphome.config_validation as cv
 import logging
 from esphome import pins
 from esphome.components import uart
+from esphome.components import time
 from esphome.const import CONF_ID
+from esphome.core import CORE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,6 +23,9 @@ InfinitESPComponent = infinitesp_ns.class_("InfinitESPComponent", cg.Component, 
 InfinitESPEntity = infinitesp_ns.class_("InfinitESPEntity")
 
 CONF_SAM_ADDRESS = "sam_address"
+# ESPHome time source for the sam_ascii TIME!NOW verb (clock phase 2).
+# Explicit override; defaults to the first declared time: platform.
+CONF_TIME_ID = "time_id"
 CONF_ADDRESS = "address"  # deprecated alias for sam_address
 CONF_IDU_ADDRESS = "idu_address"
 CONF_ODU_ADDRESS = "odu_address"
@@ -156,6 +161,11 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.declare_id(InfinitESPComponent),
             cv.Optional(CONF_ADDRESS): cv.int_range(min=0, max=255),
             cv.Optional(CONF_SAM_ADDRESS): cv.int_range(min=0, max=255),
+            # ESPHome time source backing TIME!NOW (clock-set phase 2).
+            # Optional: when omitted, the hub adopts the first declared
+            # time: platform (bus_jsonl discovery idiom). No time source at
+            # all -> TIME!NOW refuses at runtime, never writes the clock.
+            cv.Optional(CONF_TIME_ID): cv.use_id(time.RealTimeClock),
             # Status LED: reference an existing light entity (e.g. WS2812 RGB)
             cv.Optional(CONF_STATUS_LIGHT_ID): cv.use_id("light"),
             # Status LED: shorthand for a simple LED on a GPIO pin
@@ -245,6 +255,18 @@ async def register_infinitesp_entity(var, config):
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     cg.add(var.set_sam_address(config[CONF_SAM_ADDRESS]))
+    # Time source for TIME!NOW (phase 2): explicit time_id: wins, else the
+    # first declared time: platform (same config-time discovery bus_jsonl
+    # uses for JSONL timestamps). Absent both, the pointer stays null and
+    # TIME!NOW refuses at runtime - an unvalidated clock is never written.
+    time_id = config.get(CONF_TIME_ID)
+    if time_id is None:
+        time_platforms = CORE.config.get("time", [])
+        if time_platforms:
+            time_id = time_platforms[0][CONF_ID]
+    if time_id is not None:
+        time_var = await cg.get_variable(time_id)
+        cg.add(var.set_time_source(time_var))
     # Unit pins: only emit when set — the default (class matching) keeps
     # generated code identical to configs written before these keys existed.
     if config.get(CONF_IDU_ADDRESS, 0) != 0:
