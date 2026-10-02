@@ -54,6 +54,16 @@ CONF_FLOW_CONTROL_PIN = "flow_control_pin"
 CONF_ZONE_CONTROLLER_ADDRESS = "zone_controller_address"
 CONF_TEMPERATURE_UNIT = "temperature_unit"
 
+# NIM emulation (branch-local experiment). nim_address is the enable switch
+# (0 = disabled, matching sam_address/zone_controller_address); everything
+# else lives in the nim: sub-block.
+CONF_NIM_ADDRESS = "nim_address"
+CONF_NIM = "nim"
+CONF_DEFROST_SENSOR = "defrost_sensor"
+CONF_ON_HEAT_STAGE = "on_heat_stage"
+CONF_ON_COOL_STAGE = "on_cool_stage"
+CONF_ON_DEFROST = "on_defrost"
+
 # ZC zone sensor reference configuration
 CONF_ZC_ZONE_2 = "zc_zone_2"
 CONF_ZC_ZONE_3 = "zc_zone_3"
@@ -78,6 +88,20 @@ ZC_ZONE_SCHEMA = cv.Schema({
 TEMP_UNIT_AUTO = "auto"
 TEMP_UNIT_FAHRENHEIT = "F"
 TEMP_UNIT_CELSIUS = "C"
+
+# NIM sub-block: one device, one block (mirrors the zc_zone_N sub-block idiom
+# for the sensor reference; triggers follow the cover platform's on_change
+# mechanism). Triggers fire on change with the new value as `x`.
+NIM_SCHEMA = cv.Schema(
+    {
+        # Binary sensor feeding the HP defrost signal into 0316[14]
+        # (e.g. defrost board output via optocoupler).
+        cv.Optional(CONF_DEFROST_SENSOR): cv.use_id("binary_sensor"),
+        cv.Optional(CONF_ON_HEAT_STAGE): automation.validate_automation(single=True),
+        cv.Optional(CONF_ON_COOL_STAGE): automation.validate_automation(single=True),
+        cv.Optional(CONF_ON_DEFROST): automation.validate_automation(single=True),
+    }
+)
 
 
 def _validate_zc_config(config):
@@ -130,6 +154,7 @@ def _validate_unit_addresses(config):
     fixed = {
         config.get(CONF_SAM_ADDRESS, 0x92): "sam_address",
         config.get(CONF_ZONE_CONTROLLER_ADDRESS, 0): "zone_controller_address",
+        config.get(CONF_NIM_ADDRESS, 0): "nim_address",
         0x20: "the thermostat address",
         0xF1: "the broadcast address",
     }
@@ -150,6 +175,40 @@ def _validate_unit_addresses(config):
             _LOGGER.warning(
                 "odu_address 0x%02X is in device class 4 (indoor); did you mean idu_address?", addr
             )
+    return config
+
+
+def _validate_nim_config(config):
+    """Validate NIM emulation config: address collisions and orphan block."""
+    nim = config.get(CONF_NIM_ADDRESS, 0)
+    if nim == 0:
+        if CONF_NIM in config:
+            _LOGGER.warning(
+                "'nim:' block configured but nim_address is 0; NIM emulation disabled"
+            )
+        return config
+
+    fixed = {
+        config.get(CONF_SAM_ADDRESS, 0x92): "sam_address",
+        0x20: "the thermostat address",
+        0xF1: "the broadcast address",
+    }
+    if config.get(CONF_ZONE_CONTROLLER_ADDRESS, 0) != 0:
+        fixed[config[CONF_ZONE_CONTROLLER_ADDRESS]] = "zone_controller_address"
+    # 0x93 is our passive-mode poll identity (ADDR_FAKESAM) unless the SAM
+    # itself sits there; emulating the NIM from our own poll source would
+    # garble discovery replies.
+    if config.get(CONF_SAM_ADDRESS, 0x92) != 0x93:
+        fixed.setdefault(0x93, "the ADDR_FAKESAM poll identity")
+    if fixed.get(nim):
+        raise cv.Invalid(f"nim_address 0x{nim:02X} is {fixed[nim]}")
+
+    _LOGGER.warning(
+        "nim_address 0x%02X: NIM emulation is an experimental work in progress. "
+        "The steady-state protocol is proven from a real SYSTXCCNIM01 capture, but "
+        "cold-commissioning against a real thermostat has never been observed — the "
+        "thermostat may not register the emulated device", nim
+    )
     return config
 
 
@@ -195,6 +254,10 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_FLOW_CONTROL_PIN): pins.gpio_output_pin_schema,
             # Zone controller emulation: set to 0x60 to emulate a SYSTXCC4ZC01
             cv.Optional(CONF_ZONE_CONTROLLER_ADDRESS, default=0): cv.int_range(min=0, max=255),
+            # NIM emulation (experimental): set to 0x80 to emulate a
+            # SYSTXCCNIM01 bridging a non-communicating HP/ODU/HRV.
+            cv.Optional(CONF_NIM_ADDRESS, default=0): cv.int_range(min=0, max=255),
+            cv.Optional(CONF_NIM): NIM_SCHEMA,
             # Pin the indoor/outdoor unit to an exact bus node (unset = default
             # class matching). For installs whose unit sits off the assumed
             # class nibble (4 = IDU, 5 = ODU), e.g. a furnace at 0x3E, or to
@@ -235,6 +298,7 @@ CONFIG_SCHEMA = cv.All(
     ).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA),
     _validate_addresses,
     _validate_unit_addresses,
+    _validate_nim_config,
     _validate_status_led,
     _validate_zc_config,
     _validate_experimental_modes,
@@ -297,6 +361,24 @@ async def to_code(config):
 
     if config[CONF_ZONE_CONTROLLER_ADDRESS] != 0:
         cg.add(var.set_zc_address(config[CONF_ZONE_CONTROLLER_ADDRESS]))
+
+    # NIM emulation: address enables it; the nim: block wires the defrost
+    # input and the hardware-control event triggers (ZC-cover style — user
+    # yaml supplies the actuation code).
+    if config[CONF_NIM_ADDRESS] != 0:
+        cg.add(var.set_nim_address(config[CONF_NIM_ADDRESS]))
+    nim_cfg = config.get(CONF_NIM)
+    if nim_cfg:
+        if CONF_DEFROST_SENSOR in nim_cfg:
+            bs = await cg.get_variable(nim_cfg[CONF_DEFROST_SENSOR])
+            cg.add(var.set_nim_defrost_sensor(bs))
+        for key, getter, arg in (
+            (CONF_ON_HEAT_STAGE, var.get_nim_heat_stage_trigger, (cg.int_, "x")),
+            (CONF_ON_COOL_STAGE, var.get_nim_cool_stage_trigger, (cg.int_, "x")),
+            (CONF_ON_DEFROST, var.get_nim_defrost_trigger, (bool, "x")),
+        ):
+            if key in nim_cfg:
+                await automation.build_automation(getter(), [arg], nim_cfg[key])
 
     cg.add(var.set_experimental_heat_source_modes(config[CONF_EXPERIMENTAL_HEAT_SOURCE_MODES]))
 
