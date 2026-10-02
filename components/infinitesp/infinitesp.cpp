@@ -322,6 +322,7 @@ void InfinitESPComponent::loop() {
       mode_verify_deadline_ms_ = now + MODE_ADOPT_VERIFY_MS;
     }
     send_frame_(r.dst, r.dst_bus, r.func, r.payload);
+    r.sent = true;
     if (r.attempts_left > 0) {
       r.attempts_left--;
       r.fire_ms = now + RETRANSMIT_DELAY_MS;
@@ -595,6 +596,29 @@ void InfinitESPComponent::dispatch_frame_() {
   // Check if addressed to us (SAM or optional zone controller)
   bool to_us = (sam_enabled() && current_frame_.dst == sam_address_);
   bool to_zc = is_emu_zc_addr_(current_frame_.dst);
+
+  // Write-ACK handling: a bare [00] REPLY addressed to one of our
+  // emulated addresses indicates acceptance of a WRITE we sent.
+  // Remove already-sent queue entries for that destination so successful
+  // writes don't retransmit  (previously every write sent WRITE_ATTEMPTS times
+  // regardless; 2026-09-30 wire capture, PR #44 thread). Payload size
+  // separates ACKs from read replies ([00, table, row, data...]). Only
+  // already-sent entries match, so a 3B03 notify's ACK cannot cancel an
+  // unsent 3B02 write queued behind it. Unmatched ACKs are ignored (seen
+  // once: six ACKs for one command right after OTA).
+  if (current_frame_.func == FUNC_REPLY && (to_us || to_zc) &&
+      current_frame_.payload.size() == 1 && current_frame_.payload[0] == 0x00) {
+    for (auto it = pending_retransmits_.begin(); it != pending_retransmits_.end(); ++it) {
+      if (it->sent && it->dst == current_frame_.src) {
+        uint16_t rk = it->payload.size() >= 3 ? (uint16_t) ((it->payload[1] << 8) | it->payload[2]) : 0;
+        pending_retransmits_.erase(it);
+        diag_ack_consumed_++;
+        ESP_LOGI("InfinitESP", "WRITE ACK from %02X: %04X acknowledged, dropping retransmit (%u queued)",
+                 current_frame_.src, rk, (uint32_t) pending_retransmits_.size());
+        break;
+      }
+    }
+  }
 
   // Reply matching: if this is a REPLY addressed to us, check against pending polls
   if (current_frame_.func == FUNC_REPLY && to_us) {
@@ -2601,7 +2625,7 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
     "{\"fw\":\"InfinitESP 0.1\",\"ver\":\"%s\",\"up\":%u,\"bus\":\"%s\","
     "\"sam\":\"%02X\",\"zc\":\"%02X\","
     "\"temp_unit\":\"%s\",\"temp_cfg\":\"%s\","
-    "\"rx\":%u,\"tx\":%u,\"crc\":%u,\"exp\":%u,\"got\":%u,\"to\":%u,"
+    "\"rx\":%u,\"tx\":%u,\"crc\":%u,\"exp\":%u,\"got\":%u,\"to\":%u,\"ack\":%u,"
     "\"hwm\":%u,\"ovf\":%u,\"prg\":%u,\"pp\":%u",
     INFINITESP_VERSION, (unsigned)(millis()/1000), bus_online_?"on":"off",
     sam_address_, zc_address_,
@@ -2609,7 +2633,7 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
     temperature_unit_ == TemperatureUnit::AUTO ? "auto" : temperature_unit_ == TemperatureUnit::CELSIUS ? "C" : "F",
     (unsigned)diag_frames_parsed_, (unsigned)diag_tx_seq_,
     (unsigned)diag_crc_fail_, (unsigned)diag_reply_expected_,
-    (unsigned)diag_reply_received_, (unsigned)diag_reply_timeout_,
+    (unsigned)diag_reply_received_, (unsigned)diag_reply_timeout_, (unsigned)diag_ack_consumed_,
     (unsigned)diag_uart_hwm_, (unsigned)diag_uart_overflow_events_,
     (unsigned)diag_poll_purged_, (unsigned)pending_polls_.size());
   write_fn((const uint8_t *)buf, n, ctx);

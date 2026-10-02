@@ -1149,6 +1149,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint32_t diag_reply_expected_{0};   // total REPLY frames we expected (matched to our READs)
   uint32_t diag_reply_received_{0};   // total REPLY frames we actually received
   uint32_t diag_reply_timeout_{0};    // polls that timed out without a reply
+  uint32_t diag_ack_consumed_{0};     // write ACKs that dropped a pending retransmit
   uint32_t diag_tx_flush_max_ms_{0};  // max time spent in flush()
   uint32_t diag_loop_max_ms_{0};      // max time spent in a single loop() iteration
   uint32_t diag_last_frame_time_{0};  // millis() of last complete frame
@@ -1165,9 +1166,12 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   std::vector<PendingPoll> pending_polls_;
 
   // Queued write frames. Each entry transmits from loop() at fire_ms behind
-  // the bus-idle gate, up to attempts_left + 1 sends total. Drained FIFO; with
-  // RETRANSMIT_DELAY_MS <= overlay/2, the last-sent value for a zone always
-  // wins on the bus regardless of rapid change ordering.
+  // the bus-idle gate, up to attempts_left + 1 sends total, FIFO. An entry
+  // is dropped when a bare [00] REPLY from its destination acknowledges the
+  // write (write-ACK block in dispatch_frame_); `sent` gates that match so
+  // an ACK never drops an unsent write. With RETRANSMIT_DELAY_MS <=
+  // overlay/2, the last-sent value for a zone always wins on the bus
+  // regardless of rapid change ordering.
   struct PendingRetransmit {
     uint8_t dst;
     uint8_t dst_bus;
@@ -1175,6 +1179,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     std::vector<uint8_t> payload;
     uint32_t fire_ms;
     uint8_t attempts_left;
+    bool sent = false;
   };
   std::deque<PendingRetransmit> pending_retransmits_;
 
