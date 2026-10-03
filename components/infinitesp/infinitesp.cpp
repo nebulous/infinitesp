@@ -783,6 +783,20 @@ void InfinitESPComponent::handle_passive_frame_() {
       ESP_LOGD("InfinitESP", "ZC %02X %04X reply captured (%u bytes)", zc_src, zc_key, zc_data.size());
       notify_entities_(zc_src, zc_key);
     }
+
+    // Passive NIM monitoring (ZC-style class watch, zero transmission).
+    // Only when NOT emulating: emulation routes tstat->NIM traffic to the
+    // write handler and our own TX never echoes back, so this branch fires
+    // only for a PHYSICAL NIM's replies (0104 identity, 0316 status incl.
+    // defrost [14], 030D/030E diag), stored under the real class-8 address.
+    if (!nim_enabled() && (current_frame_.src >> 4) == CLASS_NIM) {
+      uint8_t table = current_frame_.payload[1];
+      uint8_t row = current_frame_.payload[2];
+      uint16_t nim_key = (table << 8) | row;
+      std::vector<uint8_t> nim_data(current_frame_.payload.begin() + 3,
+                                     current_frame_.payload.end());
+      observe_nim_frame_(current_frame_.src, nim_key, nim_data);
+    }
   }
 
   // Handle broadcast WRITE frames from thermostat (3B0E activity, 3B02 state/time, etc.)
@@ -828,6 +842,20 @@ void InfinitESPComponent::handle_passive_frame_() {
         notify_entities_(zc_dst, REG_ZC_DAMPER_CMD);
         notify_entities_(zc_dst, REG_ZC_ZONE_CONFIG);
       }
+    }
+
+    // Passive NIM monitoring, tstat->NIM WRITE side (0305 demand standing
+    // ~10 s, 3404 heartbeat, 031C config): same class watch as the reply
+    // branch, gated on NOT emulating. The physical NIM never ACKs writes,
+    // so this snooping is pure observation — no reply handling exists.
+    if (!nim_enabled() && (current_frame_.dst >> 4) == CLASS_NIM &&
+        current_frame_.src == ADDR_THERMOSTAT && current_frame_.payload.size() > 3) {
+      uint8_t nim_table = current_frame_.payload[1];
+      uint8_t nim_row = current_frame_.payload[2];
+      uint16_t nim_key = (nim_table << 8) | nim_row;
+      std::vector<uint8_t> nim_data(current_frame_.payload.begin() + 3,
+                                     current_frame_.payload.end());
+      observe_nim_frame_(current_frame_.dst, nim_key, nim_data);
     }
 
     // Broadcast 3B02 state writes from thermostat (contains time, weekday, etc.)
@@ -1331,6 +1359,11 @@ void InfinitESPComponent::poll_discovery_() {
     uint8_t addr = akv.first;
     if (addr == sam_address_ || is_emu_zc_addr_(addr) || is_emu_nim_addr_(addr) || addr == ADDR_FAKESAM)
       continue;  // our own emulated roles, or the phantom itself
+    if ((addr >> 4) == CLASS_NIM)
+      continue;  // NEVER probe class-8: passive NIM monitoring must not
+                 // transmit (a phantom 0x93 READ at the NIM would both break
+                 // the zero-TX monitor guarantee and could confuse a tstat
+                 // mid-conversation). Registers still land via snooping.
     for (const auto &rkv : akv.second) {
       uint8_t table = rkv.first >> 8;
       if (table == 0)
@@ -3023,6 +3056,47 @@ void InfinitESPComponent::handle_nim_demand_write_(const std::vector<uint8_t> &d
     }
   }
   notify_entities_(nim_address_, REG_NIM_DEMAND);
+}
+
+void InfinitESPComponent::observe_nim_frame_(uint8_t addr, uint16_t reg_key, const std::vector<uint8_t> &data) {
+  // Store first so raw_register sensors / entity readback see the frame
+  // regardless of trigger wiring (the register store is address-keyed, so a
+  // second class-8 device simply gets its own namespace — dual-ZC style).
+  store_register_(addr, reg_key, data);
+
+  auto fire_changed = [&](uint8_t offset, int8_t &last, Trigger<int> *trig,
+                          const char *what) {
+    if (data.size() > offset) {
+      uint8_t value = data[offset];
+      if (last < 0 || (int8_t) value != last) {
+        last = (int8_t) value;
+        ESP_LOGI("InfinitESP", "NIM %02X observed: %s -> %u", addr, what, value);
+        trig->trigger((int) value);
+      }
+    }
+  };
+
+  if (reg_key == REG_NIM_DEMAND) {
+    // tstat->NIM standing write, ~10 s cadence: [0] heat stage, [2] cool.
+    fire_changed(NIM_STATUS_HEAT, nim_last_heat_, &nim_heat_stage_trigger_, "heat stage");
+    fire_changed(NIM_STATUS_COOL, nim_last_cool_, &nim_cool_stage_trigger_, "cool stage");
+  } else if (reg_key == REG_NIM_STATUS) {
+    // NIM->tstat status reply: mirrors demand at [0]/[2] and carries the
+    // defrost input at [14]. Diffs run independently of the demand path;
+    // whichever frame arrives first wins the first-fire (last_* < 0).
+    fire_changed(NIM_STATUS_HEAT, nim_last_heat_, &nim_heat_stage_trigger_, "heat stage");
+    fire_changed(NIM_STATUS_COOL, nim_last_cool_, &nim_cool_stage_trigger_, "cool stage");
+    if (data.size() > NIM_STATUS_DEFROST) {
+      uint8_t defrost = data[NIM_STATUS_DEFROST] ? 1 : 0;
+      if (nim_last_defrost_ < 0 || (int8_t) defrost != nim_last_defrost_) {
+        nim_last_defrost_ = (int8_t) defrost;
+        ESP_LOGI("InfinitESP", "NIM %02X observed: defrost -> %u", addr, defrost);
+        nim_defrost_trigger_.trigger(defrost != 0);
+      }
+    }
+  }
+
+  notify_entities_(addr, reg_key);
 }
 
 // --- ZC Zone Temperature Management ---

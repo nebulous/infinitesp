@@ -63,6 +63,7 @@ static const uint8_t CLASS_THERMOSTAT   = 0x2;  // UI / master
 static const uint8_t CLASS_INDOOR_UNIT  = 0x4;  // furnace / air handler
 static const uint8_t CLASS_OUTDOOR_UNIT = 0x5;  // condenser / heat pump / AC
 static const uint8_t CLASS_ZONE_CTRL    = 0x6;  // zone controller
+static const uint8_t CLASS_NIM         = 0x8;  // network interface module (HP dual-fuel / non-communicating bridge)
 
 // Function codes
 static const uint8_t FUNC_READ = 0x0B;
@@ -1224,8 +1225,18 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   Trigger<bool> nim_defrost_trigger_;
   int8_t nim_last_heat_{-1};  // last heat stage fired; -1 = never (first demand fires)
   int8_t nim_last_cool_{-1};
+  int8_t nim_last_defrost_{-1};  // passive-mode 0316[14] guard (emulation path is input-driven)
   // Handle a 0305 demand write: store, mirror into 0316, fire triggers.
   void handle_nim_demand_write_(const std::vector<uint8_t> &data);
+
+  // Passive NIM monitoring (ZC-style, zero transmission): file an OBSERVED
+  // class-8 frame into the register store under the real bus address and
+  // fire the on_heat_stage/on_cool_stage/on_defrost triggers on value
+  // changes (shared nim_last_* guards make the tstat's ~10 s standing
+  // re-sends fire once per actual change). Demand (0305) arrives as a
+  // tstat->NIM WRITE; status (0316, incl. defrost [14]) as NIM->tstat
+  // REPLY. Never transmits; used only when nim_address is 0.
+  void observe_nim_frame_(uint8_t addr, uint16_t reg_key, const std::vector<uint8_t> &data);
   // Update one byte of the stored NIM 0316; notifies entities. Returns true
   // if the value changed.
   bool update_nim_status_byte_(uint8_t offset, uint8_t value);
