@@ -1,6 +1,7 @@
 #include "infinitesp.h"
 #include "version.h"
 #include "esphome/components/sensor/sensor.h"
+#include "esphome/components/time/real_time_clock.h"
 
 #include <algorithm>
 
@@ -2014,6 +2015,43 @@ void InfinitESPComponent::set_displayed_clock(uint8_t weekday, uint16_t minutes)
            set_day ? std::to_string(weekday).c_str() : "keep",
            set_time ? std::to_string(minutes).c_str() : "keep",
            set_time ? minutes / 60 : 0, set_time ? minutes % 60 : 0, change_flags);
+}
+
+// Weekday names for the sync result string (bus order: 0=Sunday).
+static const char *const CLOCK_DAY_NAMES[7] = {"SUN", "MON", "TUE", "WED",
+                                               "THU", "FRI", "SAT"};
+
+bool InfinitESPComponent::sync_clock_from_source(std::string &detail) {
+  char buf[64];
+  if (!sam_enabled()) {
+    detail = "refused: SAM emulation disabled";
+  } else {
+    auto *state = get_register(sam_address_, REG_SAM_STATE);
+    if (!state || state->size() < REG3B02_SIZE)
+      detail = "refused: SAM mirror unfilled";
+    else if (time_source_ == nullptr)
+      detail = "refused: no time source configured";
+    else {
+      auto now = time_source_->now();
+      if (!now.is_valid()) {
+        detail = "refused: ESP time invalid";
+      } else {
+        // ESPTime day_of_week: 1=Sunday..7=Saturday; bus: 0=Sunday..6=Saturday.
+        uint8_t weekday = (uint8_t) (now.day_of_week - 1);
+        uint16_t minutes = (uint16_t) (now.hour * 60 + now.minute);
+        set_displayed_clock(weekday, minutes);
+        snprintf(buf, sizeof(buf), "synced %02u:%02u %s", now.hour, now.minute,
+                 weekday < 7 ? CLOCK_DAY_NAMES[weekday] : "?");
+        detail = buf;
+      }
+    }
+  }
+  last_clock_sync_result_ = detail;
+  if (detail.compare(0, 7, "refused") == 0)
+    ESP_LOGW("InfinitESP", "Clock sync: %s", detail.c_str());
+  else
+    ESP_LOGI("InfinitESP", "Clock sync: %s", detail.c_str());
+  return detail.compare(0, 6, "synced") == 0;
 }
 
 // --- Default Register Initialization ---

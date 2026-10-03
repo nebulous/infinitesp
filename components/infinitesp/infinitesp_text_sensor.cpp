@@ -435,6 +435,22 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
     publish_state(buf);
     return;
   }
+
+  // clock_sync — outcome of the last manual clock sync (TIME!NOW /
+  // infinitesp.sync_clock action / Sync Thermostat Clock button). Rides
+  // 3B02 updates: a successful sync writes the mirror (immediate refresh)
+  // and the tstat broadcast re-fires it every ~60 s; a refusal that changed
+  // nothing publishes on the next tick. Publishes only on change.
+  if (sensor_type_ == "clock_sync") {
+    if (register_key != REG_SAM_STATE)
+      return;
+    const std::string &result = parent_->get_last_clock_sync_result();
+    if (!has_state() || result != last_clock_sync_published_) {
+      last_clock_sync_published_ = result;
+      publish_state(result);
+    }
+    return;
+  }
 }
 
 } // namespace infinitesp

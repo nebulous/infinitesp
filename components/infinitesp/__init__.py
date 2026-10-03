@@ -11,7 +11,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CODEOWNERS = ["@nebulous"]
 DEPENDENCIES = ["uart"]
-AUTO_LOAD = ["climate", "sensor", "select", "text_sensor", "binary_sensor", "cover", "datetime", "number"]
+AUTO_LOAD = ["climate", "sensor", "select", "text_sensor", "binary_sensor", "cover", "datetime", "number", "button"]
 MULTI_CONF = True
 
 CONF_INFINITESP_ID = "infinitesp_id"
@@ -21,6 +21,27 @@ CONF_STATUS_LED_PIN = "status_led_pin"
 infinitesp_ns = cg.esphome_ns.namespace("infinitesp")
 InfinitESPComponent = infinitesp_ns.class_("InfinitESPComponent", cg.Component, uart.UARTDevice)
 InfinitESPEntity = infinitesp_ns.class_("InfinitESPEntity")
+
+# Automation action `infinitesp.sync_clock` (clock phase 3): manual sync
+# from yaml automations / HA device actions. Shares the hub's sync core with
+# sam_ascii TIME!NOW and the auto-spawned Sync Thermostat Clock button.
+import esphome.automation as automation
+from esphome.automation import Action, maybe_simple_id
+
+SyncClockAction = infinitesp_ns.class_("SyncClockAction", Action)
+SYNC_CLOCK_ACTION_SCHEMA = maybe_simple_id(
+    {
+        cv.Required(CONF_ID): cv.use_id(InfinitESPComponent),
+    }
+)
+
+
+@automation.register_action(
+    "infinitesp.sync_clock", SyncClockAction, SYNC_CLOCK_ACTION_SCHEMA, synchronous=True
+)
+async def sync_clock_to_code(config, action_id, template_arg, args):
+    paren = await cg.get_variable(config[CONF_ID])
+    return cg.new_Pvariable(action_id, template_arg, paren)
 
 CONF_SAM_ADDRESS = "sam_address"
 # ESPHome time source for the sam_ascii TIME!NOW verb (clock phase 2).

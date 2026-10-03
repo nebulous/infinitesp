@@ -100,6 +100,10 @@ SYSTEM_DIAGNOSTIC = [
     ("text_sensor", "manufacture_date", "IDU Manufacture Date", 4),
     ("text_sensor", "manufacture_date", "ODU Manufacture Date", 5),
     ("text_sensor", "version", "InfinitESP Version"),
+    # Clock phase 3 (issue #45): manual sync trigger + its outcome sensor.
+    # Both manual-only surfaces — nothing schedules them (Q11).
+    ("button", None, "Sync Thermostat Clock"),
+    ("text_sensor", "clock_sync", "Clock Sync Result"),
 ]
 
 # System-wide, equipment-conditional (variable-speed ODU registers; the 3E

@@ -29,6 +29,7 @@ TEXT_SENSOR_TYPES = {
     "fault_history": "fault_history",
     "manufacture_date": "manufacture_date",
     "version": "version",
+    "clock_sync": "clock_sync",
 }
 
 CONFIG_SCHEMA = cv.All(

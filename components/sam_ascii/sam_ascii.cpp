@@ -444,29 +444,19 @@ void SamAsciiComponent::process_line_(const std::string &line) {
         parent_->set_displayed_clock((uint8_t) (write_val[0] - '0'),
                                      InfinitESPComponent::CLOCK_KEEP_MINUTES);
       } else {
-        // TIME!NOW — InfinitESP extension (clock phase 2): take the value
-        // from the hub's ESPHome time source (explicit time_id:, else the
-        // first declared time: platform) as LOCAL wall time. The bus carries
-        // local time; RealTimeClock::now() already applies the configured TZ.
-        // Refuses (plain NAK + log) when no source is configured or ESP time
-        // is not yet valid (no NTP/HA sync) — a garbage clock is never
-        // written. Single 0x180 write: weekday+minutes together.
+        // TIME!NOW — InfinitESP extension (clock phase 2/3): the shared
+        // manual-sync core (same path as the infinitesp.sync_clock action
+        // and the Sync Thermostat Clock button). Local wall time from the
+        // hub's ESPHome time source; refuses (plain NAK + log) when no
+        // source is configured, ESP time is invalid, mirror unfilled, or
+        // SAM emulation is off — a garbage clock is never written. Single
+        // 0x180 write: weekday+minutes together.
         if (write_val == "NOW") {
-          auto *clock = parent_->get_time_source();
-          if (clock == nullptr) {
-            ESP_LOGW(TAG, "TIME!NOW refused: no time source configured (add a time: platform or hub time_id:)");
+          std::string detail;
+          if (!parent_->sync_clock_from_source(detail)) {
             respond_nak_(prefix, "");
             return;
           }
-          auto now = clock->now();
-          if (!now.is_valid()) {
-            ESP_LOGW(TAG, "TIME!NOW refused: ESP time not valid yet (no NTP/HA sync)");
-            respond_nak_(prefix, "");
-            return;
-          }
-          // ESPTime day_of_week: 1=Sunday..7=Saturday; bus: 0=Sunday..6=Saturday.
-          parent_->set_displayed_clock((uint8_t) (now.day_of_week - 1),
-                                       (uint16_t) (now.hour * 60 + now.minute));
         } else {
           uint8_t weekday;
           uint16_t minutes;

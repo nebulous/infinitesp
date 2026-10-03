@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/core/component.h"
+#include "esphome/core/automation.h"
 #include "esphome/core/preferences.h"
 #include "esphome/core/gpio.h"
 #include "esphome/components/uart/uart.h"
@@ -475,6 +476,23 @@ class InfinitESPEntity {
   uint8_t device_address_{0};  // exact node pin, 0 = none (class matching)
 };
 
+// Automation action `infinitesp.sync_clock` (clock phase 3): fires the
+// manual sync core from yaml automations / HA device actions. Composable
+// twin of the "Sync Thermostat Clock" button and sam_ascii TIME!NOW — all
+// three share InfinitESPComponent::sync_clock_from_source().
+template<typename... Ts>
+class SyncClockAction : public Action<Ts...> {
+ public:
+  explicit SyncClockAction(InfinitESPComponent *parent) : parent_(parent) {}
+  void play(Ts... x) override {
+    std::string detail;
+    parent_->sync_clock_from_source(detail);
+  }
+
+ protected:
+  InfinitESPComponent *parent_;
+};
+
 class InfinitESPComponent : public Component, public uart::UARTDevice {
  public:
   InfinitESPComponent() = default;
@@ -641,6 +659,18 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_displayed_clock(uint8_t weekday, uint16_t minutes);
   static constexpr uint8_t CLOCK_KEEP_WEEKDAY = 0xFF;    // sentinel: don't flag/change weekday
   static constexpr uint16_t CLOCK_KEEP_MINUTES = 0xFFFF; // sentinel: don't flag/change minutes
+
+  // Manual clock-sync core (clock phase 3, issue #45): the shared TIME!NOW
+  // path. Resolves time_source_, validates ESP time, and performs ONE 0x180
+  // set_displayed_clock write (weekday + minutes as local wall time).
+  // Returns false WITHOUT writing when: SAM emulation disabled, mirror
+  // unfilled, no time source configured, or ESP time invalid — `detail`
+  // carries a human-readable result either way ("synced ..." / "refused: ...").
+  // Also records it in last_clock_sync_result_ for the diagnostic text
+  // sensor. Manual-only by design (Q11): NO timers, intervals, or on_time
+  // hooks may call this.
+  bool sync_clock_from_source(std::string &detail);
+  const std::string &get_last_clock_sync_result() const { return last_clock_sync_result_; }
 
   // --- Vacation (SAM 3B04) domain methods ---
   // Each setter updates the vacation_* member (the source of truth for entity
@@ -1082,6 +1112,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // Optional bus_jsonl stream sink (set_bus_jsonl).
   BusFrameSink *frame_sink_{nullptr};
   time::RealTimeClock *time_source_{nullptr};  // TIME!NOW source; null = refuse (see set_time_source)
+  std::string last_clock_sync_result_{"never"};  // last sync_clock_from_source() outcome
   void log_traffic_(uint8_t src, uint8_t dst, uint8_t func, uint16_t reg_key,
                      const std::vector<uint8_t> &payload);
 
