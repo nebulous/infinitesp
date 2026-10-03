@@ -179,12 +179,17 @@ def _validate_unit_addresses(config):
 
 
 def _validate_nim_config(config):
-    """Validate NIM emulation config: address collisions and orphan block."""
+    """Validate NIM config: address collisions and passive-mode shape."""
     nim = config.get(CONF_NIM_ADDRESS, 0)
     if nim == 0:
-        if CONF_NIM in config:
+        # A nim: block WITHOUT nim_address is the PASSIVE monitor surface
+        # (ZC-style class-8 observation, zero transmission); only the
+        # defrost input is meaningless without emulation.
+        if CONF_NIM in config and CONF_DEFROST_SENSOR in config[CONF_NIM]:
             _LOGGER.warning(
-                "'nim:' block configured but nim_address is 0; NIM emulation disabled"
+                "'nim: defrost_sensor' configured but nim_address is 0; "
+                "defrost input needs emulation - in passive mode defrost "
+                "arrives via observed 0316[14]"
             )
         return config
 
