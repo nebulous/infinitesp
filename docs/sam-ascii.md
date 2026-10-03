@@ -79,7 +79,11 @@ change no state.
 ```
 MODE!COOL           # Set system mode (HEAT/COOL/AUTO/OFF; EHEAT/HEATPUMP need experimental_heat_source_modes and NAK otherwise)
 ZONE!2               # Set displayed zone (1-8; ACKed on every tstat tested, adopted by older UI-family controls)
-VACDAYS!7           # Arm vacation for 7 whole days (0-365; 0 clears)
+TIME!08:10A         # Set the wall control's clock (12-hour, leading zeros)
+TIME!2026-10-02T20:15  # ...or a full local date/time (InfinitESP extension; sets the day too)
+TIME!NOW            # ...or take the time from the ESPHome time: source
+DAY!5                # Set the day of week (0=Sunday)
+VACDAYS!7            # Arm vacation for 7 whole days (0-365; 0 clears)
 VACHOURS!48         # Arm vacation for 48 hours at native resolution (0-8760; 0 clears)
 Z1HTSP!72            # Set zone 1 heat setpoint
 Z1CLSP!68            # Set zone 1 cool setpoint
@@ -88,6 +92,30 @@ Z1HOLD!120           # Hold zone 1 for 120 minutes
 Z1HOLD!on            # Permanent hold
 Z1HOLD!off           # Cancel hold, resume schedule
 ```
+
+### Clock verbs
+
+`TIME!` mimics the physical SAM's verb: 12-hour `HH:MM` plus `A`/`P`, leading
+zeros required (`08:10A` ACKs, `8:10A` NAKs; a space before the meridiem is
+accepted). Two InfinitESP extensions take a full datetime or the ESPHome time
+source:
+
+- `TIME!YYYY-MM-DDTHH:MM` sets both the clock and the day in one write. Naive
+  local time only: a `Z` or `+HH:MM` offset NAKs rather than convert, because
+  the bus carries local wall time.
+- `TIME!NOW` reads the ESPHome `time:` source (the hub's `time_id:` if set,
+  else the first declared `time:` block) and sends one write with weekday and
+  minutes together. It NAKs when no source is configured or the ESP clock is
+  not valid yet, and when the SAM mirror has not filled. The same core backs
+  the Sync Thermostat Clock button and the `infinitesp.sync_clock` action
+  ([entity reference](entity-reference.md#thermostat-clock)).
+
+`DAY!` takes a bare digit 0-6 (0=Sunday). Invalid values NAK `VAL`.
+
+Every clock write resets the wall control's internal seconds counter, so the
+clock ends a fraction of a minute behind the value written. One write per
+command by design. ACK reflects transport, not adoption: Touch-family
+controls queue time writes while the wall UI sleeps and apply them at wake.
 
 ## REPORT?
 

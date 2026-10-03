@@ -19,6 +19,7 @@ for variant types); opt-out flags on the climate block remove generated entities
 | `idu_address` | `0` | Pin the indoor unit to an exact bus node instead of device-class matching. |
 | `odu_address` | `0` | Pin the outdoor unit to an exact bus node instead of device-class matching. |
 | `temperature_unit` | `auto` | `auto` (read from the bus), `F`, or `C`. See [temperature unit detection](#temperature-unit-detection). |
+| `time_id` | first `time:` block | ESPHome time source for the thermostat clock sync. See [thermostat clock](#thermostat-clock). |
 | `auto_diagnostics` | `true` | `false` drops the generated diagnostics group (below). |
 | `experimental_heat_source_modes` | `false` | Adds `emergency_heat` / `heat_pump` to the system mode select and `MODE!`. Protocol experiment, not control. See [select types](#select-types). |
 | `status_light_id` | - | Existing light entity for status. Mutually exclusive with `status_led_pin`. |
@@ -209,6 +210,7 @@ corrupt them.
 | `fault_history` | - | core | |
 | `manufacture_date` | - | one per class | Thermostat (bare), IDU, ODU. See matching rules below. |
 | `version` | - | diagnostic | Firmware version. |
+| `clock_sync` | - | diagnostic | Outcome of the last manual clock sync. See [thermostat clock](#thermostat-clock). |
 | `tstat_ssid`, `tstat_hostname`, `tstat_wifi_mac`, `tstat_cloud_host`, `tstat_proxy_server`, `tstat_dealer_name`, `tstat_dealer_brand`, `tstat_dealer_url` | - | diagnostic | |
 
 ### `manufacture_date` matching
@@ -333,6 +335,55 @@ wall UI cannot express ("away for 5 hours") work. The matching ASCII verbs are
   vacation min/max temp sensors); `VACMINT!`/`VACMAXT!` can change them.
 - Requires SAM emulation; on a passive install the number accepts the value but
   sends nothing (it snaps back), like all write verbs.
+
+## Thermostat clock
+
+The wall control's clock (SAM 3B02 bytes 25-27: weekday and minutes-since-midnight)
+can be set manually. There is one sync core and three ways to trigger it:
+
+- the generated **Sync Thermostat Clock** button (diagnostic),
+- the `infinitesp.sync_clock` automation action, usable from yaml automations and
+  Home Assistant device actions (`infinitesp.sync_clock: infinitesp_hub` in the
+  simple-id form),
+- `TIME!NOW` on the SAM ASCII interface ([docs](sam-ascii.md)).
+
+```yaml
+# automation example: sync on demand from HA
+on_...:
+  then:
+    - infinitesp.sync_clock: infinitesp_hub
+```
+
+A trigger reads the ESPHome `time:` source (the hub's `time_id:` if set, else the
+first declared `time:` block) as local wall time and sends one 3B02 write with
+both the weekday and the minutes flagged (0x0180). The **Clock Sync Result**
+text sensor reports the outcome (`synced 20:11 FRI`, or `refused: ...` with the
+reason; `never` until the first trigger).
+
+Refusals write nothing to the bus. The core refuses when SAM emulation is off,
+the 3B02 mirror has not filled yet, no `time:` source resolves, or the ESP
+clock is not valid yet (no NTP or Home Assistant time sync after boot). On a
+passive install (`sam_address: 0`) the read-only `TIME?` / `DAY?` verbs still
+work and the sync surfaces always refuse.
+
+Behavior to know before wiring it into anything:
+
+- **Every trigger writes, unconditionally.** There is no difference check: a
+  press when the clock is already right still sends a write. Each applied
+  clock write resets the wall control's internal seconds counter, so the
+  displayed clock ends up 25-30 s behind the source until its next self-sync.
+  This cost is why sync is manual-only. There are no timers, intervals, or
+  `on_time` hooks in the firmware that call the core. If you want periodic
+  sync, wire an HA automation to the action and own the write frequency.
+- **Resolution is whole minutes.** Seconds never travel the bus; the wall
+  control owns them.
+- **A sleeping wall UI applies the write at wake.** Touch-family controls
+  ACK immediately but queue time writes in a single pending slot (last write
+  wins) and apply them when the screen wakes. Older UI-family controls apply
+  immediately.
+- The auto-generated button and result sensor can be replaced by declaring
+  the `button` platform or a `clock_sync` text sensor yourself, like every
+  other generated entity. `auto_diagnostics: false` drops the pair.
 
 ## Fault entities
 

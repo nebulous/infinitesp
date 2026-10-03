@@ -192,7 +192,7 @@ Each zone's sensors and controls, plus the system-wide entities, are generated a
 
 - **Per zone** (from each climate block): temperature, humidity, occupancy, zone name, hold state, comfort profile, fan mode select, hold-until time, hold-minutes number, and the damper cover (generated on every zone; it publishes only when a zone controller is on the bus, see [Covers](#covers)).
 - **System-wide**: outdoor temperature, blower RPM, airflow, IDU heat stage, compressor running, bus status, ODU temperature/stage sensors, vacation setpoints, vacation duration (number, see below), heat source (furnace / heat_pump / electric / none), fault history and fault timestamp. The deprecated `electric_heat` binary sensor no longer publishes (0316[0] is the source-blind IDU heat stage; use `idu_heat_stage` + `heat_source`).
-- **Diagnostics** (entity category diagnostic): IDU/ODU cycle and hour counters, thermostat wifi/dealer strings, thermostat/IDU/ODU manufacture dates, firmware version. Disable the whole group with `auto_diagnostics: false` in the `infinitesp:` block.
+- **Diagnostics** (entity category diagnostic): IDU/ODU cycle and hour counters, thermostat wifi/dealer strings, thermostat/IDU/ODU manufacture dates, firmware version, and the manual clock-sync pair (button + result sensor, see [Thermostat Clock](#thermostat-clock)). Disable the whole group with `auto_diagnostics: false` in the `infinitesp:` block.
 - **Equipment-conditional** (generated disabled by default, enable in HA if your hardware serves them): the variable-speed ODU family — compressor RPM, ODU requested CFM, expansion valve, float registers, discharge/suction temperatures, superheat.
 
 Rules:
@@ -219,6 +219,7 @@ infinitesp:
   # idu_address: 0x3E
   # odu_address: 0x57
   # temperature_unit: auto    # auto (default), F, or C
+  # time_id: my_time_source    # for the clock sync; default = first time: block
   # status_light_id: rgb_led  # or status_led_pin: GPIO2 (see Status LED)
   # experimental_heat_source_modes: true   # protocol experiment, see Selects
 ```
@@ -439,6 +440,12 @@ Any preset command other than Vacation also ends an active vacation. Full rules 
 
 `fault_timestamp` (sensor) changes state each time the thermostat logs a new fault (register 0x4202); it needs `time_id`. `fault_history` (text sensor) renders the ten-entry fault log. No fault-active/cleared state exists on the bus, so these are event-style entities, not liveness flags. Semantics: [entity reference](docs/entity-reference.md#fault-entities).
 
+### Thermostat Clock
+
+The wall control's clock can be set manually from Home Assistant: a generated **Sync Thermostat Clock** button, an `infinitesp.sync_clock` automation action, and `TIME!NOW` on the SAM ASCII interface all run one shared core that reads your ESPHome `time:` source (local wall time) and sends a single 3B02 write. The generated **Clock Sync Result** sensor reports the outcome (`synced 20:11 FRI`, or `refused: ...` with the reason).
+
+Every trigger writes unconditionally and each applied write resets the wall control's internal seconds counter (the clock ends up 25-30 s behind the source), so sync is manual-only by design: the firmware never schedules clock writes. Resolution is whole minutes; Touch-family controls apply the write when the wall UI wakes. Details and refusal conditions: [entity reference](docs/entity-reference.md#thermostat-clock).
+
 ## SAM ASCII Interface
 
 InfinitESP implements the Carrier SAM ASCII serial protocol, the same text command/response interface a real SYSTXCCSAM01 exposes on its DB-9 RS-232 port (9600 8N1, CRLF). The bundled config binds it to a TCP server on port 23, so you can drive it with any telnet client:
@@ -452,6 +459,7 @@ Every `?` verb reads state; appending `!` and a value writes (writes need SAM em
 ```
 MODE?                # system mode
 OAT?                 # outdoor air temperature (°F)
+TIME?                # wall control clock (TIME! sets it: "08:10A", "2026-10-02T20:15", or NOW)
 Z1RT? / Z1HTSP?      # zone 1 room temp / heat setpoint
 Z1HOLD!120           # hold zone 1 for 120 minutes
 VACDAYS!7            # arm vacation for 7 days
