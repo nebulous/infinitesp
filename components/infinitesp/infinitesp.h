@@ -1031,8 +1031,9 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void send_frame_(uint8_t dst, uint8_t dst_bus, uint8_t func, const std::vector<uint8_t> &payload);
   // Queue a WRITE frame for transmission from loop(). Entries drain FIFO,
   // bus-idle gated, with up to WRITE_ATTEMPTS sends per frame. Callers write
-  // idempotent values (setpoints/fan/mode/permanent holds); timed holds see a
-  // sub-minute countdown reset, below the field's minute resolution.
+  // idempotent values (setpoints/fan/mode/permanent holds). A 3B03 write also
+  // echoes timed hold countdowns, which the thermostat floors to its 15-minute
+  // grid, so the queued copy is rounded up (round_echoed_holds_up_).
   // Immediate transmission is NOT done here: an unguarded send can collide
   // with the thermostat's reply window right after a preceding frame (lost
   // 3B02 mode write, captured 2026-09-10). The idle gate plus retries rides

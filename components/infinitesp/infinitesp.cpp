@@ -923,6 +923,28 @@ void InfinitESPComponent::send_frame_(uint8_t dst, uint8_t dst_bus, uint8_t func
   transmit_frame_(dst, dst_bus, sam_address_, 0x01, func, payload);
 }
 
+// A 3B03 write echoes every zone's hold countdown and the thermostat floors each to
+// its 15-minute grid, so a setpoint, fan or mode write cut running timed holds short
+// (644 came back 630). Round each echoed countdown up to the grid instead; permanent
+// (holding bit), 0 and on-grid ones pass. Register byte i is payload byte i + 3.
+static void round_echoed_holds_up_(std::vector<uint8_t> &payload) {
+  static const size_t REG_AT = 3;
+  if (payload.size() < REG_AT + REG3B03_HOLD_DURATIONS + 16 || payload[1] != 0x3B || payload[2] != 0x03)
+    return;
+  for (uint8_t z = 0; z < 8; z++) {
+    if (payload[REG_AT + REG3B03_ZONES_HOLDING] & (1 << z))
+      continue;
+    const size_t at = REG_AT + REG3B03_HOLD_DURATIONS + z * 2;
+    const uint16_t dur = ((uint16_t) payload[at] << 8) | payload[at + 1];
+    const uint16_t up = (dur + 14) / 15 * 15;
+    if (dur == 0 || up == dur || up > InfinitESPComponent::HOLD_TIMED_MAX)
+      continue;
+    payload[at] = up >> 8;
+    payload[at + 1] = up & 0xFF;
+    ESP_LOGD("InfinitESP", "Zone %d timed hold echoed as %d min, rounded up to %d", z + 1, dur, up);
+  }
+}
+
 void InfinitESPComponent::send_write_frame_(uint8_t dst, uint8_t dst_bus,
                                              const std::vector<uint8_t> &payload) {
   // Backstop (issue #38): a queued write transmits with sam_address_ as the
@@ -940,6 +962,8 @@ void InfinitESPComponent::send_write_frame_(uint8_t dst, uint8_t dst_bus,
   // lost exactly that way, twice (primary + its one retry).
   pending_retransmits_.push_back({dst, dst_bus, FUNC_WRITE, payload, millis(),
                                    (uint8_t) (WRITE_ATTEMPTS - 1)});
+  // The queued copy is what goes out, retries included; the caller's is left as built.
+  round_echoed_holds_up_(pending_retransmits_.back().payload);
 }
 
 void InfinitESPComponent::send_reply_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus,
