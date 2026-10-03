@@ -161,7 +161,7 @@ bool SamAsciiComponent::parse_clock_value_(const std::string &val, uint8_t &week
   // here). Anything longer ("...Z", "+HH:MM" offsets) is rejected rather
   // than converted - the bus carries local wall time and a silent TZ
   // conversion with the wrong zone would write a wrong clock.
-  if (val.size() == 16 && val[4] == '-' && val[7] == '-' && val[13] == ':') {
+  if (val.size() == 16 && val[4] == '-' && val[7] == '-' && val[10] == 'T' && val[13] == ':') {
     auto digits = [&](size_t from, size_t count) -> bool {
       for (size_t i = from; i < from + count; i++)
         if (val[i] < '0' || val[i] > '9')
