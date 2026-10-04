@@ -2152,9 +2152,20 @@ void InfinitESPComponent::initialize_defaults_() {
       store_register_(sam_address_, REG_DEVICE_INFO, data);
     }
 
-    // Register 030D - SAM status (7 bytes)
+    // Register 030D - SAM status (7 bytes). Live fault report, one decimal
+    // status code per byte. Codes per the SAM01 install manual (issue #41
+    // images, OCR'd): 45 board failure, 61 radio no coverage (5 min), 62 loss
+    // of comm with the radio module (2 min), 63 radio unregistered (5 min).
+    // Observed moving on the bench SAM with no bus master (2026-10-04 watch,
+    // module connected: zeros ~10 s, then 61+63, then 63, then 62+63; the
+    // June/Sept module-out scans read 61+62+63). 030E fault counters co-move
+    // (+1 as a code activates). Serving the captured 61/62/63 bytes made a
+    // UID01 tstat log SAM events 61/62/63 + "SAM RADIO TEST FAILED" (issue
+    // #41); whether the tstat reads the codes from this register is tight
+    // correlation, not a proven read (zeros-seed test on #41 pending). Seed
+    // zeros either way: the emulated SAM has no radio, so no codes to report.
     {
-      std::vector<uint8_t> data = {0x3D, 0x3E, 0x3F, 0, 0, 0, 0};
+      std::vector<uint8_t> data(7, 0);
       store_register_(sam_address_, REG_SAM_STATUS, data);
     }
 
@@ -2327,7 +2338,9 @@ void InfinitESPComponent::initialize_defaults_() {
         store_register_(zc_addr, REG_ZC_ZONE_CONFIG, data);
       }
 
-      // Register 030D - Unknown (7 bytes, always zeros)
+      // Register 030D - Diagnostics (7 bytes, all zeros). Real ZC serves
+      // zeros: 2372 replies in a 16 h capture (issue #41), on the same 23 s
+      // health round as IDU/NIM/SAM/satellites.
       // Shared register number with SAM 030D but different device address
       {
         std::vector<uint8_t> data(7, 0);
