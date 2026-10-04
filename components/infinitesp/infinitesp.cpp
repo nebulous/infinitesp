@@ -2083,7 +2083,8 @@ void InfinitESPComponent::initialize_defaults_() {
 
     // Register 030D - SAM status (7 bytes)
     {
-      std::vector<uint8_t> data = {0x3D, 0x3E, 0x3F, 0, 0, 0, 0};
+      //std::vector<uint8_t> data = {0x3D, 0x3E, 0x3F, 0, 0, 0, 0}; // fault codes?
+      std::vector<uint8_t> data(7, 0); //see if this clears UIZ fault codes
       store_register_(sam_address_, REG_SAM_STATUS, data);
     }
 
