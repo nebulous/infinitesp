@@ -46,6 +46,21 @@ static const uint32_t ODU_SLOW_POLL_INTERVAL_MS = 31000;
 static const uint32_t DISCOVERY_POLL_INTERVAL_MS = 3500;
 static const uint8_t TABLEDEF_ROW = 0x01;  // every table's self-describing register is at row 01
 
+// How long we wait for a poll reply. The purge in loop() drops pending reads
+// at this age; a discovery probe this old with no reply counts as a miss.
+// Bus replies arrive in under 200 ms.
+static const uint32_t POLL_REPLY_TIMEOUT_MS = 5000;
+// No-reply backoff (issue #41): this many consecutive unanswered reads drops
+// a slow-poll target from its rotation for the session. A pre-cloud UIZ
+// ignores 4xxx reads instead of refusing them (~140 dead polls per capture),
+// so silence needs a budget; a FUNC 0x15 refusal is authoritative and drops
+// at once. Discovery gets fewer misses: it is diagnostics-only.
+static const uint8_t SLOW_POLL_MISS_LIMIT = 5;
+static const uint8_t DISCOVERY_MISS_LIMIT = 3;
+// Thermostat comfort rows, zones 1-8 (slow_poll_owns_).
+static const uint16_t COMFORT_ROW_FIRST = 0x400A;
+static const uint16_t COMFORT_ROW_LAST = 0x4011;
+
 // Install-discovery holdoff. The thermostat transmits as ADDR_DISCOVERY
 // (0x1F) only while running system discovery/commissioning. In steady state
 // that address never appears: across init captures it shows as a single ~10s
@@ -214,12 +229,19 @@ void InfinitESPComponent::loop() {
     // Purge timed-out polls (anything older than 5s)
     uint32_t purged = 0;
     for (auto it = pending_polls_.begin(); it != pending_polls_.end();) {
-      if (now - it->sent_ms > 5000) {
+      if (now - it->sent_ms > POLL_REPLY_TIMEOUT_MS) {
         ESP_LOGW("InfinitESP", "POLL TIMEOUT: tx_seq=%u dest=%02X reg=%04X sent=%ums ago",
                  it->tx_seq, it->dest, it->reg_key, now - it->sent_ms);
         diag_reply_timeout_++;
+        // Counts a no-reply miss (slow-poll pairs only; see the
+        // POLL_REPLY_TIMEOUT_MS block). No misses from dead air: this path
+        // sees only polls actually sent, and slow polls are gated off while
+        // the bus is offline or in commissioning holdoff.
+        uint8_t pdest = it->dest;
+        uint16_t preg = it->reg_key;
         it = pending_polls_.erase(it);
         purged++;
+        record_poll_miss_(pdest, preg);
       } else {
         ++it;
       }
@@ -235,12 +257,12 @@ void InfinitESPComponent::loop() {
 
     ESP_LOGI("InfinitESP", "STATS rx_bytes=%u tx_bytes=%u rx_frames=%u tx_frames=%u "
              "crc_fail=%u crc_ok=%.2f%% stale=%u uart_hwm=%u overflow_evts=%u "
-             "reply_exp=%u reply_got=%u reply_timeout=%u poll_pending=%u "
+             "reply_exp=%u reply_got=%u reply_timeout=%u poll_pending=%u poll_drop=%u "
              "tx_flush_max=%ums loop_max=%ums inter_frame=%u..%ums",
              diag_total_rx_bytes_, diag_total_tx_bytes_, diag_frames_parsed_, diag_tx_seq_,
              diag_crc_fail_, crc_ok, diag_stale_discard_, diag_uart_hwm_, diag_uart_overflow_events_,
              diag_reply_expected_, diag_reply_received_, diag_reply_timeout_,
-             (uint32_t) pending_polls_.size(),
+             (uint32_t) pending_polls_.size(), diag_poll_dropped_,
              diag_tx_flush_max_ms_, diag_loop_max_ms_,
              diag_inter_frame_min_ms_ == UINT32_MAX ? 0 : diag_inter_frame_min_ms_,
              diag_inter_frame_max_ms_);
@@ -381,6 +403,9 @@ void InfinitESPComponent::loop() {
     // The mask is re-read each rotation, so a re-commissioned zone count takes
     // effect without a reboot. Mask unreadable (early boot) degrades to zone
     // 1's row only, which is what a single-zone system needs anyway.
+    // Dropped targets are filtered out before slotting, so survivors are
+    // polled more often (a control serving only 0104 settles to 0104 every
+    // 31 s) and comfort-first ordering survives.
     uint8_t active = get_zone_active_mask();
     uint8_t n_active = 0;
     for (uint8_t b = 0; b < 8; b++)
@@ -389,37 +414,35 @@ void InfinitESPComponent::loop() {
       active = 0x01;
       n_active = 1;
     }
-    uint16_t idx = slow_poll_index_ % (SLOW_POLL_REG_COUNT + n_active);
-    uint16_t sreg_key;
-    if (idx < n_active) {
-      uint8_t want = idx;  // nth set bit
-      uint8_t seen = 0, zone = 1;
-      for (; zone <= 8; zone++) {
-        if (active & (1 << (zone - 1))) {
-          if (seen == want)
-            break;
-          seen++;
-        }
+    uint16_t cand[SLOW_POLL_REG_COUNT + 8];  // max: 8 comfort rows + fixed set
+    uint8_t n_cand = 0;
+    for (uint8_t zone = 1; zone <= 8; zone++) {
+      if (active & (1 << (zone - 1))) {
+        uint16_t key = comfort_reg_for_zone(zone);
+        if (!poll_target_dropped_(ADDR_THERMOSTAT, key))
+          cand[n_cand++] = key;
       }
-      sreg_key = comfort_reg_for_zone(zone);
-    } else {
-      const auto &sreg = SLOW_POLL_REGS[idx - n_active];
-      sreg_key = (sreg[0] << 8) | sreg[1];
     }
-    ESP_LOGI("InfinitESP", "SLOW POLL thermostat for %04X", sreg_key);
+    for (uint8_t i = 0; i < SLOW_POLL_REG_COUNT; i++) {
+      uint16_t key = (SLOW_POLL_REGS[i][0] << 8) | SLOW_POLL_REGS[i][1];
+      if (!poll_target_dropped_(ADDR_THERMOSTAT, key))
+        cand[n_cand++] = key;
+    }
+    if (n_cand > 0) {
+      uint16_t sreg_key = cand[slow_poll_index_++ % n_cand];
+      ESP_LOGI("InfinitESP", "SLOW POLL thermostat for %04X", sreg_key);
 
-    PendingPoll spp;
-    spp.sent_ms = millis();
-    spp.dest = ADDR_THERMOSTAT;
-    spp.reg_key = sreg_key;
-    pending_polls_.push_back(spp);
-    diag_reply_expected_++;
+      PendingPoll spp;
+      spp.sent_ms = millis();
+      spp.dest = ADDR_THERMOSTAT;
+      spp.reg_key = sreg_key;
+      pending_polls_.push_back(spp);
+      diag_reply_expected_++;
 
-    std::vector<uint8_t> spayload = {0x00, (uint8_t) (sreg_key >> 8), (uint8_t) (sreg_key & 0xFF)};
-    send_frame_(ADDR_THERMOSTAT, 0x01, FUNC_READ, spayload);
-    pending_polls_.back().tx_seq = diag_tx_seq_;
-
-    slow_poll_index_++;
+      std::vector<uint8_t> spayload = {0x00, (uint8_t) (sreg_key >> 8), (uint8_t) (sreg_key & 0xFF)};
+      send_frame_(ADDR_THERMOSTAT, 0x01, FUNC_READ, spayload);
+      pending_polls_.back().tx_seq = diag_tx_seq_;
+    }
     last_slow_poll_time_ = now;
     tstat_slow_sent = true;
   }
@@ -635,7 +658,11 @@ void InfinitESPComponent::dispatch_frame_() {
                    diag_rx_seq_, it->tx_seq, it->dest, it->reg_key, rtt);
           // Erase by converting reverse iterator to forward iterator
           auto fwd = std::prev(it.base());
+          uint8_t mdest = fwd->dest;
+          uint16_t mreg = fwd->reg_key;
           pending_polls_.erase(fwd);
+          // Any reply resets that pair's no-reply miss count.
+          reset_poll_misses_(mdest, mreg);
           matched = true;
           break;
         }
@@ -661,6 +688,12 @@ void InfinitESPComponent::dispatch_frame_() {
 
   if (current_frame_.func == FUNC_REPLY && current_frame_.dst == ADDR_FAKESAM) {
     handle_discovery_reply_();
+  } else if (current_frame_.func == FUNC_EXCEPTION && current_frame_.dst == ADDR_FAKESAM) {
+    // A FUNC 0x15 refusal of a tabledef probe, addressed to 0x93. It never
+    // reaches handle_exception_ (that matches pending_polls_, which discovery
+    // probes never enter), so without this branch the pair would retry
+    // forever.
+    handle_discovery_exception_();
   } else if (!reply_handled && (to_us || to_zc)) {
     switch (current_frame_.func) {
       case FUNC_READ:
@@ -1238,8 +1271,8 @@ void InfinitESPComponent::poll_odu_slow_() {
     size_t slot = odu_slow_poll_index_++ % total;
     uint8_t addr = odus[slot / ODU_SLOW_POLL_REG_COUNT];
     uint16_t reg = ODU_SLOW_POLL_REGS[slot % ODU_SLOW_POLL_REG_COUNT];
-    if (odu_unsupported_.count({addr, reg}))
-      continue;  // refused with 0x15 earlier this session
+    if (poll_target_dropped_(addr, reg))
+      continue;  // refused (FUNC 0x15) or unanswered (misses) earlier this session
     ESP_LOGI("InfinitESP", "SLOW POLL ODU %02X for %04X", addr, reg);
     PendingPoll pp;
     pp.sent_ms = millis();
@@ -1261,18 +1294,27 @@ void InfinitESPComponent::handle_exception_() {
   // echo, so register-level matching is impossible. Unambiguous in practice:
   // only one poll per destination is outstanding (fast poll -> thermostat,
   // slow polls -> one target per cycle).
+  // Refusal codes (PROTOCOL.md): 0x04 absent and 0x10 write-only are
+  // permanent, so drop the pair. 0x0a = row exists but empty: the device is
+  // alive, so reset misses and keep polling (the row can gain data).
   // Counted as an answered poll (diag_reply_received_) so STATS keeps the
   // invariant expected = received + timeout; no POLL TIMEOUT warn fires and
   // reply_timeout stays clean, because the pending is erased here.
   diag_reply_received_++;
+  uint8_t code = current_frame_.payload.size() >= 4 ? current_frame_.payload[3] : 0x04;
   for (auto it = pending_polls_.rbegin(); it != pending_polls_.rend(); ++it) {
     if (it->dest == current_frame_.src) {
       auto fwd = std::prev(it.base());
       uint16_t rk = fwd->reg_key;
       pending_polls_.erase(fwd);
-      if (odu_unsupported_.insert({current_frame_.src, rk}).second) {
-        ESP_LOGI("InfinitESP", "ODU %02X register %04X unsupported (FUNC 0x15) - removed from slow poll",
-                 current_frame_.src, rk);
+      if (slow_poll_owns_(current_frame_.src, rk)) {
+        if (code == 0x0A) {
+          reset_poll_misses_(current_frame_.src, rk);
+        } else {
+          char why[48];
+          snprintf(why, sizeof(why), "FUNC 0x15 code %02X", code);
+          drop_poll_target_(current_frame_.src, rk, why);
+        }
       }
       return;
     }
@@ -1281,11 +1323,43 @@ void InfinitESPComponent::handle_exception_() {
            current_frame_.src, (uint32_t) pending_polls_.size());
 }
 
+void InfinitESPComponent::handle_discovery_exception_() {
+  // The payload's table/row is not a reliable echo (PROTOCOL.md) and probes
+  // carry no pending_polls_ entry, so match by recency: at most one probe per
+  // cycle makes the most recent outstanding probe from this source the
+  // refused one.
+  std::pair<uint8_t, uint8_t> best{0, 0};
+  uint32_t best_ts = 0;
+  bool found = false;
+  for (const auto &kv : discovery_query_ms_) {
+    if (kv.first.first != current_frame_.src)
+      continue;
+    if (table_names_.count(kv.first) || no_tabledef_.count(kv.first))
+      continue;
+    if (kv.second > best_ts) {
+      best_ts = kv.second;
+      best = kv.first;
+      found = true;
+    }
+  }
+  if (found && no_tabledef_.insert(best).second) {
+    ESP_LOGI("InfinitESP", "DISCOVERY %02X table %02X refused (FUNC 0x15) - skipping name",
+             best.first, best.second);
+  }
+}
+
 void InfinitESPComponent::poll_discovery_() {
   // Probe one observed (device, table) for its 0xNN01 table definition, sent
   // from ADDR_FAKESAM (0x93). Picks the queryable pair missing a cached name
   // with the oldest last-query time (so a dropped reply is retried on the next
   // full sweep rather than never). Skips our own emulated addresses.
+  //
+  // No-reply backoff: re-selecting a pair whose last probe aged out past
+  // POLL_REPLY_TIMEOUT_MS counts one miss; at DISCOVERY_MISS_LIMIT the pair
+  // is retired for the session. Without it a phantom address is probed
+  // forever (slot 0x50, seen in one captured write, drew 11,821 probes in
+  // 11.5 h).
+  uint32_t now_ms = millis();
   std::pair<uint8_t, uint8_t> best{0, 0};
   bool found = false;
   uint32_t best_ts = UINT32_MAX;
@@ -1301,9 +1375,13 @@ void InfinitESPComponent::poll_discovery_() {
       if (table_names_.count(key))
         continue;  // already learned
       if (no_tabledef_.count(key))
-        continue;  // probed once; row 01 is not a tabledef
+        continue;  // probed once; row 01 is not a tabledef (or refused, 0x15)
+      if (discovery_backoff_.count(key))
+        continue;  // unanswered DISCOVERY_MISS_LIMIT times this session
       auto it = discovery_query_ms_.find(key);
       uint32_t ts = (it == discovery_query_ms_.end()) ? 0 : it->second;
+      if (it != discovery_query_ms_.end() && now_ms - it->second < POLL_REPLY_TIMEOUT_MS)
+        continue;  // probe still in flight; reply may yet arrive
       if (ts < best_ts) {
         best_ts = ts;
         best = key;
@@ -1313,6 +1391,16 @@ void InfinitESPComponent::poll_discovery_() {
   }
   if (!found)
     return;
+  if (discovery_query_ms_.count(best)) {
+    uint8_t misses = ++discovery_misses_[best];
+    if (misses >= DISCOVERY_MISS_LIMIT) {
+      discovery_backoff_.insert(best);
+      diag_poll_dropped_++;
+      ESP_LOGI("InfinitESP", "DISCOVERY %02X table %02X: no reply x%u - backed off for this session",
+               best.first, best.second, misses);
+      return;
+    }
+  }
   std::vector<uint8_t> payload = {0x00, best.second, TABLEDEF_ROW};
   transmit_frame_(best.first, 0x01, ADDR_FAKESAM, 0x01, FUNC_READ, payload);
   discovery_query_ms_[best] = millis();
@@ -1334,6 +1422,10 @@ void InfinitESPComponent::handle_discovery_reply_() {
     return;
   std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
   store_register_(current_frame_.src, reg_key, data);
+
+  // Any reply is proof of life: clear the pair's misses, even if it yields
+  // no name below.
+  discovery_misses_.erase({current_frame_.src, table});
 
   // Metric-units poll reply (3B05, sam not emulated)
   if (reg_key == REG_SAM_ACCESSORIES && temperature_unit_ == TemperatureUnit::AUTO) {
@@ -1424,6 +1516,75 @@ void InfinitESPComponent::notify_entities_(uint8_t device_addr, uint16_t registe
     }
     entity->on_register_update(device_addr, register_key);
   }
+}
+
+void InfinitESPComponent::notify_entities_dropped_(uint8_t device_addr, uint16_t register_key) {
+  uint8_t src_class = device_addr >> 4;
+  for (auto *entity : entities_) {
+    uint8_t pin = entity->get_device_address();
+    if (pin != 0) {
+      if (device_addr != pin)
+        continue;
+    } else {
+      uint8_t dc = entity->get_bus_class();
+      if (dc != 0 && src_class != 0 && dc != src_class)
+        continue;
+    }
+    entity->on_register_dropped(device_addr, register_key);
+  }
+}
+
+bool InfinitESPComponent::slow_poll_owns_(uint8_t dest, uint16_t reg) const {
+  if (dest == ADDR_THERMOSTAT) {
+    if (reg >= COMFORT_ROW_FIRST && reg <= COMFORT_ROW_LAST)
+      return true;
+    for (uint8_t i = 0; i < SLOW_POLL_REG_COUNT; i++)
+      if (((uint16_t) (SLOW_POLL_REGS[i][0] << 8) | SLOW_POLL_REGS[i][1]) == reg)
+        return true;
+    return false;
+  }
+  if ((dest >> 4) == CLASS_OUTDOOR_UNIT) {
+    for (uint8_t i = 0; i < ODU_SLOW_POLL_REG_COUNT; i++)
+      if (ODU_SLOW_POLL_REGS[i] == reg)
+        return true;
+  }
+  return false;
+}
+
+bool InfinitESPComponent::poll_target_dropped_(uint8_t dest, uint16_t reg) const {
+  auto it = poll_backoff_.find({dest, reg});
+  return it != poll_backoff_.end() && it->second.dropped;
+}
+
+void InfinitESPComponent::record_poll_miss_(uint8_t dest, uint16_t reg) {
+  if (!slow_poll_owns_(dest, reg))
+    return;
+  auto &bo = poll_backoff_[{dest, reg}];
+  if (bo.dropped)
+    return;
+  if (++bo.misses < SLOW_POLL_MISS_LIMIT)
+    return;
+  char why[32];
+  snprintf(why, sizeof(why), "no reply x%u", (unsigned) bo.misses);
+  drop_poll_target_(dest, reg, why);
+}
+
+void InfinitESPComponent::reset_poll_misses_(uint8_t dest, uint16_t reg) {
+  auto it = poll_backoff_.find({dest, reg});
+  if (it != poll_backoff_.end())
+    it->second.misses = 0;
+}
+
+void InfinitESPComponent::drop_poll_target_(uint8_t dest, uint16_t reg, const char *why) {
+  auto &bo = poll_backoff_[{dest, reg}];
+  if (bo.dropped)
+    return;
+  bo.dropped = true;
+  bo.misses = 0;
+  diag_poll_dropped_++;
+  ESP_LOGI("InfinitESP", "SLOW POLL %02X register %04X dropped for this session (%s)",
+           dest, reg, why);
+  notify_entities_dropped_(dest, reg);
 }
 
 const std::vector<uint8_t> *InfinitESPComponent::get_register(uint8_t addr, uint16_t key) const {
@@ -2811,6 +2972,27 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
     write_fn((const uint8_t *) buf, n, ctx);
     emit_json_string_(write_fn, ctx, kv.second.c_str());
     emit("}");
+    first = false;
+  }
+  emit("]");
+
+  // Dropped targets (poll_backoff_): explains why fault/vacation/wifi
+  // entities sit at no-data on pre-cloud UIZ/UID installs (they serve no
+  // 4xxx tables).
+  emit(",\"dropped\":[");
+  first = true;
+  for (const auto &kv : poll_backoff_) {
+    if (!kv.second.dropped)
+      continue;
+    n = snprintf(buf, sizeof(buf), "%s{\"address\":\"%02X\",\"reg\":\"%04X\"}",
+             first ? "" : ",", kv.first.first, kv.first.second);
+    write_fn((const uint8_t *) buf, n, ctx);
+    first = false;
+  }
+  for (const auto &key : discovery_backoff_) {
+    n = snprintf(buf, sizeof(buf), "%s{\"address\":\"%02X\",\"table\":\"%02X\"}",
+             first ? "" : ",", key.first, key.second);
+    write_fn((const uint8_t *) buf, n, ctx);
     first = false;
   }
   emit("]");

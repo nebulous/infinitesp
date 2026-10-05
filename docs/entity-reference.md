@@ -126,6 +126,13 @@ Fault history text sensor and fault timestamp sensor.
 Diagnostics group (behind `auto_diagnostics`): IDU and ODU cycle/hour counters, thermostat
 wifi and dealer strings, thermostat/IDU/ODU manufacture dates, firmware version.
 
+Fault history, fault timestamp, vacation readback, and the wifi/dealer strings read
+thermostat `0x4xxx` config tables. Wall controls from the pre-cloud UIZ/UID generation do
+not serve those tables on the bus (they ignore the reads instead of refusing them), so
+these entities stay at no-data on those installs. The firmware detects this and stops
+polling after five unanswered reads; `fault_timestamp` then shows unavailable, and the
+`REPORT?` snapshot lists the dropped registers. Rebooting re-probes once.
+
 Equipment-conditional group (generated disabled by default, enable in HA if your hardware
 serves the registers): compressor RPM, target compressor RPM, ODU requested CFM, ODU
 expansion valve, ODU floats 1-6, ODU discharge and suction temps, ODU suction superheat.

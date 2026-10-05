@@ -452,6 +452,11 @@ class BusFrameSink {
 class InfinitESPEntity {
  public:
   virtual void on_register_update(uint8_t device_addr, uint16_t register_key) = 0;
+  // A slow-poll target was dropped for the session (issue #41): it will not
+  // be read again before reboot. Default no-op. Sensors that can render a
+  // no-data state (fault_timestamp -> NAN) override it; text sensors have
+  // none and rely on the REPORT "dropped" list.
+  virtual void on_register_dropped(uint8_t device_addr, uint16_t register_key) {}
   // System mode is global (one ODU, one stagmode). Called when ANY source
   // commands a mode change (HA climate control() or ASCII MODE!) so every
   // entity reflects it in lockstep without waiting for the lagging bus confirm.
@@ -809,6 +814,18 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // Direct register manipulation (used by button platform for virtual registers)
   void store_register_(uint8_t addr, uint16_t key, const std::vector<uint8_t> &data);
   void notify_entities_(uint8_t device_addr, uint16_t register_key);
+  // notify_entities_ dispatch, delivering on_register_dropped instead.
+  void notify_entities_dropped_(uint8_t device_addr, uint16_t register_key);
+  // No-reply backoff helpers (issue #41). slow_poll_owns_: (dest, reg) is a
+  // slow-poll pair (thermostat fixed + comfort rows, ODU set). The fast poll
+  // (3B02/3B03) is never owned and never drops. drop_poll_target_: dropped
+  // for the session, logs once, notifies entities. reset_poll_misses_: any
+  // reply (FUNC 06 or 0x15 code 0x0a) clears the misses.
+  bool slow_poll_owns_(uint8_t dest, uint16_t reg) const;
+  bool poll_target_dropped_(uint8_t dest, uint16_t reg) const;
+  void record_poll_miss_(uint8_t dest, uint16_t reg);
+  void reset_poll_misses_(uint8_t dest, uint16_t reg);
+  void drop_poll_target_(uint8_t dest, uint16_t reg, const char *why);
   // Mirror a register into the SAM's own address space (so SAM-served READs return
   // current values). Marks bus state received for REG_SAM_STATE / REG_SAM_ZONES.
   void mirror_to_sam_(uint16_t reg_key, const std::vector<uint8_t> &data);
@@ -1063,6 +1080,9 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // (addr, reg) pair, and avoid the 5s POLL TIMEOUT warn + reply_timeout
   // inflation that an unmatched refusal would otherwise cause.
   void handle_exception_();
+  // FUNC 0x15 to ADDR_FAKESAM (0x93): a device refusing a tabledef probe.
+  // Retires the pair for the session, same as a non-printable reply.
+  void handle_discovery_exception_();
   // True when install/commissioning discovery (ADDR_DISCOVERY 0x1F) was seen
   // recently and initiated bus TX should be paused (issue #8). Reactive
   // handling (READ/WRITE) is not gated. Returns false until the first 0x1F
@@ -1139,10 +1159,17 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // table has no self-describing row 01 (e.g. table 3E serves live register
   // data there). Remembered so the discovery poller stops retrying them.
   std::set<std::pair<uint8_t, uint8_t>> no_tabledef_;
-  // (addr, reg) pairs answered with FUNC 0x15 this session. Consulted by the
-  // ODU slow poll; RAM-only so a reboot re-probes (bounded: one frame per
-  // unsupported register per boot).
-  std::set<std::pair<uint8_t, uint16_t>> odu_unsupported_;
+  // No-reply backoff state (issue #41). poll_backoff_ keys (dest, reg) for
+  // the slow pollers; discovery_misses_/discovery_backoff_ key (addr, table)
+  // for the tabledef poller. RAM-only: a reboot re-probes everything, bounded
+  // to one timeout window per dropped target per boot.
+  struct PollBackoff {
+    uint8_t misses{0};
+    bool dropped{false};
+  };
+  std::map<std::pair<uint8_t, uint16_t>, PollBackoff> poll_backoff_;
+  std::map<std::pair<uint8_t, uint8_t>, uint8_t> discovery_misses_;
+  std::set<std::pair<uint8_t, uint8_t>> discovery_backoff_;
   uint32_t last_discovery_poll_ms_{0};
 
   // Install-discovery holdoff (issue #8). last_discovery_ms_ is stamped on
@@ -1205,6 +1232,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint32_t diag_reply_expected_{0};   // total REPLY frames we expected (matched to our READs)
   uint32_t diag_reply_received_{0};   // total REPLY frames we actually received
   uint32_t diag_reply_timeout_{0};    // polls that timed out without a reply
+  uint32_t diag_poll_dropped_{0};     // slow-poll/discovery targets dropped this session
   uint32_t diag_ack_consumed_{0};     // write ACKs that dropped a pending retransmit
   uint32_t diag_tx_flush_max_ms_{0};  // max time spent in flush()
   uint32_t diag_loop_max_ms_{0};      // max time spent in a single loop() iteration

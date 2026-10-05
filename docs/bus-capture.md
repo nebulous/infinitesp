@@ -73,6 +73,7 @@ The counters that matter:
 - `stale` > 0: bytes arriving with gaps > 100ms. A transport issue (a TCP bridge dropping bytes, an overloaded host), not a protocol issue.
 - `overflow_evts` > 0: the main loop is not keeping up. Reduce logging verbosity.
 - `reply_got` consistently below `reply_exp`: the device's polls are being sent but not answered. The thermostat is not seeing InfinitESP (wiring, address conflict, or commissioning state).
+- `poll_drop` > 0: slow-poll targets removed from the rotation for this session. Two causes. A `FUNC 0x15` refusal is normal on hardware that lacks the register (a variable-speed outdoor unit refuses the 3E table; expect `poll_drop=3` there). Repeated no-reply drops on `0x4xxx` thermostat registers mean the control does not serve those tables at all - pre-cloud UIZ/UID wall controls ignore 4xxx reads entirely instead of refusing them, so fault-history, vacation, and WiFi/dealer entities stay at no-data on those installs. The `REPORT?` snapshot lists the dropped pairs.
 
 ## Capturing for an Issue
 

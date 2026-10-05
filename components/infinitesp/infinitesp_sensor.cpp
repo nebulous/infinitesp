@@ -505,10 +505,20 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
       }
     }
   }
-
   if (!std::isnan(value)) {
     publish_state(value);
   }
+}
+
+void InfinitESPSensor::on_register_dropped(uint8_t device_addr, uint16_t register_key) {
+  if (sensor_type_ != "fault_timestamp" || register_key != REG_TSTAT_FAULTS)
+    return;
+  if (fault_drop_published_)
+    return;
+  fault_drop_published_ = true;
+  ESP_LOGW("InfinitESP", "fault_timestamp: register 4202 dropped for this session - "
+           "this control serves no fault table (pre-cloud UIZ/UID?) - publishing no-data");
+  publish_state(NAN);
 }
 
 } // namespace infinitesp
