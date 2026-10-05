@@ -13,6 +13,9 @@ namespace infinitesp {
 class InfinitESPSensor : public sensor::Sensor, public InfinitESPEntity {
  public:
   void on_register_update(uint8_t device_addr, uint16_t register_key) override;
+  // fault_timestamp only: publish NAN once when 4202 is dropped for the
+  // session (no fault table served). A reboot re-probes; publishing resumes.
+  void on_register_dropped(uint8_t device_addr, uint16_t register_key) override;
   void set_sensor_type(const std::string &type) { sensor_type_ = type; }
 
   // --- raw_register: generic bus-field sensor (user-defined decode) ---
@@ -62,6 +65,7 @@ class InfinitESPSensor : public sensor::Sensor, public InfinitESPEntity {
   // (an OTA therefore causes one benign state-change event).
   bool fault_sig_valid_{false};
   uint32_t fault_last_sig_{0};
+  bool fault_drop_published_{false};  // NAN published once per session on drop
 };
 
 }  // namespace infinitesp
