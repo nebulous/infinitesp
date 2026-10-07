@@ -1,5 +1,6 @@
 #include "infinitesp_text_sensor.h"
 #include <cctype>
+#include <cinttypes>
 
 namespace esphome {
 namespace infinitesp {
@@ -316,22 +317,22 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
       // Human-readable words (today/yesterday), UI source omitted (the
       // common case), occurrences bound to the code. State changes only when
       // the register changes — day granularity, no poll-cadence churn.
-      char occ_suffix[6] = "";
+      char occ_suffix[8] = "";
       if (occurrences > 1)
-        snprintf(occ_suffix, sizeof(occ_suffix), "(x%u)", occurrences);
+        snprintf(occ_suffix, sizeof(occ_suffix), "(x%" PRIu8 ")", occurrences);
       const char *src_name = fault_source_name(source);
       bool is_ui = (source >> 4) == CLASS_THERMOSTAT;
       if (have_clock && fault_entry_time_valid(*data, i)) {
         uint16_t trailer = ((uint16_t) (*data)[70] << 8) | (*data)[71];
         uint16_t dd = trailer - days;  // 0 = today, 1 = yesterday, ...
         const char *day;
-        char day_buf[6];
+        char day_buf[8];
         if (dd == 0)
           day = "today";
         else if (dd == 1)
           day = "yesterday";
         else {
-          snprintf(day_buf, sizeof(day_buf), "%ud", dd);
+          snprintf(day_buf, sizeof(day_buf), "%" PRIu32 "d", (uint32_t) dd);
           day = day_buf;
         }
         // Source label: omitted for UI (the common case), " ODU"/" IDU" etc otherwise.

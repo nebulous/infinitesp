@@ -1,4 +1,5 @@
 #include "infinitesp_climate.h"
+#include <cinttypes>
 
 namespace esphome {
 namespace infinitesp {
@@ -43,6 +44,8 @@ climate::ClimateTraits InfinitESPClimate::traits() {
   traits.add_supported_preset(climate::CLIMATE_PRESET_AWAY);
   traits.add_supported_preset(climate::CLIMATE_PRESET_SLEEP);
 
+  // Custom presets live on the Climate entity (the ClimateTraits overload is
+  // compat-only, removed in esphome 2026.11.0).
   const char *const custom_presets[] = {
       PRESET_SCHEDULE,
       PRESET_WAKE,
@@ -50,7 +53,7 @@ climate::ClimateTraits InfinitESPClimate::traits() {
       PRESET_HOLD_PERM,
       PRESET_VACATION,
   };
-  traits.set_supported_custom_presets(custom_presets);
+  this->set_supported_custom_presets(custom_presets);
 
   return traits;
 }
@@ -238,7 +241,7 @@ void InfinitESPClimate::set_pending_setpoint_(uint8_t heat, uint8_t cool) {
   pending_cool_ = cool;
   pending_active_ = true;
   pending_until_ms_ = millis() + PENDING_SETPOINT_WINDOW_MS;
-  ESP_LOGD("InfinitESP", "Zone %d: pending setpoint overlay ht=%d cl=%d for %dms",
+  ESP_LOGD("InfinitESP", "Zone %d: pending setpoint overlay ht=%d cl=%d for %" PRIu32 "ms",
            zone_, heat, cool, PENDING_SETPOINT_WINDOW_MS);
 }
 

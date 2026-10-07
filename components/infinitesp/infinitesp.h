@@ -481,23 +481,6 @@ class InfinitESPEntity {
   uint8_t device_address_{0};  // exact node pin, 0 = none (class matching)
 };
 
-// Automation action `infinitesp.sync_clock` (clock phase 3): fires the
-// manual sync core from yaml automations / HA device actions. Composable
-// twin of the "Sync Thermostat Clock" button and sam_ascii TIME!NOW — all
-// three share InfinitESPComponent::sync_clock_from_source().
-template<typename... Ts>
-class SyncClockAction : public Action<Ts...> {
- public:
-  explicit SyncClockAction(InfinitESPComponent *parent) : parent_(parent) {}
-  void play(Ts... x) override {
-    std::string detail;
-    parent_->sync_clock_from_source(detail);
-  }
-
- protected:
-  InfinitESPComponent *parent_;
-};
-
 class InfinitESPComponent : public Component, public uart::UARTDevice {
  public:
   InfinitESPComponent() = default;
@@ -1340,6 +1323,27 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 #ifdef USE_INFINITESP_FLOW_CONTROL_PIN
   GPIOPin *flow_control_pin_{nullptr};
 #endif
+};
+
+// Automation action `infinitesp.sync_clock` (clock phase 3): fires the
+// manual sync core from yaml automations / HA device actions. Composable
+// twin of the "Sync Thermostat Clock" button and sam_ascii TIME!NOW — all
+// three share InfinitESPComponent::sync_clock_from_source(). Defined after
+// InfinitESPComponent: play() calls a member, so the full class must be
+// visible (a forward declaration alone is an invalid use of an incomplete
+// type — it links only by luck of name mangling and breaks on any signature
+// change).
+template<typename... Ts>
+class SyncClockAction : public Action<Ts...> {
+ public:
+  explicit SyncClockAction(InfinitESPComponent *parent) : parent_(parent) {}
+  void play(Ts... x) override {
+    std::string detail;
+    parent_->sync_clock_from_source(detail);
+  }
+
+ protected:
+  InfinitESPComponent *parent_;
 };
 
 }  // namespace infinitesp

@@ -1,5 +1,6 @@
 #include "infinitesp_sensor.h"
 #include <cstring>
+#include <cinttypes>
 
 namespace esphome {
 namespace infinitesp {
@@ -122,7 +123,7 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
           best_i = i;
         }
       }
-      ESP_LOGD("InfinitESP", "fault_timestamp: newest entry code=%u age=%dmin", best_code,
+      ESP_LOGD("InfinitESP", "fault_timestamp: newest entry code=%u age=%" PRId32 "min", best_code,
                best_age);
       if (best_age >= 0) {
         // Publish only when the newest entry changes: the value depends on the

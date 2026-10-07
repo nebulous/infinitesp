@@ -4,6 +4,7 @@
 #include "esphome/components/time/real_time_clock.h"
 
 #include <algorithm>
+#include <cinttypes>
 
 namespace esphome {
 namespace infinitesp {
@@ -209,7 +210,7 @@ void InfinitESPComponent::loop() {
   // Flag if UART buffer is >75% full (approaching overflow)
   if (uart_available > 768) {  // 75% of 1024
     diag_uart_overflow_events_++;
-    ESP_LOGW("InfinitESP", "UART BUFFER HIGH: %d bytes available (HWM=%u) overflow_events=%u",
+    ESP_LOGW("InfinitESP", "UART BUFFER HIGH: %d bytes available (HWM=%" PRIu32 ") overflow_events=%" PRIu32,
              uart_available, diag_uart_hwm_, diag_uart_overflow_events_);
   }
 
@@ -230,7 +231,7 @@ void InfinitESPComponent::loop() {
     uint32_t purged = 0;
     for (auto it = pending_polls_.begin(); it != pending_polls_.end();) {
       if (now - it->sent_ms > POLL_REPLY_TIMEOUT_MS) {
-        ESP_LOGW("InfinitESP", "POLL TIMEOUT: tx_seq=%u dest=%02X reg=%04X sent=%ums ago",
+        ESP_LOGW("InfinitESP", "POLL TIMEOUT: tx_seq=%" PRIu32 " dest=%02X reg=%04X sent=%" PRIu32 "ms ago",
                  it->tx_seq, it->dest, it->reg_key, now - it->sent_ms);
         diag_reply_timeout_++;
         // Counts a no-reply miss (slow-poll pairs only; see the
@@ -255,14 +256,14 @@ void InfinitESPComponent::loop() {
     uint32_t total_frames = diag_frames_parsed_ + diag_crc_fail_;
     float crc_ok = total_frames ? (100.0f * diag_frames_parsed_ / total_frames) : 100.0f;
 
-    ESP_LOGI("InfinitESP", "STATS rx_bytes=%u tx_bytes=%u rx_frames=%u tx_frames=%u "
-             "crc_fail=%u crc_ok=%.2f%% stale=%u uart_hwm=%u overflow_evts=%u "
-             "reply_exp=%u reply_got=%u reply_timeout=%u poll_pending=%u poll_drop=%u "
-             "tx_flush_max=%ums loop_max=%ums inter_frame=%u..%ums",
+    ESP_LOGI("InfinitESP", "STATS rx_bytes=%" PRIu32 " tx_bytes=%" PRIu32 " rx_frames=%" PRIu32 " tx_frames=%" PRIu32 " "
+             "crc_fail=%" PRIu32 " crc_ok=%.2f%% stale=%" PRIu32 " uart_hwm=%" PRIu32 " overflow_evts=%" PRIu32 " "
+             "reply_exp=%" PRIu32 " reply_got=%" PRIu32 " reply_timeout=%" PRIu32 " poll_pending=%zu poll_drop=%" PRIu32 " "
+             "tx_flush_max=%" PRIu32 "ms loop_max=%" PRIu32 "ms inter_frame=%" PRIu32 "..%" PRIu32 "ms",
              diag_total_rx_bytes_, diag_total_tx_bytes_, diag_frames_parsed_, diag_tx_seq_,
              diag_crc_fail_, crc_ok, diag_stale_discard_, diag_uart_hwm_, diag_uart_overflow_events_,
              diag_reply_expected_, diag_reply_received_, diag_reply_timeout_,
-             (uint32_t) pending_polls_.size(), diag_poll_dropped_,
+             pending_polls_.size(), diag_poll_dropped_,
              diag_tx_flush_max_ms_, diag_loop_max_ms_,
              diag_inter_frame_min_ms_ == UINT32_MAX ? 0 : diag_inter_frame_min_ms_,
              diag_inter_frame_max_ms_);
@@ -333,8 +334,8 @@ void InfinitESPComponent::loop() {
     PendingRetransmit r = pending_retransmits_.front();
     pending_retransmits_.pop_front();
     uint16_t rk = r.payload.size() >= 3 ? (uint16_t) ((r.payload[1] << 8) | r.payload[2]) : 0;
-    ESP_LOGI("InfinitESP", "TX WRITE %04X (retries left %u, %u queued)",
-             rk, r.attempts_left, (uint32_t) pending_retransmits_.size());
+    ESP_LOGI("InfinitESP", "TX WRITE %04X (retries left %" PRIu8 ", %zu queued)",
+             rk, r.attempts_left, pending_retransmits_.size());
     // Arm the deferred adoption check on every mode-write send (3B02 writes
     // come only from set_system_mode). The thermostat ACKs receipt of each
     // attempt but can still refuse (nibble 4 from off on dual-fuel, issue
@@ -495,7 +496,7 @@ void InfinitESPComponent::loop() {
   if (loop_ms > diag_loop_max_ms_) {
     diag_loop_max_ms_ = loop_ms;
     if (loop_ms > 10) {
-      ESP_LOGW("InfinitESP", "SLOW LOOP: %ums (uart_avail=%d at entry)", loop_ms, uart_available);
+      ESP_LOGW("InfinitESP", "SLOW LOOP: %" PRIu32 "ms (uart_avail=%d at entry)", loop_ms, uart_available);
     }
   }
 }
@@ -512,7 +513,7 @@ void InfinitESPComponent::parse_byte_(uint8_t byte) {
     for (size_t i = 0; i < rx_buffer_.size() && i < 64; i++) {
       snprintf(hex_buf + i * 3, 4, "%02X ", rx_buffer_[i]);
     }
-    ESP_LOGW("InfinitESP", "STALE DISCARD seq=%u (%d bytes), gap=%ums data=[%s%s]",
+    ESP_LOGW("InfinitESP", "STALE DISCARD seq=%" PRIu32 " (%zu bytes), gap=%" PRIu32 "ms data=[%s%s]",
              diag_rx_seq_, rx_buffer_.size(), now - last_rx_time_,
              hex_buf, rx_buffer_.size() > 64 ? "..." : "");
     rx_buffer_.clear();
@@ -553,7 +554,7 @@ void InfinitESPComponent::parse_byte_(uint8_t byte) {
     for (size_t i = 0; i < rx_buffer_.size() && i < 64; i++) {
       snprintf(hex_buf + i * 3, 4, "%02X ", rx_buffer_[i]);
     }
-    ESP_LOGW("InfinitESP", "CRC FAIL seq=%u (%d bytes): [%s%s]",
+    ESP_LOGW("InfinitESP", "CRC FAIL seq=%" PRIu32 " (%zu bytes): [%s%s]",
              diag_rx_seq_, rx_buffer_.size(), hex_buf, rx_buffer_.size() > 64 ? "..." : "");
   }
   rx_buffer_.clear();
@@ -637,8 +638,8 @@ void InfinitESPComponent::dispatch_frame_() {
         uint16_t rk = it->payload.size() >= 3 ? (uint16_t) ((it->payload[1] << 8) | it->payload[2]) : 0;
         pending_retransmits_.erase(it);
         diag_ack_consumed_++;
-        ESP_LOGI("InfinitESP", "WRITE ACK from %02X: %04X acknowledged, dropping retransmit (%u queued)",
-                 current_frame_.src, rk, (uint32_t) pending_retransmits_.size());
+        ESP_LOGI("InfinitESP", "WRITE ACK from %02X: %04X acknowledged, dropping retransmit (%zu queued)",
+                 current_frame_.src, rk, pending_retransmits_.size());
         break;
       }
     }
@@ -654,7 +655,7 @@ void InfinitESPComponent::dispatch_frame_() {
       for (auto it = pending_polls_.rbegin(); it != pending_polls_.rend(); ++it) {
         if (it->dest == current_frame_.src && it->reg_key == reply_reg) {
           uint32_t rtt = millis() - it->sent_ms;
-          ESP_LOGD("InfinitESP", "REPLY MATCHED: rx_seq=%u matched tx_seq=%u dest=%02X reg=%04X rtt=%ums",
+          ESP_LOGD("InfinitESP", "REPLY MATCHED: rx_seq=%" PRIu32 " matched tx_seq=%" PRIu32 " dest=%02X reg=%04X rtt=%" PRIu32 "ms",
                    diag_rx_seq_, it->tx_seq, it->dest, it->reg_key, rtt);
           // Erase by converting reverse iterator to forward iterator
           auto fwd = std::prev(it.base());
@@ -668,8 +669,8 @@ void InfinitESPComponent::dispatch_frame_() {
         }
       }
       if (!matched) {
-        ESP_LOGW("InfinitESP", "REPLY UNMATCHED: rx_seq=%u from=%02X reg=%04X (pending=%u)",
-                 diag_rx_seq_, current_frame_.src, reply_reg, (uint32_t) pending_polls_.size());
+        ESP_LOGW("InfinitESP", "REPLY UNMATCHED: rx_seq=%" PRIu32 " from=%02X reg=%04X (pending=%zu)",
+                 diag_rx_seq_, current_frame_.src, reply_reg, pending_polls_.size());
       }
     }
   }
@@ -945,7 +946,7 @@ void InfinitESPComponent::transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t 
   if (flush_ms > diag_tx_flush_max_ms_)
     diag_tx_flush_max_ms_ = flush_ms;
   if (flush_ms > 5)
-    ESP_LOGW("InfinitESP", "SLOW FLUSH: %ums for %u bytes func=%02X to %02X",
+    ESP_LOGW("InfinitESP", "SLOW FLUSH: %" PRIu32 "ms for %zu bytes func=%02X to %02X",
              flush_ms, frame.size(), func, dst);
 }
 
@@ -1224,7 +1225,7 @@ void InfinitESPComponent::poll_thermostat_() {
   const auto &reg = POLL_REGS[poll_index_ % POLL_REG_COUNT];
   uint16_t reg_key = (reg[0] << 8) | reg[1];
   std::vector<uint8_t> payload = {0x00, reg[0], reg[1]};
-  ESP_LOGI("InfinitESP", "POLL thermostat for %02X%02X (pending=%u)", reg[0], reg[1], (uint32_t) pending_polls_.size());
+  ESP_LOGI("InfinitESP", "POLL thermostat for %02X%02X (pending=%zu)", reg[0], reg[1], pending_polls_.size());
 
   // Register the pending poll before sending (so reply matching works)
   PendingPoll pp;
@@ -1319,8 +1320,8 @@ void InfinitESPComponent::handle_exception_() {
       return;
     }
   }
-  ESP_LOGD("InfinitESP", "Unmatched FUNC 0x15 from %02X (pending=%u)",
-           current_frame_.src, (uint32_t) pending_polls_.size());
+  ESP_LOGD("InfinitESP", "Unmatched FUNC 0x15 from %02X (pending=%zu)",
+           current_frame_.src, pending_polls_.size());
 }
 
 void InfinitESPComponent::handle_discovery_exception_() {
