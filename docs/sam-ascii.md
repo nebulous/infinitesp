@@ -51,7 +51,7 @@ The commands below work identically over either transport.
 | `FILTRRMD?` / `UVRMD?` / `HUMRMD?` / `VENTRMD?` | Accessory reminder (ON/OFF) |
 | `VACAT?` | Vacation state (ON/OFF) |
 | `VACDAYS?` | Vacation duration, whole days (rounded up) |
-| `VACHOURS?` | Vacation duration, hours (last commanded) |
+| `VACHOURS?` | Vacation duration, hours (thermostat-served via 3B04 readback, synced each slow-poll rotation) |
 | `VACMINT?` / `VACMAXT?` | Vacation min/max temperature |
 | `VACMINH?` / `VACMAXH?` | Vacation min/max humidity |
 | `VACFAN?` | Vacation fan mode |

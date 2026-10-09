@@ -19,9 +19,11 @@ namespace infinitesp {
 // the same served 3B03 state.
 //
 // System-wide "Vacation Hours" (issue #33): vacation duration in hours at the
-// bus's native 1-h resolution; 0 clears. The thermostat serves no countdown
-// (4012 is config-only, wire-proven 2026-09-21), so reads publish the last
-// commanded value from the hub member — not a ticking remaining.
+// bus's native 1-h resolution; 0 clears. Reads track the hub member, which
+// the thermostat-served 3B04 reply reconciles every slow-poll rotation (live
+// 2026-10-09): external clears propagate, and the SYSTXCC day-floor shows
+// through (36 h commanded converges to 24, sub-day writes to 0). Commanded
+// in between a write and the next reply.
 //
 // Like the datetime entity, deliberately NOT a Component (auto-spawned
 // Component registrations stall the hub's bus loop; see infinitesp_datetime.h

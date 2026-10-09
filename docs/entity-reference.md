@@ -126,10 +126,12 @@ Fault history text sensor and fault timestamp sensor.
 Diagnostics group (behind `auto_diagnostics`): IDU and ODU cycle/hour counters, thermostat
 wifi and dealer strings, thermostat/IDU/ODU manufacture dates, firmware version.
 
-Fault history, fault timestamp, vacation readback, and the wifi/dealer strings read
+Fault history, fault timestamp, vacation min/max temps, and the wifi/dealer strings read
 thermostat `0x4xxx` config tables. Wall controls from the pre-cloud UIZ/UID generation do
 not serve those tables on the bus (they ignore the reads instead of refusing them), so
-these entities stay at no-data on those installs. The firmware detects this and stops
+these entities stay at no-data on those installs. Vacation-hours readback is the
+exception: it rides the served 3B04 state register, which both generations answer, so
+the number and the Vacation preset work on UIZ/UID installs too. The firmware detects this and stops
 polling after five unanswered reads; `fault_timestamp` then shows unavailable, and the
 `REPORT?` snapshot lists the dropped registers. Rebooting re-probes once.
 
@@ -329,11 +331,16 @@ wall UI cannot express ("away for 5 hours") work. The matching ASCII verbs are
   (verified by a real-SAM01 user). Durations under 24 h are sent exactly as
   commanded; whether they arm depends on the wall control. If a short duration
   does not take, this is why.
-- The thermostat does not report the countdown on the bus. Register 4012 carries
-  only the vacation config, so the number shows the duration you last set, not a
-  ticking remaining. Vacation activity itself is visible on the climate entities
-  as the "Vacation" preset, and the wall unit's own vacation banner keeps counting
-  down normally.
+- The number reads back live state. The thermostat answers a served 3B04
+  register (active flag at byte 3, adopted hours as BE16 at bytes 4-5), and
+  InfinitESP reconciles the number and the "Vacation" preset to it every
+  slow-poll rotation (~5 min): vacation armed or cleared anywhere — HA, the
+  wall unit, another bus node — shows up on both. On day-flooring families the
+  readback is what the thermostat adopted, so a 36-hour command reads back 24
+  and a rejected sub-day command reads back 0. The wall unit's own vacation
+  banner keeps counting down normally. On passive installs the 3B04 register
+  is never fetched, so the preset falls back to a setpoint-match heuristic
+  and the number holds its last value.
 - Any preset command other than Vacation (Per Schedule, Wake, the standard home/
   away/sleep presets) ends an active vacation, including one armed at the wall unit.
   Arming vacation needs a duration, so setting the Vacation preset itself from HA

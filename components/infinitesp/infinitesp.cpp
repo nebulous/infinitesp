@@ -23,6 +23,10 @@ static const uint8_t POLL_REG_COUNT = 2;
 static const uint8_t SLOW_POLL_REGS[][2] = {
     {0x01, 0x04},  // device info: model, serial (manufacture date source)
     // Comfort rows 400A+zone-1 are polled per active zone (see slow-poll block)
+    {0x3B, 0x04},  // vacation readback (#33, live 2026-10-09): the tstat serves
+                    // 3B04 read-format (Active at [3], hours BE16 at [4..5]);
+                    // replaces the setpoint-match heuristic + member readback
+                    // once the entities are wired to it
     {0x40, 0x12},  // vacation settings (min/max temp, fan)
     {0x42, 0x02},  // fault history (10 entries × 7 bytes)
     {0x46, 0x08},  // WiFi: SSID, password, hostname
@@ -1116,6 +1120,26 @@ void InfinitESPComponent::handle_reply_() {
     std::vector<uint8_t> data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
     store_register_(current_frame_.src, reg_key, data);
 
+    // Served vacation state (issue #33): the tstat answers READ 3B04 with
+    // Active at [3] and the ADOPTED hours at [4..5]. This is the authority for
+    // the vacation-hours number and the Vacation preset — external clears
+    // (wall UI, other bus nodes) and the SYSTXCC day-floor (36 h cmd -> 24)
+    // reconcile here on the next rotation. Layout/provenance: PROTOCOL
+    // "3B04 vacation change-frames and readback" (live 2026-10-09).
+    if (reg_key == REG_TSTAT_VACATION_STATE && current_frame_.src == ADDR_THERMOSTAT &&
+        data.size() >= 6) {
+      bool active = data[3] == 0x01;
+      uint16_t hours = ((uint16_t) data[4] << 8) | (uint16_t) data[5];
+      if (hours != vacation_hours_ || active != vacation_active_) {
+        ESP_LOGI("InfinitESP", "Vacation served state: active=%u hours=%u (was %u/%u)",
+                 active, hours, vacation_active_, vacation_hours_);
+        vacation_hours_ = hours;
+        vacation_active_ = active;
+      }
+      vacation_served_ms_ = millis();
+      notify_entities_(current_frame_.src, REG_TSTAT_VACATION_STATE);
+    }
+
     // Mirror state/zones registers to SAM's own address so READ requests
     // to the SAM serve current values instead of stale defaults
     if (reg_key == REG_SAM_STATE || reg_key == REG_SAM_ZONES) {
@@ -1863,7 +1887,10 @@ void InfinitESPComponent::set_vacation_hours(uint16_t hours) {
   send_write_frame_(ADDR_THERMOSTAT, 0x01, payload);
   // Refresh vacation-scoped entities (the number) immediately: a clear that
   // arrives via a climate preset command would otherwise leave the entity
-  // showing the old duration until the next 4012 slow poll (~2.5 min).
+  // showing the old duration until the next 4012 slow poll (~2.5 min). The
+  // 3B04 slow-poll reply then reconciles the member to the tstat's ADOPTED
+  // value (day-floor family: 36 h cmd -> 24 served, sub-day -> not adopted),
+  // and the number's 60 s readback holdoff rides out the adoption latency.
   notify_entities_(ADDR_THERMOSTAT, REG_TSTAT_VACATION);
   ESP_LOGI("InfinitESP", "Vacation hours=%u (days view %u)", hours, get_vacation_days());
 }

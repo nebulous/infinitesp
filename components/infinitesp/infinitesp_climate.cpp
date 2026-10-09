@@ -481,26 +481,37 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       auto old_custom = this->get_custom_preset();
       auto old_preset = this->preset;
 
-      // Vacation is the highest-priority preset: a system-wide override where the
-      // thermostat forces every zone's setpoints to register 4012's min/max. 4012
-      // itself only carries CONFIG (it reads identically whether vacation is
-      // active or not), so the reliable active signal is the setpoint MATCH:
-      // heat==4012[0] && cool==4012[1]. Confirmed on hardware: vacation ON → all
-      // zones heat/cool == 4012 min/max; OFF → setpoints return to schedule.
-      // 4012 is thermostat-internal and only fetched via slow-poll when emulating
-      // the SAM, so in pure-passive mode vac is null and this is a harmless no-op.
+      // Vacation is the highest-priority preset: a system-wide override. Two
+      // detectors, in priority order (issue #33):
+      // 1. AUTHORITATIVE — the tstat's served 3B04 Active byte (data[3]),
+      //    fetched by the SAM slow poll and cached on the hub. Family-portable
+      //    (the served field layout is shared with the OG UID/UIZ per
+      //    Infinitive's decode) and immune to coincidental setpoint matches.
+      // 2. FALLBACK (stale/never-served — passive installs never fetch 3B04):
+      //    the setpoint MATCH against 4012's config: vacation ON → the tstat
+      //    forces every zone heat==4012[0] && cool==4012[1]; OFF → setpoints
+      //    return to schedule (confirmed on hardware 2026-09-21).
       bool vacation_active = false;
-      auto *vac = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_VACATION);
-      if (vac && vac->size() >= 2) {
-        uint8_t vac_min = (*vac)[0];  // heat setpoint, same bus encoding as 3B03
-        uint8_t vac_max = (*vac)[1];  // cool setpoint
-        // 0xFF = unconfigured vacation; only match real configured values
-        if (vac_min != 0xFF && vac_max != 0xFF && vac_min <= vac_max &&
-            new_heat == vac_min && new_cool == vac_max) {
-          vacation_active = true;
+      if (parent_->vacation_state_fresh()) {
+        vacation_active = parent_->is_vacation_active();
+        if (vacation_active) {
           last_activity_ = NO_ACTIVITY;
           hold_end_time_.clear();
           this->set_custom_preset_(PRESET_VACATION);
+        }
+      } else {
+        auto *vac = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_VACATION);
+        if (vac && vac->size() >= 2) {
+          uint8_t vac_min = (*vac)[0];  // heat setpoint, same bus encoding as 3B03
+          uint8_t vac_max = (*vac)[1];  // cool setpoint
+          // 0xFF = unconfigured vacation; only match real configured values
+          if (vac_min != 0xFF && vac_max != 0xFF && vac_min <= vac_max &&
+              new_heat == vac_min && new_cool == vac_max) {
+            vacation_active = true;
+            last_activity_ = NO_ACTIVITY;
+            hold_end_time_.clear();
+            this->set_custom_preset_(PRESET_VACATION);
+          }
         }
       }
       // Cache the verdict for the set side (clear-on-preset rule above):

@@ -79,7 +79,10 @@ static const uint16_t REG_SAM_INTF_PN = 0x040E;    // interface software P/N (17
 static const uint16_t REG_SAM_INTF_CFG = 0x0420;  // interface config (20 bytes)
 static const uint16_t REG_SAM_STATE = 0x3B02;
 static const uint16_t REG_SAM_ZONES = 0x3B03;
-// 0x3B04 = SAM vacation — NOT stored as a register (pushed as a change-frame; see REG3B04_FLAG_*).
+// 0x3B04 = SAM vacation — pushed as a change-frame (see REG3B04_FLAG_*); never
+// seeded into the SAM's own register table. The THERMOSTAT, however, serves it
+// on READ: stored under 0x20 as REG_TSTAT_VACATION_STATE and polled by the SAM
+// slow rotation (live 2026-10-09, issue #33 probe).
 static const uint16_t REG_SAM_ACCESSORIES = 0x3B05;
 static const uint16_t REG_SAM_DEALER = 0x3B06;
 static const uint16_t REG_SAM_ACTIVITY = 0x3B0E;
@@ -92,6 +95,19 @@ static const uint16_t REG_SAM_ACTIVITY = 0x3B0E;
 static const uint16_t REG_TSTAT_SCHEDULE = 0x4002;      // Zone 1 weekly schedule: 7 days × 5 periods of (min/15, activity) (70 bytes)
 static const uint16_t REG_TSTAT_COMFORT = 0x400A;       // Zone 1 comfort profiles: 5 activities × 7 bytes (35 bytes)
 static const uint16_t REG_TSTAT_VACATION = 0x4012;      // Zone 1 vacation settings (7 bytes)
+
+// Thermostat-served vacation state (live 2026-10-09, issue #33): 3B04 answers
+// READ from the tstat in the change-frame layout — data[3]=Active (0/1),
+// data[4..5]=hours BE16 (the tstat's ADOPTED value; SYSTXCC day-floors, so
+// 36 h commanded serves 24 and sub-day serves 0), [6..10]=minT/maxT/minH/
+// maxH/fan (NOT consumed here; 4012 owns vacation temps and these bytes
+// reformat with °C mode). Fetched by the SAM slow poll; passive installs
+// never see it. See PROTOCOL "3B04 vacation change-frames and readback".
+static const uint16_t REG_TSTAT_VACATION_STATE = 0x3B04;
+// Served-3B04 freshness window: ~4 missed slow-poll rotations (10-slot
+// rotation at 31 s/slot). Beyond it the preset detector falls back to the
+// setpoint-match heuristic and the number keeps its last value.
+static const uint32_t VACATION_SERVED_STALE_MS = 15UL * 60UL * 1000UL;
 static const uint16_t REG_TSTAT_WIFI = 0x4608;          // SSID, password, hostname (~216 bytes)
 
 // Comfort-profile register for a zone (zone 1-8). 400A+zone-1.
@@ -777,11 +793,22 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   }
   uint16_t get_zone_hold_duration(uint8_t zone) const;
 
-  // Vacation config (source of truth for sam_ascii reads; pushed to the
-  // thermostat as 3B04 change-frames). days remaining is not auto-counted-down.
-  // Days view rounds UP to whole days (SAM01/UI display semantics, issue #33).
+  // Vacation config + state. Members are written by set_vacation_hours()
+  // (commanded value) and reconciled to the thermostat-served 3B04 reply on
+  // every slow-poll rotation (the served hours is the tstat's ADOPTED value:
+  // 36 h commanded serves 24 on the day-flooring SYSTXCC family; a sub-day
+  // write is not adopted and serves 0). vacation_active_/served freshness
+  // gate the climate Vacation preset; stale or never-served (passive installs)
+  // falls back to the setpoint-match heuristic. Days view rounds UP to whole
+  // days (SAM01/UI display semantics, issue #33).
   uint16_t get_vacation_days() const { return (vacation_hours_ + 23) / 24; }
   uint16_t get_vacation_hours() const { return vacation_hours_; }
+  bool is_vacation_active() const { return vacation_active_; }
+  // Served 3B04 is fresh for ~4 missed rotations; beyond that (or never polled:
+  // passive mode) callers must not trust is_vacation_active().
+  bool vacation_state_fresh() const {
+    return vacation_served_ms_ != 0 && (millis() - vacation_served_ms_) < VACATION_SERVED_STALE_MS;
+  }
   uint8_t get_vacation_min_temp() const { return vacation_min_temp_; }
   uint8_t get_vacation_max_temp() const { return vacation_max_temp_; }
   uint8_t get_vacation_min_humidity() const { return vacation_min_humidity_; }
@@ -830,11 +857,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // setters (hours is 2 bytes and inlined in set_vacation_days).
   void push_vacation_frame_(uint8_t flag, uint8_t off, uint8_t val);
 
-  // Vacation config (source of truth). Pushed to the thermostat as 3B04
-  // change-frames; the thermostat never reads 3B04 from the SAM, and serves
-  // no countdown back (4012 is config-only — wire-proven 2026-09-21), so the
-  // hours value is what was last commanded, not a ticking remaining.
-  uint16_t vacation_hours_{0};       // configured duration, hours (0 = inactive)
+  // Vacation config (members). vacation_hours_ is the commanded value between
+  // a write and the next 3B04 slow-poll reply, then the served (adopted) value.
+  // vacation_active_ and vacation_served_ms_ come ONLY from the served reply.
+  // Temps/humidity/fan members stay config-side (setters + 4012/3B04 [6..10]
+  // are not consumed as entities; 4012 owns the vacation temp sensors).
+  uint16_t vacation_hours_{0};       // duration, hours (0 = inactive)
+  bool vacation_active_{false};      // served 3B04 data[3]
+  uint32_t vacation_served_ms_{0};   // millis of last served 3B04 reply (0 = never)
   uint8_t vacation_min_temp_{60};    // °F or °C per bus unit
   uint8_t vacation_max_temp_{85};
   uint8_t vacation_min_humidity_{0};   // 0 = NONE

@@ -432,7 +432,9 @@ Both entities mirror a running hold, land on the thermostat's quarter-hour grid 
 
 A system-wide **Vacation Hours** number (0-8760) arms and clears vacation: set the duration in hours and the thermostat clamps every zone's setpoints to its vacation min/max; set 0 to end it and return to schedule. It works at the bus's native one-hour resolution, so durations the wall UI cannot express ("away for 5 hours") are available.
 
-One caveat before you rely on short durations: some thermostat families (the SYSTXCC reference among them) floor sub-day values to whole days, so anything under 24 hours *clears* an active vacation instead of arming one. 24 and 48 hours arm normally.
+The number reads back live state, not an echo of your command: the thermostat answers a served 3B04 register with the active flag and its adopted duration, and InfinitESP reconciles to it every slow-poll rotation. Vacation armed or cleared anywhere (HA, the wall unit, another bus node) shows up on the number and the "Vacation" preset within one rotation. On the day-flooring families this also means the readback shows what the thermostat actually adopted (a 36-hour command reads back 24).
+
+One caveat before you rely on short durations: some thermostat families (the SYSTXCC reference among them) floor sub-day values to whole days, so anything under 24 hours *clears* an active vacation instead of arming one, and the number reads back 0. 24 and 48 hours arm normally.
 
 Any preset command other than Vacation also ends an active vacation. Full rules and the ASCII verbs: [entity reference](docs/entity-reference.md#vacation).
 

@@ -19,9 +19,10 @@ InfinitESPNumber = infinitesp_ns.class_("InfinitESPNumber", number.Number, Infin
 #   hold_minutes  — remaining timed-hold minutes, settable (zone-scoped).
 #   vacation_hours — vacation duration in hours at the bus's native 1-h
 #                   resolution, 0 clears (issue #33; system-wide, zone ignored
-#                   like system_mode). The thermostat serves no countdown back
-#                   (4012 is config-only), so the read side is the commanded
-#                   value, not a ticking remaining.
+#                   like system_mode). Reads track the hub member, which the
+#                   thermostat-served 3B04 reply syncs every slow-poll rotation
+#                   (live 2026-10-09): the number shows the value the
+#                   thermostat adopted, not an echo of the command.
 # NOT a Component: see infinitesp_number.h for why the hub owns the timing.
 NUMBER_TYPES = {"hold_minutes", "vacation_hours"}
 
