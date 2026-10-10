@@ -130,7 +130,8 @@ Fault history, fault timestamp, vacation min/max temps, and the wifi/dealer stri
 thermostat `0x4xxx` config tables. Wall controls from the pre-cloud UIZ/UID generation do
 not serve those tables on the bus (they ignore the reads instead of refusing them), so
 these entities stay at no-data on those installs. Vacation-hours readback is the
-exception: it rides the served 3B04 state register, which both generations answer, so
+exception: it uses the served 3B04 state register, which both the UIZ/UID and
+ITC touch generations answer, so
 the number and the Vacation preset work on UIZ/UID installs too. The firmware detects this and stops
 polling after five unanswered reads; `fault_timestamp` then shows unavailable, and the
 `REPORT?` snapshot lists the dropped registers. Rebooting re-probes once.
@@ -275,7 +276,7 @@ installs the register is never served and the entity stays unknown. Setting
 it sends the same write a real SAM01 makes for `S1ZONE!`. Every thermostat
 tested ACKs the write; whether the display switches depends on the wall
 control's generation. The older UI family (UIZ-era) are said to adopt it(issue #37)
-and newer touch models ack and revert without changing the displayed value.
+and newer ITC touch models ack and revert without changing the displayed value.
 
 **Heat-source control is not on the bus.** The `heat_source` text sensor reports what
 the system is running (furnace / heat_pump / electric / none), but no bus path sets
@@ -323,11 +324,12 @@ return to schedule. It uses the bus's native one-hour resolution, so durations t
 wall UI cannot express ("away for 5 hours") work. The matching ASCII verbs are
 `VACDAYS!`/`VACHOURS!`.
 
-- **Tstat-family caveat on sub-day durations:** some thermostat families (our
-  SYSTXCC-reference among them) floor the hours value to whole days when
+- **Tstat-model caveat on sub-day durations:** some wall controls (our
+  SYSTXCCITC01 touch reference among them; the UIZ/UID generation does not)
+  floor the hours value to whole days when
   adopting the write. Anything under 24 hours reads as 0 days and *clears* an
   active vacation instead of arming one (`VACHOURS!5` ends vacation on these;
-  24 and 48 arm normally). Older UI-family controls honor native hours
+  24 and 48 arm normally). UIZ/UID controls honor native hours
   (verified by a real-SAM01 user). Durations under 24 h are sent exactly as
   commanded; whether they arm depends on the wall control. If a short duration
   does not take, this is why.

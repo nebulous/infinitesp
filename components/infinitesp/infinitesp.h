@@ -98,7 +98,8 @@ static const uint16_t REG_TSTAT_VACATION = 0x4012;      // Zone 1 vacation setti
 
 // Thermostat-served vacation state (live 2026-10-09, issue #33): 3B04 answers
 // READ from the tstat in the change-frame layout — data[3]=Active (0/1),
-// data[4..5]=hours BE16 (the tstat's ADOPTED value; SYSTXCC day-floors, so
+// data[4..5]=hours BE16 (the tstat's ADOPTED value; our SYSTXCCITC01 day-floors,
+// so
 // 36 h commanded serves 24 and sub-day serves 0), [6..10]=minT/maxT/minH/
 // maxH/fan (NOT consumed here; 4012 owns vacation temps and these bytes
 // reformat with °C mode). Fetched by the SAM slow poll; passive installs
@@ -646,8 +647,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zone_hold(uint8_t zone, uint16_t duration_minutes);
   void set_system_mode(uint8_t mode);
   // Sets SAM 3B02 byte 28 (which zone the wall unit displays). ACKed by every
-  // tstat tested; adoption is generation-dependent (UIZ family yes, newer
-  // SYSTXCC touch units ignore it). Issue #37, verified 2026-09-20.
+  // tstat tested; adoption is generation-dependent (UIZ/UID family yes, newer
+  // ITC touch units ignore it). Issue #37, verified 2026-09-20.
   void set_displayed_zone(uint8_t zone);
 
   // Sets the thermostat's displayed clock: SAM 3B02 byte 25 weekday (0=Sunday)
@@ -796,7 +797,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // Vacation config + state. Members are written by set_vacation_hours()
   // (commanded value) and reconciled to the thermostat-served 3B04 reply on
   // every slow-poll rotation (the served hours is the tstat's ADOPTED value:
-  // 36 h commanded serves 24 on the day-flooring SYSTXCC family; a sub-day
+  // 36 h commanded serves 24 on the day-flooring SYSTXCCITC01 touch line; a sub-day
   // write is not adopted and serves 0). vacation_active_/served freshness
   // gate the climate Vacation preset; stale or never-served (passive installs)
   // falls back to the setpoint-match heuristic. Days view rounds UP to whole

@@ -394,7 +394,7 @@ select:
     type: displayed_zone   # options 1-8
 ```
 
-Setting the displayed zone sends the same write a real SAM01 makes for `S1ZONE!`. Whether the wall control switches is generation-dependent: older UI-family controls adopt it, newer SYSTXCC touch controls ACK and revert. Details: [entity reference](docs/entity-reference.md#select-types).
+Setting the displayed zone sends the same write a real SAM01 makes for `S1ZONE!`. Whether the wall control switches is generation-dependent: older UIZ/UID controls adopt it, newer ITC touch controls ACK and revert. Details: [entity reference](docs/entity-reference.md#select-types).
 
 **Heat-source control is not on the bus.** The `heat_source` text sensor reports what the system is running, but no bus path sets it: the selection lives in the thermostat (wall or Carrier app). The `emergency_heat` / `heat_pump` select options are hidden unless `experimental_heat_source_modes` is set on the hub, and on Next Gen Infinity thermostats the `heat_pump` write has been observed turning the system off mid-call. Treat them as protocol experiments, not control. Details: [entity reference](docs/entity-reference.md#select-types).
 
@@ -434,7 +434,7 @@ A system-wide **Vacation Hours** number (0-8760) arms and clears vacation: set t
 
 The number reads back live state, not an echo of your command: the thermostat answers a served 3B04 register with the active flag and its adopted duration, and InfinitESP reconciles to it every slow-poll rotation. Vacation armed or cleared anywhere (HA, the wall unit, another bus node) shows up on the number and the "Vacation" preset within one rotation. On the day-flooring families this also means the readback shows what the thermostat actually adopted (a 36-hour command reads back 24).
 
-One caveat before you rely on short durations: some thermostat families (the SYSTXCC reference among them) floor sub-day values to whole days, so anything under 24 hours *clears* an active vacation instead of arming one, and the number reads back 0. 24 and 48 hours arm normally.
+One caveat before you rely on short durations: some wall controls floor sub-day values to whole days (our SYSTXCCITC01 touch reference does; the UIZ/UID generation accepts native hours), so on those anything under 24 hours *clears* an active vacation instead of arming one, and the number reads back 0. 24 and 48 hours arm normally.
 
 Any preset command other than Vacation also ends an active vacation. Full rules and the ASCII verbs: [entity reference](docs/entity-reference.md#vacation).
 

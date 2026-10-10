@@ -1123,7 +1123,7 @@ void InfinitESPComponent::handle_reply_() {
     // Served vacation state (issue #33): the tstat answers READ 3B04 with
     // Active at [3] and the ADOPTED hours at [4..5]. This is the authority for
     // the vacation-hours number and the Vacation preset — external clears
-    // (wall UI, other bus nodes) and the SYSTXCC day-floor (36 h cmd -> 24)
+    // (wall UI, other bus nodes) and the SYSTXCCITC01 day-floor (36 h cmd -> 24)
     // reconcile here on the next rotation. Layout/provenance: PROTOCOL
     // "3B04 vacation change-frames and readback" (live 2026-10-09).
     if (reg_key == REG_TSTAT_VACATION_STATE && current_frame_.src == ADDR_THERMOSTAT &&

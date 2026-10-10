@@ -485,7 +485,7 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       // detectors, in priority order (issue #33):
       // 1. AUTHORITATIVE — the tstat's served 3B04 Active byte (data[3]),
       //    fetched by the SAM slow poll and cached on the hub. Family-portable
-      //    (the served field layout is shared with the OG UID/UIZ per
+      //    (the served field layout is shared with the SYSTXCCUIZ/UID line per
       //    Infinitive's decode) and immune to coincidental setpoint matches.
       // 2. FALLBACK (stale/never-served — passive installs never fetch 3B04):
       //    the setpoint MATCH against 4012's config: vacation ON → the tstat
