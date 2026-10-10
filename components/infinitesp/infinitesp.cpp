@@ -1890,7 +1890,7 @@ void InfinitESPComponent::set_vacation_hours(uint16_t hours) {
   // showing the old duration until the next 4012 slow poll (~2.5 min). The
   // 3B04 slow-poll reply then reconciles the member to the tstat's ADOPTED
   // value (day-floor family: 36 h cmd -> 24 served, sub-day -> not adopted),
-  // and the number's 60 s readback holdoff rides out the adoption latency.
+  // and the number's 60 s readback holdoff waits out the adoption latency.
   notify_entities_(ADDR_THERMOSTAT, REG_TSTAT_VACATION);
   ESP_LOGI("InfinitESP", "Vacation hours=%u (days view %u)", hours, get_vacation_days());
 }

@@ -15,7 +15,7 @@ namespace infinitesp {
 //
 // Set path, vacation flavor: clamp to the 8760-h UI/SAM ceiling and hand the
 // raw hours to the hub setter (guarded there by sam_enabled()). No debounce —
-// discrete 1-h steps. The 60 s readback holdoff rides out the tstat's write
+// discrete 1-h steps. The 60 s readback holdoff waits out the tstat's write
 // adoption latency (~5-30 s observed): a 3B04 slow-poll reply inside that
 // window still serves the pre-command value and would flap the entity. On a
 // passive install the setter no-ops, so republish the hub member instead of
