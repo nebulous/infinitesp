@@ -1251,6 +1251,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint32_t diag_tx_flush_max_ms_{0};  // max time spent in flush()
   uint32_t diag_loop_max_ms_{0};      // max time spent in a single loop() iteration
   uint32_t diag_last_frame_time_{0};  // millis() of last complete frame
+  uint32_t last_own_tx_ms_{0};        // millis() of our last transmit; the receiver never sees it (see loop())
   uint32_t diag_inter_frame_min_ms_{UINT32_MAX};  // min inter-frame interval
   uint32_t diag_inter_frame_max_ms_{0};            // max inter-frame interval
 
