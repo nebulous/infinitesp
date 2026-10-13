@@ -917,7 +917,6 @@ uint16_t InfinitESPComponent::compute_crc_(const uint8_t *data, uint16_t len) co
 
 void InfinitESPComponent::transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t func,
                                           const std::vector<uint8_t> &payload) {
-  last_own_tx_ms_ = millis();
   std::vector<uint8_t> frame;
   frame.reserve(FRAME_HEADER_SIZE + payload.size() + FRAME_CRC_SIZE);
 
@@ -956,6 +955,10 @@ void InfinitESPComponent::transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t 
     flow_control_pin_->digital_write(false);
 #endif
   diag_in_tx_ = false;
+  // Wire-complete time, not call time: loop()'s 200ms own-TX busy window
+  // should start when the frame hit the bus, not when transmit_frame_()
+  // was entered (frame build + flush add a few ms; SLOW FLUSH warns when more).
+  last_own_tx_ms_ = millis();
   uint32_t flush_ms = millis() - flush_start;
   if (flush_ms > diag_tx_flush_max_ms_)
     diag_tx_flush_max_ms_ = flush_ms;
