@@ -315,7 +315,8 @@ void InfinitESPComponent::loop() {
   // Gap: 50ms since last complete frame (frame-boundary, not byte-boundary).
   // The thermostat's own inter-frame gap is 10-30ms, so if 50ms passes
   // with no new frame, the bus is genuinely idle between transactions.
-  // This is tighter than the old 200ms byte-gap but still conservative.
+  // (Tighter than the byte-gap criterion it replaced. The 200ms below is a
+  // different thing: a post-transmit busy window, not an idle threshold.)
   // Our own transmit never comes back through the receiver (half-duplex, RX muted during TX), so idle measured
   // from the last frame HEARD keeps growing after we send. A second read could then go out one loop iteration
   // (~10 ms) after the first, exactly when the thermostat's reply (~11 ms typical, ~110 ms when it defers past
