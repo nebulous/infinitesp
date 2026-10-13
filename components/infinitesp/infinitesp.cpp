@@ -330,14 +330,21 @@ void InfinitESPComponent::loop() {
     ESP_LOGI("InfinitESP", "Install discovery holdoff expired - resuming initiated bus TX");
   }
 
-  // Drain a due write frame (one per iteration, bus-idle gated). Suppresses
+  // Drain a due write frame (first due in queue order, bus-idle gated; scan
+  // instead of front-only so a deliberately deferred write — the half-degree
+  // row write, which must land after the thermostat regenerates the manual
+  // entry — does not head-of-line block younger urgent writes). Suppresses
   // the fast/slow polls this iteration to avoid back-to-back TX to the thermostat.
   bool retransmit_sent = false;
-  if (!discovery_holdoff && !pending_retransmits_.empty() && bus_idle_ms > 50 &&
-      (int32_t) (pending_retransmits_.front().fire_ms - now) <= 0) {
-    PendingRetransmit r = pending_retransmits_.front();
-    pending_retransmits_.pop_front();
-    uint16_t rk = r.payload.size() >= 3 ? (uint16_t) ((r.payload[1] << 8) | r.payload[2]) : 0;
+  if (!discovery_holdoff && !pending_retransmits_.empty() && bus_idle_ms > 50) {
+    auto due = pending_retransmits_.end();
+    for (auto it = pending_retransmits_.begin(); it != pending_retransmits_.end(); ++it) {
+      if ((int32_t) (it->fire_ms - now) <= 0) { due = it; break; }
+    }
+    if (due != pending_retransmits_.end()) {
+      PendingRetransmit r = *due;
+      pending_retransmits_.erase(due);
+      uint16_t rk = r.payload.size() >= 3 ? (uint16_t) ((r.payload[1] << 8) | r.payload[2]) : 0;
     ESP_LOGI("InfinitESP", "TX WRITE %04X (retries left %" PRIu8 ", %zu queued)",
              rk, r.attempts_left, pending_retransmits_.size());
     // Arm the deferred adoption check on every mode-write send (3B02 writes
@@ -349,14 +356,15 @@ void InfinitESPComponent::loop() {
       mode_verify_nibble_ = r.payload[REG3B02_STAGMODE + 3] & 0x0F;
       mode_verify_deadline_ms_ = now + MODE_ADOPT_VERIFY_MS;
     }
-    send_frame_(r.dst, r.dst_bus, r.func, r.payload);
-    r.sent = true;
-    if (r.attempts_left > 0) {
-      r.attempts_left--;
-      r.fire_ms = now + RETRANSMIT_DELAY_MS;
-      pending_retransmits_.push_back(r);
+      send_frame_(r.dst, r.dst_bus, r.func, r.payload);
+      r.sent = true;
+      if (r.attempts_left > 0) {
+        r.attempts_left--;
+        r.fire_ms = now + RETRANSMIT_DELAY_MS;
+        pending_retransmits_.push_back(r);
+      }
+      retransmit_sent = true;
     }
-    retransmit_sent = true;
   }
 
   // Deferred mode-write adoption check: compare the thermostat's served
@@ -1818,6 +1826,51 @@ void InfinitESPComponent::set_zone_setpoint(uint8_t zone, uint8_t heat_sp, uint8
            payload.size() > 8 ? payload[8] : 0, payload.size() > 9 ? payload[9] : 0);
 }
 
+bool InfinitESPComponent::command_setpoint_half(uint8_t zone, bool is_heat, float target_c) {
+  // Half-degree °C write (issue #49). See the header comment for the
+  // live-verified recipe and the three experiments behind it (2026-10-13).
+  if (!sam_enabled() || !bus_uses_celsius())
+    return false;
+  if (fabsf(target_c - roundf(target_c)) < 0.01f)
+    return false;  // whole-degree target: the proven 3B03 path handles it
+  auto *row = get_register(ADDR_THERMOSTAT, comfort_reg_for_zone(zone));
+  if (!row || row->size() < COMFORT_ACTIVITY_COUNT * COMFORT_ENTRY_SIZE)
+    return false;
+  std::vector<uint8_t> new_row = *row;
+  uint8_t off = COMFORT_MANUAL * COMFORT_ENTRY_SIZE + (is_heat ? 0 : 1);
+  new_row[off] = (uint8_t) roundf(target_c * 2.0f);
+
+  bool holding = get_zone_hold_duration(zone) != 0;  // timed >0, permanent 0xFFFF
+  if (holding) {
+    std::vector<uint8_t> payload = {0x00, (uint8_t) (comfort_reg_for_zone(zone) >> 8),
+                                    (uint8_t) (comfort_reg_for_zone(zone) & 0xFF)};
+    payload.insert(payload.end(), new_row.begin(), new_row.end());
+    send_write_frame_(ADDR_THERMOSTAT, 0x01, payload);
+    store_register_(ADDR_THERMOSTAT, comfort_reg_for_zone(zone), new_row);
+    ESP_LOGI("InfinitESP", "Zone %d manual row %s = %.1f °C (raw %u, row-only)",
+             zone, is_heat ? "heat" : "cool", target_c, new_row[off]);
+    return true;
+  }
+  // No hold yet: the caller's rounded 3B03 write arms the override; the row
+  // write follows once the thermostat has regenerated the manual entry from
+  // it (observed regeneration completing well inside one poll cycle; 10 s
+  // clears it with margin).
+  defer_manual_row_write_(comfort_reg_for_zone(zone), new_row, 10000);
+  ESP_LOGI("InfinitESP", "Zone %d manual row %s = %.1f °C deferred 10 s (no hold yet)",
+           zone, is_heat ? "heat" : "cool", target_c);
+  return false;
+}
+
+void InfinitESPComponent::defer_manual_row_write_(uint16_t reg, const std::vector<uint8_t> &row,
+                                                  uint32_t delay_ms) {
+  std::vector<uint8_t> payload = {0x00, (uint8_t) (reg >> 8), (uint8_t) (reg & 0xFF)};
+  payload.insert(payload.end(), row.begin(), row.end());
+  PendingRetransmit r{ADDR_THERMOSTAT, 0x01, FUNC_WRITE, payload,
+                      millis() + delay_ms, (uint8_t) (WRITE_ATTEMPTS - 1)};
+  pending_retransmits_.push_back(r);
+}
+
+
 void InfinitESPComponent::set_zone_fan(uint8_t zone, uint8_t fan_mode) {
   if (!sam_enabled()) return;
   auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
@@ -2002,9 +2055,10 @@ void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, u
   // Convert comfort bytes to the 3B03 setpoint encoding via the shared helpers
   // (comfort_byte_to_celsius → celsius_to_setpoint) — single source of truth for
   // the comfort→setpoint transform. Byte-identical to the previous inline branch.
-  // NOTE: comfort_byte_to_celsius() is itself buggy in °C mode (400A is always
-  // °F, not C*2); routing through it here means a future fix to that helper
-  // propagates to apply_activity too.
+  // °C-mode note (2026-10-13): 400A in °C mode IS °C×2 (wire-proven, issue #49
+  // investigation; the earlier "always °F" claim was wrong — see PROTOCOL units
+  // section), so comfort_byte_to_celsius's raw/2 branch is correct and this
+  // transform yields the rounded 3B03 projection of the row's exact value.
   uint8_t htsp_bus = celsius_to_setpoint(comfort_byte_to_celsius(htsp_raw));
   uint8_t clsp_bus = celsius_to_setpoint(comfort_byte_to_celsius(clsp_raw));
 
@@ -2533,6 +2587,43 @@ float InfinitESPComponent::comfort_byte_to_celsius(uint8_t raw) const {
     return (float) raw / 2.0f;  // half-degree °C
   // °F mode: raw is whole °F, convert to °C
   return ((float) raw - 32.0f) * (5.0f / 9.0f);
+}
+
+bool InfinitESPComponent::comfort_refine_setpoints(uint8_t zone, uint8_t heat_bus, uint8_t cool_bus,
+                                                   bool holding, float *heat_c, float *cool_c) const {
+  // Wire-proven 2026-10-13 (issue #49): wall set 21.5 °C -> 400A MANUAL cool
+  // raw 43 (°C×2) + hold, while 3B03 serves 22. The row is the truth; 3B03 is
+  // the rounded view. See PROTOCOL units section for the generation split.
+  if (!bus_uses_celsius())
+    return false;
+  auto *row = get_register(ADDR_THERMOSTAT, comfort_reg_for_zone(zone));
+  if (!row || row->size() < COMFORT_ACTIVITY_COUNT * COMFORT_ENTRY_SIZE)
+    return false;
+  float sp_ht = setpoint_to_celsius(heat_bus);
+  float sp_cl = setpoint_to_celsius(cool_bus);
+  // Adjacent halves share one rounded 3B03 byte (21.5 and 22.0 both round to
+  // 22), so agreement is checked against the rounding band, not equality.
+  static const float BAND = 0.75f;
+  // Manual first while holding (live override values live there); otherwise
+  // schedule activities in index order, manual excluded.
+  const uint8_t order[COMFORT_ACTIVITY_COUNT] = {COMFORT_MANUAL, COMFORT_HOME, COMFORT_AWAY,
+                                                 COMFORT_SLEEP, COMFORT_WAKE};
+  for (uint8_t i = 0; i < COMFORT_ACTIVITY_COUNT; i++) {
+    uint8_t a = order[i];
+    if (a == COMFORT_MANUAL && !holding)
+      continue;
+    uint8_t base = a * COMFORT_ENTRY_SIZE;
+    float ht_c = comfort_byte_to_celsius((*row)[base + 0]);
+    float cl_c = comfort_byte_to_celsius((*row)[base + 1]);
+    if (fabsf(ht_c - sp_ht) <= BAND && fabsf(cl_c - sp_cl) <= BAND) {
+      *heat_c = ht_c;
+      *cool_c = cl_c;
+      ESP_LOGD("InfinitESP", "Zone %d setpoint refined from activity %u: %.1f/%.1f °C",
+               zone, a, ht_c, cl_c);
+      return true;
+    }
+  }
+  return false;
 }
 
 float InfinitESPComponent::vacation_byte_to_celsius(uint8_t raw) const {

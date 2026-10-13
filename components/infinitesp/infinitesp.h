@@ -643,6 +643,23 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 #endif
 
   void set_zone_setpoint(uint8_t zone, uint8_t heat_sp, uint8_t cool_sp);
+  // Half-degree °C path (issue #49, touch generation only). 3B03 cannot
+  // carry halves (21.5 and 22.0 share byte 22); the comfort row can (°C×2).
+  // Live-verified recipe (2026-10-13, three experiments):
+  //   - hold ACTIVE on the zone: row-only write (func 0x0C full-row
+  //     read-modify-write, the proven 2026-09-08 table-40 path). Returns
+  //     true — caller skips the 3B03 write. Any 3B03 write regenerates the
+  //     manual entry from the override's rounded value and stomps the half
+  //     (observed orders row-first and 3B03-first both reverting within one
+  //     poll; row-only held across polls).
+  //   - NO hold: returns false and queues a DEFERRED row write (~10 s) — the
+  //     caller's usual rounded 3B03 write arms the override, the thermostat
+  //     regenerates the manual entry from it, and the deferred row write
+  //     lands the exact half afterwards.
+  // Returns false (whole-degree fallback, nothing queued) when SAM is off,
+  // the bus is °F, or the comfort row is unavailable (UID01/UIZ generation:
+  // no table 40 on the bus).
+  bool command_setpoint_half(uint8_t zone, bool is_heat, float target_c);
   void set_zone_fan(uint8_t zone, uint8_t fan_mode);
   void set_zone_hold(uint8_t zone, uint16_t duration_minutes);
   void set_system_mode(uint8_t mode);
@@ -748,6 +765,15 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // In °F mode, comfort bytes are whole °F.
   // In °C mode, comfort bytes are half-degrees (byte/2 = °C).
   float comfort_byte_to_celsius(uint8_t raw) const;
+  // Read-side refinement (issue #49): in °C bus mode, 3B03 setpoints are a
+  // rounded projection of the comfort row (the wall's source of truth, °C×2
+  // halves). If an entry agrees with the rounded bytes within the rounding
+  // band on both bounds, replaces *heat_c/*cool_c with the entry's exact
+  // values. Manual entry is consulted only while the zone holds an override
+  // (that is when the wall stores live setpoints there). °F mode and row-less
+  // installs return false untouched.
+  bool comfort_refine_setpoints(uint8_t zone, uint8_t heat_bus, uint8_t cool_bus,
+                                bool holding, float *heat_c, float *cool_c) const;
 
   // Convert a whole-degree °C value to comfort profile raw byte.
   // Inverse of comfort_byte_to_celsius.
@@ -857,6 +883,13 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // all other bytes 0xFF (header data[0..1]=0). Used by the single-byte vacation
   // setters (hours is 2 bytes and inlined in set_vacation_days).
   void push_vacation_frame_(uint8_t flag, uint8_t off, uint8_t val);
+
+  // Queue a comfort-row write to fire delay_ms from now (drained by the
+  // write queue's scan-for-due loop, bus-idle gated, WRITE_ATTEMPTS retries).
+  // Used by command_setpoint_half's no-hold path so the row write lands after
+  // the thermostat's manual-entry regeneration, without blocking younger
+  // urgent writes in the queue.
+  void defer_manual_row_write_(uint16_t reg, const std::vector<uint8_t> &row, uint32_t delay_ms);
 
   // Vacation config (members). vacation_hours_ is the commanded value between
   // a write and the next 3B04 slow-poll reply, then the served (adopted) value.

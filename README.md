@@ -277,7 +277,7 @@ climate:
     zone: 1    # 1–8, matches Carrier zone number
 ```
 
-Supports `heat`, `cool`, `heat_cool` (auto), and `off` modes. Temperature range: 40-99°F in whole-degree steps. Fan modes: auto, low, medium, high. Presets: per schedule, home, away, sleep, wake, hold timer, hold indefinitely.
+Supports `heat`, `cool`, `heat_cool` (auto), and `off` modes. Temperature range: 40-99°F. Steps: whole degrees in °F mode; 0.5° in °C mode on touch-generation controls (SYSTXCCITC-style), which store half-degree setpoints in their schedule storage — InfinitESP reads the exact values from there and commands halves through the same path. Older UI-generation controls (UIZ01/UID01) are whole-degree in °C too; that is a limit of the control itself, not the integration. Home Assistant's display unit should match the thermostat's unit for the step to line up. Fan modes: auto, low, medium, high. Presets: per schedule, home, away, sleep, wake, hold timer, hold indefinitely.
 
 Each climate entity's `action` (heating/cooling/idle) is gated on its zone's damper state when a zone controller is present (emulated or physical), so on a zoned system only the zones actually receiving conditioned air report `heating`/`cooling`.
 

@@ -307,6 +307,8 @@ the countdown, the same mechanism the wall unit uses:
 - **Hold until** (`time` entity): set a clock time and the hold ends then. Good for absolute terms ("hold until bedtime").
 - **Hold minutes** (`number`, 0-1425 in steps of 15): remaining minutes, 0 when no timed hold is running. Set it to arm a hold for N minutes; set 0 to cancel and return to Per Schedule. Good for durations ("hold two hours") and for automations.
 
+**Setpoint resolution.** The live setpoint register (3B03) is whole-degree in both units. On touch-generation controls (SYSTXCCITC-style) the schedule/activity storage carries half-degree values in °C mode, and the climate entities prefer it: targets display the exact half degrees the wall shows, and half-degree commands reach the zone through that storage. While a hold is active the write is a single storage write; a half-degree command that arms a hold from the schedule adds a ~10 s delayed storage write so it settles on the exact value. On the older UI generation (UIZ01/UID01) the storage is not on the bus and everything is whole-degree — a limit of those controls, not of the integration. °F mode is whole-degree everywhere, matching the control itself.
+
 Behavior both entities share:
 
 - They show the value the bus will actually produce: a requested 20 minutes displays as 15 immediately (the thermostat's grid is quarter-hours), and a requested 8:40 PM end may hold until 8:45 PM. The `hold_state` sensor always shows the true end.

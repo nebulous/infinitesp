@@ -23,7 +23,13 @@ climate::ClimateTraits InfinitESPClimate::traits() {
   static const float STEP_C = 5.0f / 9.0f;  // exactly 1°F
   traits.set_visual_min_temperature((40.0f - 32.0f) * STEP_C);   // 40°F = 4.444°C
   traits.set_visual_max_temperature((99.0f - 32.0f) * STEP_C);   // 99°F = 37.222°C
-  traits.set_visual_temperature_step(1.0f);
+  // Step follows the bus unit's setpoint grid (issue #49): touch-generation
+  // controls store half-degree °C in their comfort rows (which InfinitESP
+  // reads and writes); °F mode is whole-degree everywhere. Traits are fixed
+  // at connect, so a mid-session unit flip re-announces on the next reconnect
+  // (logged when detected). HA's display unit should match the bus unit for
+  // the step to feel right.
+  traits.set_visual_temperature_step(parent_->bus_uses_celsius() ? 0.5f : 1.0f);
 
   traits.add_supported_mode(climate::CLIMATE_MODE_HEAT);
   traits.add_supported_mode(climate::CLIMATE_MODE_COOL);
@@ -77,6 +83,21 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
 
   // Handle setpoint changes. HA sends target_temperature in heat/cool modes,
   // target_temperature_low/high in heat_cool mode.
+  // Half-degree dispatch (issue #49): a fractional target in °C bus mode goes
+  // through the comfort-row MANUAL write (write_manual_row_half) before the
+  // usual 3B03 write, which carries the rounded value — the same two-step
+  // shape as a wall edit. Whole-degree targets and °F mode keep the proven
+  // 3B03-only path; row-less installs (UID01/UIZ) fall back automatically
+  // (write_manual_row_half returns false).
+  // Half-degree dispatch (issue #49, live-verified recipe 2026-10-13): a
+  // fractional target in °C bus mode reaches the zone through its comfort-row
+  // MANUAL entry — row-only while a hold is active, or rounded 3B03 + deferred
+  // row write when arming from schedule. Returns true when the 3B03 write
+  // must be skipped. Whole-degree targets and °F mode keep the proven 3B03
+  // path; row-less installs (UID01/UIZ) fall back automatically.
+  auto half_path = [this](bool is_heat, float target_c) {
+    return parent_->command_setpoint_half(zone_, is_heat, target_c);
+  };
   if (call.get_target_temperature().has_value()) {
     float target_c = call.get_target_temperature().value();
     uint8_t target_bus = parent_->celsius_to_setpoint(target_c);
@@ -85,7 +106,9 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     } else if (this->mode == climate::CLIMATE_MODE_COOL) {
       cool_sp_ = target_bus;
     }
-    parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
+    bool half = half_path(this->mode == climate::CLIMATE_MODE_HEAT, target_c);
+    if (!half)
+      parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
     // Write the active bound, not the target_temperature union alias (which
     // overlaps low — see CLIMATE union gotcha). HA renders the cool slider from
     // target_temperature_high and the heat slider from target_temperature_low.
@@ -99,7 +122,8 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     float target_c = call.get_target_temperature_low().value();
     uint8_t target_bus = parent_->celsius_to_setpoint(target_c);
     heat_sp_ = target_bus;
-    parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
+    if (!half_path(true, target_c))
+      parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
     this->target_temperature_low = target_c;
     set_pending_setpoint_(heat_sp_, cool_sp_);
   }
@@ -108,7 +132,8 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     float target_c = call.get_target_temperature_high().value();
     uint8_t target_bus = parent_->celsius_to_setpoint(target_c);
     cool_sp_ = target_bus;
-    parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
+    if (!half_path(false, target_c))
+      parent_->set_zone_setpoint(zone_, heat_sp_, cool_sp_);
     this->target_temperature_high = target_c;
     set_pending_setpoint_(heat_sp_, cool_sp_);
   }
@@ -443,8 +468,23 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       // values may match our defaults (68/76). We must set them unconditionally.
       float heat_c = parent_->setpoint_to_celsius(new_heat);
       float cool_c = parent_->setpoint_to_celsius(new_cool);
+      // Half-degree refinement (issue #49, °C mode only): 3B03 is a rounded
+      // projection of the comfort row; publish the row's exact values when an
+      // entry agrees within the rounding band. Adjacent halves share one 3B03
+      // byte, so the change check below compares the refined values, not bus
+      // bytes — a row update (43 -> 44) can move the target while the byte
+      // stays 22.
+      // Hold state via the guarded hub helper (permanent bit or timed
+      // duration), not inline byte reads: this branch's size guard promises
+      // only 28 bytes and REG3B03_TIMED_HOLDS sits at 37.
+      bool zone_holding = parent_->get_zone_hold_duration(zone_) != 0;
+      parent_->comfort_refine_setpoints(zone_, new_heat, new_cool, zone_holding, &heat_c, &cool_c);
+      float prev_low = this->target_temperature_low;
+      float prev_high = this->target_temperature_high;
       if (std::isnan(this->target_temperature_low) || std::isnan(this->target_temperature_high))
         sp_changed = true;  // force publish to initialize HA state
+      else if (fabsf(heat_c - prev_low) > 0.05f || fabsf(cool_c - prev_high) > 0.05f)
+        sp_changed = true;  // refined value moved without a byte change
       // low/high are the source of truth; never write target_temperature
       // (union alias of low — writing it in cool mode clobbers the heat sp).
       this->target_temperature_low = heat_c;
@@ -552,9 +592,14 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
             float cl_c = parent_->comfort_byte_to_celsius((*comfort)[base + 1]);
             float sp_ht_c = parent_->setpoint_to_celsius(new_heat);
             float sp_cl_c = parent_->setpoint_to_celsius(new_cool);
-            // Compare as °C with tolerance for half-degree rounding
-            bool ht_match = (fabsf(ht_c - sp_ht_c) < 0.3f);
-            bool cl_match = (fabsf(cl_c - sp_cl_c) < 0.3f);
+            // Compare as °C with tolerance for half-degree rounding. The band
+            // is unit-aware: 0.75 °C in °C mode (adjacent halves share a
+            // rounded 3B03 byte, gap up to 0.5); 0.3 °C in °F mode where rows
+            // and setpoints are both whole °F (a wider band would let distinct
+            // 1 °F activities match each other).
+            float tol = parent_->bus_uses_celsius() ? 0.75f : 0.3f;
+            bool ht_match = (fabsf(ht_c - sp_ht_c) < tol);
+            bool cl_match = (fabsf(cl_c - sp_cl_c) < tol);
             if (ht_match && cl_match && (*comfort)[base + 2] == new_fan) {
               last_activity_ = a;
               switch (a) {
