@@ -315,8 +315,18 @@ void InfinitESPComponent::loop() {
   // Gap: 50ms since last complete frame (frame-boundary, not byte-boundary).
   // The thermostat's own inter-frame gap is 10-30ms, so if 50ms passes
   // with no new frame, the bus is genuinely idle between transactions.
-  // This is tighter than the old 200ms byte-gap but still conservative.
-  const uint32_t bus_idle_ms = diag_last_frame_time_ ? (now - diag_last_frame_time_) : 1000;
+  // (Tighter than the byte-gap criterion it replaced. The 200ms below is a
+  // different thing: a post-transmit busy window, not an idle threshold.)
+  // Our own transmit never comes back through the receiver (half-duplex, RX muted during TX), so idle measured
+  // from the last frame HEARD keeps growing after we send. A second read could then go out one loop iteration
+  // (~10 ms) after the first, exactly when the thermostat's reply (~11 ms typical, ~110 ms when it defers past
+  // its own poll) is on the wire; both are lost and a CRC-failed fragment is left behind. Count the 200 ms after
+  // our own transmit as busy. On a two-zone bus (~21 frames/s) this took unanswered SAM reads from 10% to 5% and
+  // made zone 2's comfort row (400B) readable at all; on a quieter single-zone bus it shows as the ~0.75% CRC-fail
+  // rate in SAM mode vs ~0.01% listen-only.
+  const uint32_t frame_idle_ms = diag_last_frame_time_ ? (now - diag_last_frame_time_) : 1000;
+  const uint32_t since_own_tx_ms = last_own_tx_ms_ ? (now - last_own_tx_ms_) : 1000;
+  const uint32_t bus_idle_ms = (since_own_tx_ms < 200) ? 0 : frame_idle_ms;
 
   // Install-discovery holdoff (issue #8). Pause all five initiated-TX paths
   // while the thermostat runs discovery/commissioning (ADDR_DISCOVERY 0x1F
@@ -954,6 +964,10 @@ void InfinitESPComponent::transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t 
     flow_control_pin_->digital_write(false);
 #endif
   diag_in_tx_ = false;
+  // Wire-complete time, not call time: loop()'s 200ms own-TX busy window
+  // should start when the frame hit the bus, not when transmit_frame_()
+  // was entered (frame build + flush add a few ms; SLOW FLUSH warns when more).
+  last_own_tx_ms_ = millis();
   uint32_t flush_ms = millis() - flush_start;
   if (flush_ms > diag_tx_flush_max_ms_)
     diag_tx_flush_max_ms_ = flush_ms;
