@@ -343,6 +343,11 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
 
       float temp_bus = (float)data->at(REG3B02_TEMPS + idx);
       float temp = parent_->bus_temp_to_celsius(temp_bus);
+      // Issue #53: refine from 3D02 (1/16 °F) when served; same divergence
+      // guard and fallback as the zone temperature sensor.
+      float fine = parent_->tstat_zone_temp_c_(zone_);
+      if (!std::isnan(fine) && std::fabs(fine - temp) <= 5.0f)
+        temp = fine;
       if (temp != current_temp_) {
         current_temp_ = temp;
         this->current_temperature = temp;

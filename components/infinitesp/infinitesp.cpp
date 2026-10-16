@@ -29,11 +29,14 @@ static const uint8_t SLOW_POLL_REGS[][2] = {
                     // once the entities are wired to it
     {0x40, 0x12},  // vacation settings (min/max temp, fan)
     {0x42, 0x02},  // fault history (10 entries × 7 bytes)
+    {0x3D, 0x02},  // zone temps at 1/16 °F (issue #53; UIZ-line serves, ITC
+                    // line refuses by silence -> backoff drops it; consumers
+                    // keep the 3B02 fallback either way)
     {0x46, 0x08},  // WiFi: SSID, password, hostname
     {0x46, 0x09},  // Cloud: host, device IP
     {0x46, 0x0A},  // dealer info: name, brand, URL
 };
-static const uint8_t SLOW_POLL_REG_COUNT = 6;
+static const uint8_t SLOW_POLL_REG_COUNT = 7;
 static const uint32_t SLOW_POLL_INTERVAL_MS = 31000;  // poll every 31s (prime, avoids beating with other timers)
 
 // ODU slow-poll union set: registers consumed by curated odu_* sensors that at
@@ -1162,6 +1165,21 @@ void InfinitESPComponent::handle_reply_() {
       notify_entities_(current_frame_.src, REG_TSTAT_VACATION_STATE);
     }
 
+    // First served 3D02 (issue #53): one-shot diagnostic logging the per-zone
+    // flags bytes. 0x0101 vs 0x0104 (bit 2) is suspected to be the temp
+    // source (panel vs remote sensor) — every serving rig grows the corpus
+    // (PROTOCOL 3D02, issue #53 discussion).
+    if (reg_key == REG_TSTAT_ZONETEMPS && !tstat_3d02_served_logged_ && data.size() >= 41) {
+      tstat_3d02_served_logged_ = true;
+      char flags_buf[8 * 5 + 1] = {};
+      for (uint8_t z = 0; z < 8; z++) {
+        size_t off = 1 + (size_t) z * 5;
+        uint16_t fl = ((uint16_t) data[off] << 8) | data[off + 1];
+        snprintf(flags_buf + z * 5, 6, "%04" PRIX16 " ", fl);
+      }
+      ESP_LOGI("InfinitESP", "3D02 zone temps served (1/16 F); zone flags: %s", flags_buf);
+    }
+
     // Mirror state/zones registers to SAM's own address so READ requests
     // to the SAM serve current values instead of stale defaults
     if (reg_key == REG_SAM_STATE || reg_key == REG_SAM_ZONES) {
@@ -1683,6 +1701,25 @@ float InfinitESPComponent::odu_outdoor_temp_c_() const {
     }
   }
   return NAN;
+}
+
+float InfinitESPComponent::tstat_zone_temp_c_(uint8_t zone) const {
+  if (zone < 1 || zone > 8)
+    return NAN;
+  auto *data = get_register(ADDR_THERMOSTAT, REG_TSTAT_ZONETEMPS);
+  if (!data || data->size() < 41)
+    return NAN;
+  if (!register_fresh_(ADDR_THERMOSTAT, REG_TSTAT_ZONETEMPS, TSTAT_3D02_FRESHNESS_MS))
+    return NAN;
+  size_t off = 1 + (size_t) (zone - 1) * 5;  // [0]=0xA5 flag byte, then 8 x 5 B entries
+  uint16_t flags = ((uint16_t) (*data)[off] << 8) | (*data)[off + 1];
+  uint16_t raw = ((uint16_t) (*data)[off + 2] << 8) | (*data)[off + 3];
+  if (flags == 0x0000 || raw == 0x0000)
+    return NAN;  // zone not installed / unpopulated entry
+  float f = (float) raw / 16.0f;
+  if (f < ZC_THERMISTOR_MIN_F || f > ZC_THERMISTOR_MAX_F)
+    return NAN;  // outside the -40..250 °F plausibility band
+  return (f - 32.0f) * (5.0f / 9.0f);
 }
 
 bool InfinitESPComponent::idu_blower_commanded_() const {

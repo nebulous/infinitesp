@@ -106,6 +106,12 @@ static const uint16_t REG_TSTAT_VACATION = 0x4012;      // Zone 1 vacation setti
 // never see it. See PROTOCOL "3B04 vacation change-frames and readback".
 static const uint16_t REG_TSTAT_VACATION_STATE = 0x3B04;
 // Thermostat zone temps at 1/16 °F (8 zones x 5 B: [flags u16][raw u16 /16 °F]
+// [smoothed u8], 0xA5 flag byte first — see PROTOCOL 3D02). Generation-split:
+// served by UIZ-line controls, refused by the ITC Touch line (first read
+// times out, a repeat read answers FUNC 0x15 code 04 → session drop), so
+// the slow-poll backoff removes it there. Fetched by the SAM slow
+// poll or passively observed when another master polls it.
+static const uint16_t REG_TSTAT_ZONETEMPS = 0x3D02;
 // Served-3B04 freshness window: ~4 missed slow-poll rotations (10-slot
 // rotation at 31 s/slot). Beyond it the preset detector falls back to the
 // setpoint-match heuristic and the number keeps its last value.
@@ -117,6 +123,14 @@ static const uint32_t VACATION_SERVED_STALE_MS = 15UL * 60UL * 1000UL;
 // between sources (they track within ~0.3 °C: same sensor, different
 // sampling and rounding).
 static const uint32_t ODU_FINE_FRESHNESS_MS = 5UL * 60UL * 1000UL;
+// Thermostat 3D02 (zone temps at /16 °F) freshness window. Acquired via the
+// tstat slow-poll rotation, whose worst case (8 comfort rows + 7 fixed
+// registers) visits 3D02 every ~7.8 min; 10 min covers it with margin. The
+// lag is immaterial to data quality: indoor drift ~1 °F/h makes an 8-min-old
+// fine reading ~0.15 °F off, versus the ±0.5 °C 3B02 quantization it
+// replaces. Consumers also apply a 5 °C divergence guard against the fresh
+// 3B02 byte, which no legal indoor drift can trip.
+static const uint32_t TSTAT_3D02_FRESHNESS_MS = 10UL * 60UL * 1000UL;
 static const uint16_t REG_TSTAT_WIFI = 0x4608;          // SSID, password, hostname (~216 bytes)
 
 // Comfort-profile register for a zone (zone 1-8). 400A+zone-1.
@@ -763,6 +777,16 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // Returns NAN when no ODU node holds a fresh, populated reading. Callers
   // fall back to the thermostat-quantized 3B02 byte.
   float odu_outdoor_temp_c_() const;
+  // Thermostat 3D02 zone temp at 1/16 °F, converted with the hardcoded
+  // (f-32)x5/9. Entry offset 1 + (zone-1)*5; guards: flags 0x0000 = zone not
+  // installed, raw 0x0000 = invalid, and the -40..250 °F plausibility band.
+  // Freshness-gated on TSTAT_3D02_FRESHNESS_MS. Returns NAN when absent,
+  // stale, or guarded — callers fall back to the display-unit-quantized 3B02
+  // byte and apply their own 5 °C divergence check before using the value.
+  float tstat_zone_temp_c_(uint8_t zone) const;
+  // One-shot diagnostics: log the per-zone flags bytes at the first served
+  // 3D02 reply (feeds the 0x0101/0x0104 source-type question).
+  bool tstat_3d02_served_logged_{false};
   // 3B02 byte 0: bitmask of commissioned zones (bit zone-1). 0 when unreadable.
   uint8_t get_zone_active_mask() const;
   bool is_bus_online() const { return bus_online_; }
