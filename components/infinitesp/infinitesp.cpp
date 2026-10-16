@@ -1544,6 +1544,7 @@ void InfinitESPComponent::poll_metric_units_() {
 
 void InfinitESPComponent::store_register_(uint8_t addr, uint16_t key, const std::vector<uint8_t> &data) {
   device_registers_[addr][key] = data;
+  register_last_ms_[addr][key] = millis();
 }
 
 void InfinitESPComponent::notify_entities_(uint8_t device_addr, uint16_t register_key) {
@@ -1642,6 +1643,46 @@ const std::vector<uint8_t> *InfinitESPComponent::get_register(uint8_t addr, uint
   if (reg_it != dev_it->second.end())
     return &reg_it->second;
   return nullptr;
+}
+
+bool InfinitESPComponent::register_fresh_(uint8_t addr, uint16_t key, uint32_t max_age_ms) const {
+  auto dev_it = register_last_ms_.find(addr);
+  if (dev_it == register_last_ms_.end())
+    return false;
+  auto reg_it = dev_it->second.find(key);
+  if (reg_it == dev_it->second.end())
+    return false;
+  return (uint32_t) (millis() - reg_it->second) <= max_age_ms;
+}
+
+float InfinitESPComponent::odu_outdoor_temp_c_() const {
+  // Candidate ODU nodes: the exact pin when set, else every class-5 address
+  // observed on the bus (single-ODU assumption shared with the rest of the
+  // codebase). Non-ODU class-5 neighbors are skipped naturally: they never
+  // store the temp registers this helper probes for.
+  for (const auto &dev : device_registers_) {
+    uint8_t addr = dev.first;
+    if (odu_address_ != 0 ? addr != odu_address_ : !is_odu_addr_(addr))
+      continue;
+    // Two-capacity family: 3E01 slot 0 (/16 °F; 0x03FF no-sensor sentinel
+    // rejected inside odu_3e_meas_f_).
+    auto *temps_3e = get_register(addr, REG_ODU_3E_TEMPS);
+    if (temps_3e && register_fresh_(addr, REG_ODU_3E_TEMPS, ODU_FINE_FRESHNESS_MS)) {
+      float f = odu_3e_meas_f_(*temps_3e, 0);
+      if (!std::isnan(f))
+        return (f - 32.0f) * (5.0f / 9.0f);
+    }
+    // Variable-speed family: 0302 typed TLV, scan by type ODU_TLV_OAT
+    // (/16 °F). odu_tlv_populated_ guards the all-zero unpopulated register.
+    auto *temps_03 = get_register(addr, REG_ODU_STATUS1);
+    if (temps_03 && odu_tlv_populated_(*temps_03) &&
+        register_fresh_(addr, REG_ODU_STATUS1, ODU_FINE_FRESHNESS_MS)) {
+      float f = odu_tlv_value_f_(*temps_03, ODU_TLV_OAT);
+      if (!std::isnan(f))
+        return (f - 32.0f) * (5.0f / 9.0f);
+    }
+  }
+  return NAN;
 }
 
 bool InfinitESPComponent::idu_blower_commanded_() const {

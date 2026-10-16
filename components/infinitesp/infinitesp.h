@@ -105,10 +105,18 @@ static const uint16_t REG_TSTAT_VACATION = 0x4012;      // Zone 1 vacation setti
 // reformat with °C mode). Fetched by the SAM slow poll; passive installs
 // never see it. See PROTOCOL "3B04 vacation change-frames and readback".
 static const uint16_t REG_TSTAT_VACATION_STATE = 0x3B04;
+// Thermostat zone temps at 1/16 °F (8 zones x 5 B: [flags u16][raw u16 /16 °F]
 // Served-3B04 freshness window: ~4 missed slow-poll rotations (10-slot
 // rotation at 31 s/slot). Beyond it the preset detector falls back to the
 // setpoint-match heuristic and the number keeps its last value.
 static const uint32_t VACATION_SERVED_STALE_MS = 15UL * 60UL * 1000UL;
+// Outdoor Temperature repoint freshness window (issue #53): ODU temp tables
+// arrive at least every few seconds on tstat-polled installs and every ODU
+// slow-poll cycle (~31 s per register) in SAM mode, so 5 min only trips when
+// the ODU data is genuinely gone. It doubles as hysteresis against flapping
+// between sources (they track within ~0.3 °C: same sensor, different
+// sampling and rounding).
+static const uint32_t ODU_FINE_FRESHNESS_MS = 5UL * 60UL * 1000UL;
 static const uint16_t REG_TSTAT_WIFI = 0x4608;          // SSID, password, hostname (~216 bytes)
 
 // Comfort-profile register for a zone (zone 1-8). 400A+zone-1.
@@ -744,6 +752,17 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void set_zc_hpt_staleness(uint32_t ms) { zc_hpt_.staleness_timeout_ms = ms; }
 
   const std::vector<uint8_t> *get_register(uint8_t addr, uint16_t key) const;
+  // True when the (addr, key) register was stored within max_age_ms.
+  // Rollover-safe: age uses (uint32_t)(millis() - stamp) subtraction.
+  bool register_fresh_(uint8_t addr, uint16_t key, uint32_t max_age_ms) const;
+  // The ODU's own outdoor sensor at full /16 °F resolution, converted to °C
+  // with the hardcoded ODU conversion (never bus_temp_to_celsius: ODU
+  // registers don't reformat with the tstat units flag). Tries 3E01 slot 0
+  // (two-capacity family) then 0302 TLV ODU_TLV_OAT (variable-speed family);
+  // the families are disjoint so first-valid-wins needs no precedence logic.
+  // Returns NAN when no ODU node holds a fresh, populated reading. Callers
+  // fall back to the thermostat-quantized 3B02 byte.
+  float odu_outdoor_temp_c_() const;
   // 3B02 byte 0: bitmask of commissioned zones (bit zone-1). 0 when unreadable.
   uint8_t get_zone_active_mask() const;
   bool is_bus_online() const { return bus_online_; }
@@ -1197,6 +1216,9 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 
   // Per-device register storage: address → (register_key → data)
   std::map<uint8_t, std::map<uint16_t, std::vector<uint8_t>>> device_registers_;
+  // millis() stamp of the last store_register_() per (addr, register_key),
+  // for freshness-gated sources (outdoor temperature repoint, issue #53).
+  std::map<uint8_t, std::map<uint16_t, uint32_t>> register_last_ms_;
 
   // Table names learned by probing each observed device's 0xNN01 tabledef
   // register as ADDR_FAKESAM (0x93). Keyed by (device addr, table number).

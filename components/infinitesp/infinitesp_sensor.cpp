@@ -79,7 +79,28 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
       return;
 
     if (sensor_type_ == "outdoor_temperature") {
-      value = parent_->bus_temp_to_celsius((float) data->at(REG3B02_OUTDOOR_TEMP));
+      // Issue #53: prefer the ODU's own sensor at /16 °F resolution. The 3B02
+      // byte is quantized to the tstat display unit (whole °C in °C mode),
+      // which staircases HA history while the cloud shows 0.5 °C steps. The
+      // ODU value can sit ~0.3 °C from the 3B02 byte (same physical sensor,
+      // different sampling and rounding). Documented, never compensated.
+      // Falls back to 3B02 whenever the ODU data is absent or stale; passive
+      // installs whose tstat never polls the ODU temp tables stay on 3B02
+      // forever, which is exactly today's behavior.
+      float fine = parent_->odu_outdoor_temp_c_();
+      if (!std::isnan(fine)) {
+        if (!outdoor_source_odu_) {
+          outdoor_source_odu_ = true;
+          ESP_LOGI("InfinitESP", "Outdoor Temperature: using ODU fine source (/16 F)");
+        }
+        value = fine;
+      } else {
+        if (outdoor_source_odu_) {
+          outdoor_source_odu_ = false;
+          ESP_LOGI("InfinitESP", "Outdoor Temperature: ODU source stale/absent, falling back to 3B02");
+        }
+        value = parent_->bus_temp_to_celsius((float) data->at(REG3B02_OUTDOOR_TEMP));
+      }
     } else if (sensor_type_ == "temperature") {
       uint8_t idx = zone_ - 1;
       if (data->at(REG3B02_ACTIVE_ZONES) & (1 << idx)) {

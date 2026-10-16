@@ -45,6 +45,9 @@ class InfinitESPSensor : public sensor::Sensor, public InfinitESPEntity {
 
  private:
   std::string sensor_type_;
+  // outdoor_temperature only: current source is the ODU fine value (vs the
+  // 3B02 fallback). Tracks log-once transitions between the two sources.
+  bool outdoor_source_odu_{false};
 
   // raw_register config (decode mode uses offset/datatype/scale; lambda mode uses raw_lambda_).
   uint8_t raw_device_{0};
