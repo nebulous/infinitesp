@@ -545,7 +545,10 @@ This feature is not available with the TCP serial bridge transport (circular dep
 
 - Check the STATS line in logs every 5 seconds
 - Healthy: `crc_fail=0`, `stale=0`, `overflow_evts=0`, `reply_got ≈ reply_exp`
-- `crc_fail > 0` → bus noise or bad wiring
+- `crc_fail > 0` → bus noise or bad wiring. The parser resyncs after a failed
+  frame instead of dropping what follows (`resync` counts recoveries), and stray
+  `0xFE`/`0xFF` bytes between frames — some thermostats glitch a phantom byte at
+  their RS485 turnaround — are skipped outright (`ingress_drop`)
 - `overflow_evts > 0` → main loop not keeping up (reduce logging verbosity)
 - `stale > 0` → bytes arriving with gaps > 100ms (transport issue)
 - Counter-by-counter decoding: [Bus Capture and Diagnostics](docs/bus-capture.md#stats-bus-health)

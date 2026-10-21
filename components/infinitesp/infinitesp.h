@@ -1129,6 +1129,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
 
  protected:
   void parse_byte_(uint8_t byte);
+  void try_parse_buffer_();
+  size_t find_frame_sync_(size_t from);
   bool validate_frame_();
   void dispatch_frame_();
   void handle_passive_frame_();
@@ -1312,6 +1314,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint32_t diag_frames_parsed_{0};
   uint32_t diag_crc_fail_{0};
   uint32_t diag_stale_discard_{0};
+  uint32_t diag_ingress_drop_{0};  // stray 0xFE/0xFF dropped at frame boundary (issue #55)
+  uint32_t diag_resync_{0};       // CRC-fail recoveries via signature scan (issue #55)
   uint32_t diag_last_stats_time_{0};
   bool diag_in_tx_{false};
 

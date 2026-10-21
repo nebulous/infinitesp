@@ -71,6 +71,8 @@ The counters that matter:
 
 - `crc_fail` > 0: bus noise or bad wiring. CRC errors clustered around the device's own transmissions point at RS485 biasing, bus loading, or wiring rather than the transceiver.
 - `stale` > 0: bytes arriving with gaps > 100ms. A transport issue (a TCP bridge dropping bytes, an overloaded host), not a protocol issue.
+- `ingress_drop` > 0: stray `0xFE`/`0xFF` bytes arriving between frames, skipped before they can desync the parser. A phantom start bit at a thermostat's RS485 turnaround (seen on a SYSTXCCWIC01); harmless unless it grows large.
+- `resync` > 0: frames recovered after a CRC failure by realigning to the next frame header instead of dropping the buffered bytes. Normally paired with `crc_fail` (each collision or glitch costs one frame, and this counter says the next one survived); a rapidly growing `resync` without matching `crc_fail` is worth a capture.
 - `overflow_evts` > 0: the main loop is not keeping up. Reduce logging verbosity.
 - `reply_got` consistently below `reply_exp`: the device's polls are being sent but not answered. The thermostat is not seeing InfinitESP (wiring, address conflict, or commissioning state).
 - `poll_drop` > 0: slow-poll targets removed from the rotation for this session. Two causes. A `FUNC 0x15` refusal is normal on hardware that lacks the register (a variable-speed outdoor unit refuses the 3E table; expect `poll_drop=3` there). Repeated no-reply drops on `0x4xxx` thermostat registers mean the control does not serve those tables at all - pre-cloud UIZ/UID wall controls ignore 4xxx reads entirely instead of refusing them, so fault-history, vacation, and WiFi/dealer entities stay at no-data on those installs. The `REPORT?` snapshot lists the dropped pairs.

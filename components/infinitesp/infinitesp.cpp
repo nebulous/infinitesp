@@ -264,11 +264,13 @@ void InfinitESPComponent::loop() {
     float crc_ok = total_frames ? (100.0f * diag_frames_parsed_ / total_frames) : 100.0f;
 
     ESP_LOGI("InfinitESP", "STATS rx_bytes=%" PRIu32 " tx_bytes=%" PRIu32 " rx_frames=%" PRIu32 " tx_frames=%" PRIu32 " "
-             "crc_fail=%" PRIu32 " crc_ok=%.2f%% stale=%" PRIu32 " uart_hwm=%" PRIu32 " overflow_evts=%" PRIu32 " "
+             "crc_fail=%" PRIu32 " crc_ok=%.2f%% stale=%" PRIu32 " ingress_drop=%" PRIu32 " resync=%" PRIu32 " "
+             "uart_hwm=%" PRIu32 " overflow_evts=%" PRIu32 " "
              "reply_exp=%" PRIu32 " reply_got=%" PRIu32 " reply_timeout=%" PRIu32 " poll_pending=%zu poll_drop=%" PRIu32 " "
              "tx_flush_max=%" PRIu32 "ms loop_max=%" PRIu32 "ms inter_frame=%" PRIu32 "..%" PRIu32 "ms",
              diag_total_rx_bytes_, diag_total_tx_bytes_, diag_frames_parsed_, diag_tx_seq_,
-             diag_crc_fail_, crc_ok, diag_stale_discard_, diag_uart_hwm_, diag_uart_overflow_events_,
+             diag_crc_fail_, crc_ok, diag_stale_discard_, diag_ingress_drop_, diag_resync_,
+             diag_uart_hwm_, diag_uart_overflow_events_,
              diag_reply_expected_, diag_reply_received_, diag_reply_timeout_,
              pending_polls_.size(), diag_poll_dropped_,
              diag_tx_flush_max_ms_, diag_loop_max_ms_,
@@ -546,43 +548,109 @@ void InfinitESPComponent::parse_byte_(uint8_t byte) {
   }
   last_rx_time_ = now;
 
+  // Inter-frame junk (issue #55): some transmitters (SYSTXCCWIC01 thermostat)
+  // glitch the line at their driver-enable edge, which our receiver decodes as
+  // a phantom start bit followed by idle marks: 0xFE/0xFF LSB-first. No valid
+  // device address is >= 0xFE (broadcast is 0xF1), so at a frame boundary
+  // these bytes are line noise, never frame data. Only skipped on an EMPTY
+  // buffer; mid-frame 0xFE/0xFF are legal payload bytes.
+  if (rx_buffer_.empty() && (byte == 0xFE || byte == 0xFF)) {
+    diag_ingress_drop_++;
+    ESP_LOGD("InfinitESP", "ingress drop: stray %02X between frames (#%" PRIu32 ")",
+             byte, diag_ingress_drop_);
+    return;
+  }
+
   rx_buffer_.push_back(byte);
+  try_parse_buffer_();
+}
 
-  // Need at least header to determine frame size
-  if (rx_buffer_.size() < FRAME_HEADER_SIZE + FRAME_CRC_SIZE)
-    return;
+// Parse loop over rx_buffer_: dispatch complete valid frames, recover from
+// misalignment. Called after each pushed byte; re-entrant by construction
+// (every continue path consumes or waits, never spins: each resync iteration
+// erases >= 1 byte, each dispatch clears the buffer).
+void InfinitESPComponent::try_parse_buffer_() {
+  for (;;) {
+    // Need at least header to determine frame size
+    if (rx_buffer_.size() < FRAME_HEADER_SIZE + FRAME_CRC_SIZE)
+      return;
 
-  uint8_t payload_len = rx_buffer_[4];
-  uint16_t expected_size = FRAME_HEADER_SIZE + payload_len + FRAME_CRC_SIZE;
+    uint8_t payload_len = rx_buffer_[4];
+    uint16_t expected_size = FRAME_HEADER_SIZE + payload_len + FRAME_CRC_SIZE;
 
-  if (rx_buffer_.size() < expected_size)
-    return;
+    if (rx_buffer_.size() < expected_size) {
+      // Incomplete frame. len is u8, so expected <= 265 and the buffer is
+      // self-bounded below FRAME_MAX_SIZE; no overflow guard needed.
+      return;
+    } else {
+      // Full frame received - validate
+      diag_rx_seq_++;
 
-  // Full frame received - validate and dispatch
-  diag_rx_seq_++;
+      // Track inter-frame timing
+      uint32_t frame_now = millis();
+      if (diag_last_frame_time_ > 0) {
+        uint32_t gap = frame_now - diag_last_frame_time_;
+        if (gap < diag_inter_frame_min_ms_) diag_inter_frame_min_ms_ = gap;
+        if (gap > diag_inter_frame_max_ms_) diag_inter_frame_max_ms_ = gap;
+      }
+      diag_last_frame_time_ = frame_now;
 
-  // Track inter-frame timing
-  uint32_t frame_now = millis();
-  if (diag_last_frame_time_ > 0) {
-    uint32_t gap = frame_now - diag_last_frame_time_;
-    if (gap < diag_inter_frame_min_ms_) diag_inter_frame_min_ms_ = gap;
-    if (gap > diag_inter_frame_max_ms_) diag_inter_frame_max_ms_ = gap;
-  }
-  diag_last_frame_time_ = frame_now;
-
-  if (validate_frame_()) {
-    diag_frames_parsed_++;
-    dispatch_frame_();
-  } else {
-    diag_crc_fail_++;
-    char hex_buf[64 * 3 + 1] = {};
-    for (size_t i = 0; i < rx_buffer_.size() && i < 64; i++) {
-      snprintf(hex_buf + i * 3, 4, "%02X ", rx_buffer_[i]);
+      if (validate_frame_()) {
+        diag_frames_parsed_++;
+        dispatch_frame_();
+        rx_buffer_.clear();
+        // A resync earlier in this same call may have surfaced a complete
+        // second frame; keep parsing what is buffered.
+        continue;
+      }
     }
-    ESP_LOGW("InfinitESP", "CRC FAIL seq=%" PRIu32 " (%zu bytes): [%s%s]",
-             diag_rx_seq_, rx_buffer_.size(), hex_buf, rx_buffer_.size() > 64 ? "..." : "");
+
+    // CRC-fail / misalignment recovery (issue #55)
+    diag_crc_fail_++;
+    {
+      char hex_buf[64 * 3 + 1] = {};
+      for (size_t i = 0; i < rx_buffer_.size() && i < 64; i++) {
+        snprintf(hex_buf + i * 3, 4, "%02X ", rx_buffer_[i]);
+      }
+      ESP_LOGW("InfinitESP", "CRC FAIL seq=%" PRIu32 " (%zu bytes): [%s%s]",
+               diag_rx_seq_, rx_buffer_.size(), hex_buf, rx_buffer_.size() > 64 ? "..." : "");
+    }
+
+    // Resync (issue #55): a single stray byte in front of a frame (or a
+    // mid-stream capture start) misreads the len byte and fails CRC; the
+    // following frame(s) used to be eaten too. Scan forward for the next
+    // plausible header signature and re-parse from there instead of
+    // discarding the buffer.
+    size_t sync = find_frame_sync_(1);
+    if (sync == rx_buffer_.size()) {
+      rx_buffer_.clear();
+      return;
+    }
+    diag_resync_++;
+    ESP_LOGD("InfinitESP", "resync: dropping %zu leading byte(s) (#%" PRIu32 ")",
+             sync, diag_resync_);
+    rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + sync);
+    // Loop: the shifted remainder is a partial or complete frame.
   }
-  rx_buffer_.clear();
+}
+
+// Find the next offset >= from where a plausible ABCD header starts:
+// dst_bus 0x01 (or 0xF1 broadcast), src_bus 0x01, len 1..255. Returns
+// rx_buffer_.size() when none. Deliberately loose (no pid/ext/func checks:
+// not vendor-guaranteed) - a false sync self-heals by failing CRC here and
+// advancing the scan again.
+size_t InfinitESPComponent::find_frame_sync_(size_t from) {
+  for (size_t i = from; i + 5 <= rx_buffer_.size(); i++) {
+    uint8_t dst_bus = rx_buffer_[i + 1];
+    if (dst_bus != 0x01 && dst_bus != 0xF1)
+      continue;
+    if (rx_buffer_[i + 3] != 0x01)
+      continue;
+    if (rx_buffer_[i + 4] == 0)
+      continue;
+    return i;
+  }
+  return rx_buffer_.size();
 }
 
 bool InfinitESPComponent::validate_frame_() {
@@ -3093,14 +3161,15 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
     "{\"fw\":\"InfinitESP 0.1\",\"ver\":\"%s\",\"up\":%u,\"bus\":\"%s\","
     "\"sam\":\"%02X\",\"zc\":\"%02X\","
     "\"temp_unit\":\"%s\",\"temp_cfg\":\"%s\","
-    "\"rx\":%u,\"tx\":%u,\"crc\":%u,\"exp\":%u,\"got\":%u,\"to\":%u,\"ack\":%u,"
+    "\"rx\":%u,\"tx\":%u,\"crc\":%u,\"ing\":%u,\"rsync\":%u,\"exp\":%u,\"got\":%u,\"to\":%u,\"ack\":%u,"
     "\"hwm\":%u,\"ovf\":%u,\"prg\":%u,\"pp\":%u",
     INFINITESP_VERSION, (unsigned)(millis()/1000), bus_online_?"on":"off",
     sam_address_, zc_address_,
     bus_uses_celsius() ? "C" : "F",
     temperature_unit_ == TemperatureUnit::AUTO ? "auto" : temperature_unit_ == TemperatureUnit::CELSIUS ? "C" : "F",
     (unsigned)diag_frames_parsed_, (unsigned)diag_tx_seq_,
-    (unsigned)diag_crc_fail_, (unsigned)diag_reply_expected_,
+    (unsigned)diag_crc_fail_, (unsigned)diag_ingress_drop_, (unsigned)diag_resync_,
+    (unsigned)diag_reply_expected_,
     (unsigned)diag_reply_received_, (unsigned)diag_reply_timeout_, (unsigned)diag_ack_consumed_,
     (unsigned)diag_uart_hwm_, (unsigned)diag_uart_overflow_events_,
     (unsigned)diag_poll_purged_, (unsigned)pending_polls_.size());
