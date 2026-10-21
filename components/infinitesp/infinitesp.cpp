@@ -676,6 +676,18 @@ void InfinitESPComponent::dispatch_frame_() {
   current_frame_.payload.assign(rx_buffer_.begin() + FRAME_HEADER_SIZE,
                                 rx_buffer_.end() - FRAME_CRC_SIZE);
 
+  // Log all RX frames to traffic capture. Before the handlers: a handler may
+  // synchronously transmit a reply (transmit_frame_ blocks in flush() for its
+  // wire time), and that reply's TX line is stamped pre-transmission - logging
+  // the RX frame after the handlers inverted request/reply order in the JSONL
+  // stream by the reply's wire time (found cross-checking the issue #55
+  // capture, where it read as a ~5 s SAM reply latency).
+  if (current_frame_.payload.size() >= 3) {
+    log_traffic_(current_frame_.src, current_frame_.dst, current_frame_.func,
+                (current_frame_.payload[1] << 8) | current_frame_.payload[2],
+                current_frame_.payload);
+  }
+
   // Log parsed frame at INFO level with sequence number
   const char *func_name = "???";
   switch (current_frame_.func) {
@@ -813,13 +825,6 @@ void InfinitESPComponent::dispatch_frame_() {
     }
   } else if (!reply_handled) {
     handle_passive_frame_();
-  }
-
-  // Log all RX frames to traffic capture
-  if (current_frame_.payload.size() >= 3) {
-    log_traffic_(current_frame_.src, current_frame_.dst, current_frame_.func,
-                (current_frame_.payload[1] << 8) | current_frame_.payload[2],
-                current_frame_.payload);
   }
 }
 
