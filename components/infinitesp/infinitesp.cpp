@@ -1059,6 +1059,18 @@ void InfinitESPComponent::send_frame_(uint8_t dst, uint8_t dst_bus, uint8_t func
   transmit_frame_(dst, dst_bus, sam_address_, 0x01, func, payload);
 }
 
+// A 3B03 write echoes the cached hold countdowns. The Touch appears to apply the
+// named zone's echo floored to 15 minutes (a running 644 came back 630); zeros
+// leave the countdown alone. Hold writes carry their own durations and go out unchanged.
+static void zero_echoed_hold_durations_(std::vector<uint8_t> &payload) {
+  static const size_t REG_AT = 3;  // register byte i is payload byte i + 3
+  const size_t at = REG_AT + REG3B03_HOLD_DURATIONS;
+  if (payload.size() < at + 16 || payload[1] != 0x3B || payload[2] != 0x03 ||
+      (payload[REG_AT + REG3B03_CHANGE_FLAGS] & CHANGE_HOLD))
+    return;
+  std::fill_n(payload.begin() + at, 16, 0);  // 8 zones x uint16 BE
+}
+
 void InfinitESPComponent::send_write_frame_(uint8_t dst, uint8_t dst_bus,
                                              const std::vector<uint8_t> &payload) {
   // Backstop (issue #38): a queued write transmits with sam_address_ as the
@@ -1076,6 +1088,7 @@ void InfinitESPComponent::send_write_frame_(uint8_t dst, uint8_t dst_bus,
   // lost exactly that way, twice (primary + its one retry).
   pending_retransmits_.push_back({dst, dst_bus, FUNC_WRITE, payload, millis(),
                                    (uint8_t) (WRITE_ATTEMPTS - 1)});
+  zero_echoed_hold_durations_(pending_retransmits_.back().payload);
 }
 
 void InfinitESPComponent::send_reply_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus,
