@@ -2852,9 +2852,10 @@ void InfinitESPComponent::initialize_defaults_() {
 
   // --- NIM registers ---
   // Seeds match the real SYSTXCCNIM01 byte-for-byte on every register we have
-  // observed (issue #41 16 h capture; PROTOCOL.md "NIM (0x80)"). The real
-  // device's idle 0316/030E/3404/3405 replies are constants; 0316 mutates only
-  // via the 0305 demand mirror and the defrost input.
+  // observed (issue #41 16 h capture, issue #55 3.85 h capture; PROTOCOL.md
+  // "NIM (0x80)"). The real device's idle 0316/030E/3404/3405/0302 replies
+  // are constants; 0316 mutates only via the 0305 demand mirror and the
+  // defrost input; 0311's powered-hours BE16 ticks hourly.
   if (nim_enabled()) {
     // Register 0104 - Device info (120 bytes). Model is the real one so the
     // tstat recognizes the device (same rationale as the ZC seed); serial
@@ -2884,6 +2885,12 @@ void InfinitESPComponent::initialize_defaults_() {
     // register exists for raw_register sensors before the first write.
     store_register_(nim_address_, REG_NIM_DEMAND, std::vector<uint8_t>(12, 0));
 
+    // Register 0302 - descriptor (4 B). Byte-exact from the real NIM
+    // (#55 capture: 1039 reads, all identical). Same 04 11 prefix as the
+    // furnace's 0302: an IDU-class generic descriptor. The Touch generation
+    // polls it standing every ~13 s; the UID01 never reads it.
+    store_register_(nim_address_, REG_NIM_DESCRIPTOR, {0x04, 0x11, 0x00, 0x00});
+
     // Register 030D - Diagnostics (7 bytes, always zeros on the real device)
     store_register_(nim_address_, REG_NIM_DIAG, std::vector<uint8_t>(7, 0));
 
@@ -2894,6 +2901,43 @@ void InfinitESPComponent::initialize_defaults_() {
       std::vector<uint8_t> data = {0x10, 0x00, 0x2D, 0x00, 0x2E, 0x00, 0x35, 0x00};
       store_register_(nim_address_, REG_NIM_CFG_STATUS, data);
     }
+
+    // Registers 0310/0311 - counters (32 B each, IDU fault-table shape: the
+    // 0x23/0x25 lead bytes match the furnace's 0310/0311). Captured 2026-10-20
+    // (#55, 3.85 h idle): 0310 constant across 439 reads. 0311 constant
+    // except the BE16 at [30..31], a powered-hours counter ticking exactly
+    // hourly (23425 -> 23428 over the window, system idle: it counts NIM
+    // powered time, not compressor runtime). Seed copies the captured bytes
+    // but starts the hours counter at zero, then ticks it hourly like the
+    // real device. Reboot resets it (no NVS), which reads as a young NIM.
+    {
+      const uint8_t cycles[32] = {0x23, 0x00, 0x94, 0xFA, 0x24, 0x00, 0x00, 0x61,
+                                  0x28, 0x00, 0x18, 0xCE, 0x27, 0x00, 0x02, 0x27,
+                                  0x3C, 0x00, 0x1D, 0xF0, 0x38, 0x00, 0x00, 0x13,
+                                  0x90, 0x00, 0x00, 0x12, 0xB0, 0x00, 0x02, 0xE8};
+      store_register_(nim_address_, REG_NIM_CYCLES,
+                      std::vector<uint8_t>(cycles, cycles + sizeof(cycles)));
+      const uint8_t runtime[32] = {0x25, 0x00, 0x0B, 0x69, 0x26, 0x00, 0x00, 0x01,
+                                   0x2A, 0x00, 0x00, 0x50, 0x29, 0x00, 0x00, 0x85,
+                                   0x3D, 0x00, 0x00, 0x00, 0x3A, 0x00, 0x00, 0x00,
+                                   0x3B, 0x00, 0x00, 0x00, 0x2C, 0x02, 0x00, 0x00};
+      store_register_(nim_address_, REG_NIM_RUNTIME,
+                      std::vector<uint8_t>(runtime, runtime + sizeof(runtime)));
+    }
+    set_interval("nim_runtime_hours", 60UL * 60UL * 1000UL, [this]() {
+      const auto *data = get_register(nim_address_, REG_NIM_RUNTIME);
+      if (data == nullptr || data->size() != 32)
+        return;
+      uint16_t hours = ((*data)[30] << 8) | (*data)[31];
+      if (hours == 0xFFFF)
+        return;
+      hours++;
+      std::vector<uint8_t> copy = *data;
+      copy[30] = hours >> 8;
+      copy[31] = hours & 0xFF;
+      store_register_(nim_address_, REG_NIM_RUNTIME, copy);
+      notify_entities_(nim_address_, REG_NIM_RUNTIME);
+    });
 
     // Register 3404 - Heartbeat (1 byte) and 3405 - Presence (3 bytes):
     // the table-34 handshake shared with the ZC.

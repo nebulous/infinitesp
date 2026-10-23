@@ -281,17 +281,22 @@ static const float ZC_THERMISTOR_MAX_F = 250.0f;
 // on YRGB) onto the ABCD bus. It never initiates traffic and never ACKs
 // writes (0 register-matched replies to 11,207 writes in the capture);
 // the tstat re-sends 0305/3404 as standing commands every ~10 s cycle.
+static const uint16_t REG_NIM_DESCRIPTOR = 0x0302;  // 4 B `04 11 00 00` (IDU-class generic prefix; Touch-gen polls it standing, ~13 s)
 static const uint16_t REG_NIM_DEMAND = 0x0305;      // tstat write, 12 B: [0] heat stage, [2] cool stage
 static const uint16_t REG_NIM_CMD = 0x030B;         // 4 B one-off write (00 AA 00 00 seen once)
 static const uint16_t REG_NIM_DIAG = 0x030D;        // 7 B zeros (never seen nonzero)
+static const uint16_t REG_NIM_CFG_STATUS = 0x030E;  // 8 B. UID01 reads it only around config changes. Touch-gen polls it standing (~31 s)
+static const uint16_t REG_NIM_CYCLES = 0x0310;      // 32 B counters, constant across a 3.85 h idle window
+static const uint16_t REG_NIM_RUNTIME = 0x0311;     // 32 B counters; BE16 at [30..31] is powered hours, ticks hourly
 static const uint16_t REG_NIM_STATUS = 0x0316;      // 15 B reply: mirrors demand, defrost input
-static const uint16_t REG_NIM_CFG_STATUS = 0x030E;  // 8 B, read around heat-source config changes
 static const uint16_t REG_NIM_CONFIG = 0x031C;      // 28 B config push; real NIM NEVER answers reads of it
 // Table-34 handshake registers are shared with the ZC (REG_ZC_HEARTBEAT /
 // REG_ZC_PRESENCE): the tstat's INSTALL scan probes ZC slots and the NIM slot
 // with the same 3405 presence read.
 
-// NIM 0316 layout (offsets header-relative)
+// NIM 0316 layout (offsets header-relative). 15 B with the constant 01 at
+// [10] holds across all three captures and both tstat generations (UID01
+// #41: 5601/5601 replies; WIC01 #55: 1232/1232; 2026-09-28 capture: 26/26).
 static const uint8_t NIM_STATUS_SIZE = 15;
 static const uint8_t NIM_STATUS_HEAT = 0;     // heat stage — mirrors 0305 [0]
 static const uint8_t NIM_STATUS_COOL = 2;     // cool stage — mirrors 0305 [2] (demand, not actuals)
