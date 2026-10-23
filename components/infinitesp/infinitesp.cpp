@@ -1002,16 +1002,27 @@ void InfinitESPComponent::handle_passive_frame_() {
     // capture is the only source. Stored under dst (ODU address) so ODU sensors
     // match. Write rows (0x0605/060b/0610/0612/061a/061d/061e)
     // do not collide with reply rows (0x0602/0604/0608/060a/060e/061f/0625).
+    // 3E02 is the exception: read/write (the tstat writes the commanded stage
+    // AND polls the actual stage), so the reply is the authoritative source and
+    // the write is NOT stored — on a single-stage 24ANB6 the write (02 = on) and
+    // reply (04 = the one capacity) decode to different stages, and storing both
+    // under the ODU key made odu_stage flap 1/2 every poll cycle (issue #47). On
+    // agreeing-encoding units (24ANA1, #21) the skip changes nothing.
     // is_odu_addr_: exact node when odu_address pins one, else the class nibble
     // (a pinned ODU keeps second class-5 nodes like disc #232's 0x5F refrig
     // board out of the register store's ODU namespace).
     if (is_odu_addr_(current_frame_.dst) && current_frame_.src == ADDR_THERMOSTAT &&
         current_frame_.payload.size() > 3) {
       std::vector<uint8_t> odu_data(current_frame_.payload.begin() + 3, current_frame_.payload.end());
-      store_register_(current_frame_.dst, reg_key, odu_data);
-      if (reg_key == REG_ODU_CMD_STAGE && odu_data.size() >= 4)
-        ESP_LOGD("InfinitESP", "ODU 0605 write: commanded_stage=%.1f", (double) odu_commanded_stage_(odu_data));
-      notify_entities_(current_frame_.dst, reg_key);
+      if (reg_key == REG_ODU_3E_STAGE) {
+        ESP_LOGD("InfinitESP", "ODU 3E02 write seen (stage cmd, not stored): %02X",
+                 odu_data.empty() ? 0 : odu_data[0]);
+      } else {
+        store_register_(current_frame_.dst, reg_key, odu_data);
+        if (reg_key == REG_ODU_CMD_STAGE && odu_data.size() >= 4)
+          ESP_LOGD("InfinitESP", "ODU 0605 write: commanded_stage=%.1f", (double) odu_commanded_stage_(odu_data));
+        notify_entities_(current_frame_.dst, reg_key);
+      }
     }
   }
 }

@@ -1115,11 +1115,14 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     return (float) raw / 16.0f;
   }
   // ODU register 3E02 (REG_ODU_3E_STAGE), 2-stage/two-capacity family: stage
-  // byte. The thermostat writes the commanded stage (00=off, 02=low, 04=high)
-  // and the ODU answers reads with the actual stage (01=off, 02, 04); both
-  // encodings map to 0=off/1=low/2=high after >>1, so the register store can
-  // hold either without a write/read split. Transitions panel-validated on a
-  // 24ANA160A (LOW at 18:20:28, HIGH at 18:22:19, matching the panel readings).
+  // byte, fed by the ODU's read replies ONLY (01=off, 02, 04). The thermostat
+  // also writes this register (00/02/04), but the write capture skips it
+  // (issue #47): on a single-stage 24ANB6 the write means "on" (02) while the
+  // reply reports the one capacity with the 2-stage high code (04), so storing
+  // both under the ODU key made odu_stage flap 1/2. On agreeing-encoding units
+  // (24ANA1, #21) write and reply decode the same after >>1, so the skip is a
+  // no-op there. Transitions panel-validated on a 24ANA160A (LOW at 18:20:28,
+  // HIGH at 18:22:19, matching the panel readings).
   // Raw > 0x07 is not an observed stage value; rejected.
   static float odu_3e_stage_(const std::vector<uint8_t> &data) {
     if (data.empty() || data[0] > 0x07)

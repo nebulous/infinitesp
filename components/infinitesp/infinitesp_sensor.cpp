@@ -433,9 +433,10 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
   }
 
   // ODU register 3E02 (REG_ODU_3E_STAGE, 2-stage/two-capacity family): stage
-  // byte >>1 → 0=off/1=low/2=high. The store holds both the thermostat's
-  // commanded write (00/02/04) and the ODU's read reply (01/02/04); both
-  // decode identically after >>1, so no write/read split is needed.
+  // byte >>1 → 0=off/1=low/2=high. Reply-fed only: the passive write capture
+  // skips 3E02 (issue #47 — on a single-stage 24ANB6 the tstat's write (02 =
+  // on) and the ODU's reply (04 = its one capacity) decode differently, and
+  // storing both under the ODU key flapped odu_stage 1/2 every poll cycle).
   if (register_key == REG_ODU_3E_STAGE && sensor_type_ == "odu_stage") {
     auto *data = parent_->get_register(device_addr, REG_ODU_3E_STAGE);
     if (data) {
