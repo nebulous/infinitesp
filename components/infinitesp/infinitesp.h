@@ -1131,8 +1131,8 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   void parse_byte_(uint8_t byte);
   void try_parse_buffer_();
   size_t find_frame_sync_(size_t from);
-  bool validate_frame_();
-  void dispatch_frame_();
+  bool validate_frame_(uint16_t frame_len);
+  void dispatch_frame_(uint16_t frame_len);
   void handle_passive_frame_();
 
   void transmit_frame_(uint8_t dst, uint8_t dst_bus, uint8_t src, uint8_t src_bus, uint8_t func,
@@ -1334,7 +1334,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint32_t diag_ack_consumed_{0};     // write ACKs that dropped a pending retransmit
   uint32_t diag_tx_flush_max_ms_{0};  // max time spent in flush()
   uint32_t diag_loop_max_ms_{0};      // max time spent in a single loop() iteration
-  uint32_t diag_last_frame_time_{0};  // millis() of last complete frame
+  uint32_t diag_last_frame_time_{0};  // millis() of last complete frame (inter-frame stats only; the TX idle gate uses last_rx_time_)
   uint32_t last_own_tx_ms_{0};        // millis() of our last transmit; the receiver never sees it (see loop())
   uint32_t diag_inter_frame_min_ms_{UINT32_MAX};  // min inter-frame interval
   uint32_t diag_inter_frame_max_ms_{0};            // max inter-frame interval

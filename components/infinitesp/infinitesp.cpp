@@ -316,22 +316,35 @@ void InfinitESPComponent::loop() {
   // Update status LED (blink patterns / color changes)
   update_status_led_();
 
-  // Poll thermostat every 3 seconds.
-  // Gap: 50ms since last complete frame (frame-boundary, not byte-boundary).
-  // The thermostat's own inter-frame gap is 10-30ms, so if 50ms passes
-  // with no new frame, the bus is genuinely idle between transactions.
-  // (Tighter than the byte-gap criterion it replaced. The 200ms below is a
-  // different thing: a post-transmit busy window, not an idle threshold.)
-  // Our own transmit never comes back through the receiver (half-duplex, RX muted during TX), so idle measured
-  // from the last frame HEARD keeps growing after we send. A second read could then go out one loop iteration
-  // (~10 ms) after the first, exactly when the thermostat's reply (~11 ms typical, ~110 ms when it defers past
-  // its own poll) is on the wire; both are lost and a CRC-failed fragment is left behind. Count the 200 ms after
-  // our own transmit as busy. On a two-zone bus (~21 frames/s) this took unanswered SAM reads from 10% to 5% and
-  // made zone 2's comfort row (400B) readable at all; on a quieter single-zone bus it shows as the ~0.75% CRC-fail
-  // rate in SAM mode vs ~0.01% listen-only.
-  const uint32_t frame_idle_ms = diag_last_frame_time_ ? (now - diag_last_frame_time_) : 1000;
   const uint32_t since_own_tx_ms = last_own_tx_ms_ ? (now - last_own_tx_ms_) : 1000;
-  const uint32_t bus_idle_ms = (since_own_tx_ms < 200) ? 0 : frame_idle_ms;
+
+  // Poll thermostat every 3 seconds.
+  // Gap: 50ms of silence since the last byte RECEIVED (byte-boundary). The
+  // thermostat's own inter-frame gap is 10-30ms, so 50ms of byte silence
+  // means the bus is genuinely idle between transactions. Byte-boundary is
+  // load-bearing (issue #56): a frame-boundary measure (time since the last
+  // COMPLETE frame) is blind to a frame still in progress. A 252-byte 0x57
+  // status reply (8 header + 0xF2 payload + 2 CRC) is 66ms on the wire at
+  // 38400 baud; through those 66ms the frame-boundary gate keeps reporting
+  // the stale inter-frame gap, passes the >50ms test, and transmits
+  // mid-frame - captured as repeated 252-byte CRC failures on a 290VAN/0x57
+  // rig, dropping to zero once idle was measured from the last byte. Any
+  // received byte refreshes last_rx_time_, including boundary junk dropped
+  // at ingress (a driver-enable edge glitch is still bus activity).
+  // (The 200ms below is a different thing: a post-transmit busy window, not
+  // an idle threshold.) Our own transmit never comes back through the
+  // receiver (half-duplex, RX muted during TX), so idle measured from the
+  // last byte HEARD keeps growing after we send. A second read could then go
+  // out one loop iteration (~10 ms) after the first, exactly when the
+  // thermostat's reply (~11 ms typical, ~110 ms when it defers past its own
+  // poll) is on the wire; both are lost and a CRC-failed fragment is left
+  // behind. Count the 200 ms after our own transmit as busy. On a two-zone
+  // bus (~21 frames/s) this took unanswered SAM reads from 10% to 5% and
+  // made zone 2's comfort row (400B) readable at all; on a quieter
+  // single-zone bus it shows as the ~0.75% CRC-fail rate in SAM mode vs
+  // ~0.01% listen-only.
+  const uint32_t bus_idle_ms =
+      (since_own_tx_ms < 200) ? 0 : (last_rx_time_ ? (now - last_rx_time_) : 1000);
 
   // Install-discovery holdoff (issue #8). Pause all five initiated-TX paths
   // while the thermostat runs discovery/commissioning (ADDR_DISCOVERY 0x1F
@@ -595,12 +608,15 @@ void InfinitESPComponent::try_parse_buffer_() {
       }
       diag_last_frame_time_ = frame_now;
 
-      if (validate_frame_()) {
+      if (validate_frame_(expected_size)) {
         diag_frames_parsed_++;
-        dispatch_frame_();
-        rx_buffer_.clear();
-        // A resync earlier in this same call may have surfaced a complete
-        // second frame; keep parsing what is buffered.
+        dispatch_frame_(expected_size);
+        // Consume only this frame, not the whole buffer: after a resync
+        // (or a poisoned-len recovery) the buffer can hold this frame plus
+        // the leading bytes of the next one, and a backlog would otherwise
+        // be discarded frame-by-frame (issue #56). The loop re-parses
+        // whatever remains buffered.
+        rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + expected_size);
         continue;
       }
     }
@@ -653,17 +669,21 @@ size_t InfinitESPComponent::find_frame_sync_(size_t from) {
   return rx_buffer_.size();
 }
 
-bool InfinitESPComponent::validate_frame_() {
-  if (rx_buffer_.size() < FRAME_MIN_SIZE)
+bool InfinitESPComponent::validate_frame_(uint16_t frame_len) {
+  // frame_len is derived from the frame's own len byte (rx_buffer_[4]) by
+  // the caller, NOT from the buffer size: with a backlog (this frame plus
+  // the start of the next) the buffer tail sits inside the NEXT frame, and
+  // a size-derived CRC read fails every valid frame in the backlog
+  // (issue #56).
+  if (frame_len < FRAME_MIN_SIZE || rx_buffer_.size() < frame_len)
     return false;
 
-  uint16_t frame_len = rx_buffer_.size();
   uint16_t computed = compute_crc_(rx_buffer_.data(), frame_len - 2);
   uint16_t received = rx_buffer_[frame_len - 2] | (rx_buffer_[frame_len - 1] << 8);
   return computed == received;
 }
 
-void InfinitESPComponent::dispatch_frame_() {
+void InfinitESPComponent::dispatch_frame_(uint16_t frame_len) {
   // Parse frame fields
   current_frame_.dst = rx_buffer_[0];
   current_frame_.dst_bus = rx_buffer_[1];
@@ -673,8 +693,12 @@ void InfinitESPComponent::dispatch_frame_() {
   current_frame_.pid = rx_buffer_[5];
   current_frame_.ext = rx_buffer_[6];
   current_frame_.func = rx_buffer_[7];
+  // Bounded by frame_len (from the len byte), never rx_buffer_.end(): with
+  // a backlog, end() lands inside the NEXT frame and splices its leading
+  // bytes into this frame's payload - a CRC-passing frame with a corrupt
+  // payload (issue #56).
   current_frame_.payload.assign(rx_buffer_.begin() + FRAME_HEADER_SIZE,
-                                rx_buffer_.end() - FRAME_CRC_SIZE);
+                                rx_buffer_.begin() + frame_len - FRAME_CRC_SIZE);
 
   // Log all RX frames to traffic capture. Before the handlers: a handler may
   // synchronously transmit a reply (transmit_frame_ blocks in flush() for its
