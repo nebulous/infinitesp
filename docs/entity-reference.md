@@ -16,6 +16,8 @@ for variant types); opt-out flags on the climate block remove generated entities
 | `sam_address` | `0x92` | Bus address for SAM emulation. `0` disables (see [passive mode](#passive-mode-sam_address-0)). |
 | `address` | - | Deprecated alias for `sam_address`. |
 | `zone_controller_address` | `0` | `0x60` emulates a zone controller. `0` passively monitors a real one. |
+| `nim_address` | `0` | `0x80` emulates a NIM (experimental). `0` passively monitors a real one. See [NIM](#nim-nim_address--nim). |
+| `nim` | - | Defrost input and hardware-control triggers for NIM emulation or passive monitoring. See [NIM](#nim-nim_address--nim). |
 | `idu_address` | `0` | Pin the indoor unit to an exact bus node instead of device-class matching. |
 | `odu_address` | `0` | Pin the outdoor unit to an exact bus node instead of device-class matching. |
 | `temperature_unit` | `auto` | `auto` (read from the bus), `F`, or `C`. See [temperature unit detection](#temperature-unit-detection). |
@@ -78,6 +80,41 @@ Sensor injection requires emulation. With a passive (physical) zone controller,
 the real hardware owns temperature reporting and these blocks have no effect.
 If `temperature_sensor` is omitted for a zone, InfinitESP reports whatever the
 bus last reported for that zone.
+
+### NIM (`nim_address` / `nim:`)
+
+Experimental. A Network Interface Module (NIM, SYSTXCCNIM01) bridges one
+non-communicating appliance onto the ABCD bus: a 1- or 2-stage heat pump in a
+dual-fuel system, a two-speed R-22 outdoor unit, or an HRV/ERV. InfinitESP can
+emulate it at `0x80` or passively monitor a real one.
+
+`nim_address: 0x80` enables emulation. The thermostat polls the emulated NIM on
+its ~10 s cycle and sends a 12-byte demand write (`0305`): byte 0 is the heat
+stage (0 or 1), byte 2 the cool stage (0, 1, or 2). InfinitESP mirrors the
+demand into the status register it serves (`0316`), matching the real module,
+which reports the demand rather than equipment feedback. Commissioning has
+been verified on an Infinity Touch. No other control model has been tested.
+
+`nim_address: 0` (default) is passive. Class-8 traffic is observed and stored
+under the real address, and the triggers below fire from the observed frames.
+The firmware never transmits toward a NIM in this mode; the passive-mode
+table-name discovery probe skips class-8 addresses.
+
+The `nim:` block configures the hardware-control surface in both modes:
+
+| Option | Description |
+|---|---|
+| `defrost_sensor` | Binary sensor carrying the heat pump's defrost signal. Sets `0316` byte 14, which the thermostat polls. Emulation only; passive mode reads defrost from the observed `0316` replies. |
+| `on_heat_stage` | Fires with the new heat stage (`0`/`1`) when it changes. |
+| `on_cool_stage` | Fires with the new cool stage (`0`/`1`/`2`) when it changes. |
+| `on_defrost` | Fires with the new defrost state (`true`/`false`) when it changes. |
+
+Triggers fire on change only. The thermostat re-sends the demand every cycle
+(~10 s), so per-write firing would repeat the same value indefinitely. In
+passive mode the demand write and the status reply carry the same values;
+whichever arrives first after a change fires the trigger.
+
+Relay wiring examples: [Network Interface Module](../README.md#network-interface-module-experimental).
 
 ### Temperature unit detection
 

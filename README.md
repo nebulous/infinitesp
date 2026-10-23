@@ -36,7 +36,7 @@ The author's setup uses the **[Waveshare ESP32-S3-Relay-6CH](https://amzn.to/4mX
 
 [<img src="https://www.waveshare.com/w/upload/thumb/e/ee/ESP32-S3-Relay-6CH.jpg/1200px-ESP32-S3-Relay-6CH.jpg" width="400" />](https://amzn.to/4mX6tLp)
 
-The Waveshare board was chosen as a reference design for its case, onboard RS485 interface, and 6 relay outputs. The relays open the door to emulating other devices beyond the SAM, notably the NIM (Network Interface Module, SYSTXCCNIM01). The Damper Control Module (SYSTXCC4ZC01) is already part of InfinitESP. Damper actuation works through a trigger callback: each zone's cover fires `on_change` whenever the thermostat commands a new damper position, handing the new position to whatever relay or motor driver your hardware uses (see the [Covers](#covers) examples). When emulating the zone controller, each zone also takes a temperature sensor so the thermostat sees a room reading, falling back to the zone 1 temperature when no sensor is configured (see [Zone Controller](#zone-controller-optional)). The relay GPIOs are exposed in the example YAML config but are not part of the core SAM emulation. The firmware is hardware-agnostic. It just needs a `uart::UARTComponent`. The RS485 transceiver, ESP32 variant, and relay hardware are all irrelevant to the protocol engine.
+The Waveshare board was chosen as a reference design for its case, onboard RS485 interface, and 6 relay outputs. The relays open the door to emulating other devices beyond the SAM, notably the NIM (Network Interface Module, SYSTXCCNIM01), whose emulation is now included ([experimental](#network-interface-module-experimental)). The Damper Control Module (SYSTXCC4ZC01) is already part of InfinitESP. Damper actuation works through a trigger callback: each zone's cover fires `on_change` whenever the thermostat commands a new damper position, handing the new position to whatever relay or motor driver your hardware uses (see the [Covers](#covers) examples). When emulating the zone controller, each zone also takes a temperature sensor so the thermostat sees a room reading, falling back to the zone 1 temperature when no sensor is configured (see [Zone Controller](#zone-controller-optional)). The relay GPIOs are exposed in the example YAML config but are not part of the core SAM emulation. The firmware is hardware-agnostic. It just needs a `uart::UARTComponent`. The RS485 transceiver, ESP32 variant, and relay hardware are all irrelevant to the protocol engine.
 Generic ESP32 dev boards with a separate RS485 transceiver module should also work. Community reports of boards and transceivers working in the field are collected on the wiki's [Known-Working Hardware](https://github.com/nebulous/infinitesp/wiki/Known-Working-Hardware) page.
 
 > **Note:** The Waveshare board's RS485 auto-direction circuit has a time constant too short for reliable operation at 38400 baud. The circuit assumes the UART idle state (HIGH) means "stop transmitting," so runs of consecutive `1` bits cause it to stop driving the bus mid-byte. On an insufficiently-biased bus, the line voltage collapses and the receiver reads garbage.
@@ -72,7 +72,7 @@ Carrier ABCD bus (RS485, 38400 baud, 8N1)
     └── 0x92  InfinitESP (SAM emulator)
 ```
 
-InfinitESP registers as address `0x92`, the same address used by physical SAM modules and other SAM emulators. **Only one device can be at this address on the bus.** If you have a physical SAM installed, disconnect or remove it. Likewise, do not run InfinitESP alongside infinitude (if its SAM emulation is enabled) or infinitive, which also occupy `0x92`. The same single-occupant rule applies to the zone-controller address `0x60`: if you already have a physical Damper Control Module on the bus, do **not** also enable `zone_controller_address: 0x60`. Either let InfinitESP passively monitor the real one, or emulate it after removing the hardware.
+InfinitESP registers as address `0x92`, the same address used by physical SAM modules and other SAM emulators. **Only one device can be at this address on the bus.** If you have a physical SAM installed, disconnect or remove it. Likewise, do not run InfinitESP alongside infinitude (if its SAM emulation is enabled) or infinitive, which also occupy `0x92`. The same single-occupant rule applies to the zone-controller address `0x60`: if you already have a physical Damper Control Module on the bus, do **not** also enable `zone_controller_address: 0x60`. Either let InfinitESP passively monitor the real one, or emulate it after removing the hardware. The NIM address `0x80` carries the same rule when `nim_address` emulation is enabled (with a physical NIM on the bus, leave it unset and passively monitor instead).
 
 > **Recommissioning is required when emulating a SAM or zone controller.** The thermostat does not recognize a newly emulated device until you run its commissioning process. This is the same dealer setup performed after installing physical hardware: the thermostat scans the bus, registers the device, and (for a zone controller) defines its zones. Run it from the thermostat's advanced setup menu. Until commissioning completes, the thermostat ignores the emulated device.
 
@@ -254,6 +254,45 @@ infinitesp:
 **Set `sensor_unit` explicitly for every zone.** It declares the unit your sensor *publishes*, not the thermostat's display setting; a wrong guess causes silent mis-conversion. After configuring, check the zone temperatures on your thermostat and confirm they match the room: out-of-band readings fall back to the zone-1 ambient value, which looks plausible without being that zone's reading.
 
 Systems with more than four zones use a second controller at `0x61` (`zc_zone_5` through `zc_zone_8`). The LAT/HPT thermistor ports, the 40-99 °F sanity band, staleness behavior, and the secondary-controller mapping: [entity reference](docs/entity-reference.md#zone-controller-sensor-feeds).
+
+### Network Interface Module (experimental)
+
+Carrier's Network Interface Module (NIM, SYSTXCCNIM01) bridges one non-communicating appliance onto the ABCD bus: a 1- or 2-stage heat pump in a dual-fuel system, a two-speed R-22 outdoor unit, or an HRV/ERV. InfinitESP can emulate it at `0x80`, turning the thermostat's demand writes into triggers wired to your relay hardware. It can also passively monitor a real NIM.
+
+**Emulation is experimental.** The protocol shapes match real SYSTXCCNIM01 captures across two control generations, and commissioning succeeded on an Infinity Touch. No other control model has been tested.
+
+```yaml
+infinitesp:
+  nim_address: 0x80
+  nim:
+    defrost_sensor: hp_defrost       # binary_sensor on the HP defrost-board signal
+    on_heat_stage:                   # x: 0 = no call, 1 = heat call
+      then:
+        - if:
+            condition:
+              lambda: 'return x > 0;'
+            then:
+              - switch.turn_on: hp_w1
+            else:
+              - switch.turn_off: hp_w1
+    on_cool_stage:                   # x: 0 = no call, 1 or 2 = compressor stage
+      then:
+        - if:
+            condition:
+              lambda: 'return x > 0;'
+            then:
+              - switch.turn_on: hp_y1
+            else:
+              - switch.turn_off: hp_y1
+```
+
+- Triggers fire on change only. The thermostat re-sends its demand every cycle (~10 s), so firing per write would repeat the same value indefinitely.
+- `defrost_sensor` feeds the heat pump's defrost signal into the status register the thermostat polls (`0316` byte 14). Emulation only; in passive mode defrost arrives from the observed replies.
+- With `nim_address` unset (the default), the `nim:` triggers observe a **real** NIM. Demand writes and status replies land in the register store under `0x80` and fire the triggers on change. InfinitESP never transmits toward a NIM in this mode, including the passive-mode discovery probe, which skips class-8 addresses.
+- One appliance per NIM. Carrier documents no second-NIM configuration, and captured INSTALL scans never probe a second NIM slot.
+- The emulated NIM needs commissioning like any other device (see the [recommissioning note](#bus-architecture)). The INSTALL scan probes `0x80` with a presence read, then interrogates the registers.
+
+Map relays to the NIM's low-voltage outputs the way Carrier wires them (NIM01-1SI install manual): `W2`, `O`, `Y/Y1`, `R`, plus `Y2` for two-speed appliances, with `C` common.
 
 ### Status LED
 
@@ -576,7 +615,7 @@ To help diagnose the problem, include any of the following you can gather:
 
 ### 📣 Calling all users:
 
-If you have hardware such as a Carrier NIM (SYSTXCCNIM01), ~Damper Control Module (SYSTXCC4ZC01)~(implemented, but new logs are always good validation), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Understanding and emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be valuable. A `REPORT?` snapshot helps too, but the [JSONL capture stream](docs/bus-capture.md) is best for emulation work since it shows the timing and framing that static register dumps miss. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
+If you have hardware such as a ~Carrier NIM (SYSTXCCNIM01)~ (emulation implemented from three captures of the same physical module; logs from a different NIM or control generation are still valuable), ~Damper Control Module (SYSTXCC4ZC01)~ (implemented, but new logs are always good validation), or any other interesting communicating hardware (remote room sensors, zone controllers, etc.) on your ABCD bus and would be willing to capture raw bus traffic, please open an issue. Understanding and emulating these devices requires protocol traces that can only come from real hardware. Even a few minutes of logs would be valuable. A `REPORT?` snapshot helps too, but the [JSONL capture stream](docs/bus-capture.md) is best for emulation work since it shows the timing and framing that static register dumps miss. Share captures via a [GitHub discussion on the infinitude project](https://github.com/nebulous/infinitude/discussions) or by contacting the author directly.
 
 ## Project Structure
 
