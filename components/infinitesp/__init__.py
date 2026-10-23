@@ -209,10 +209,9 @@ def _validate_nim_config(config):
         raise cv.Invalid(f"nim_address 0x{nim:02X} is {fixed[nim]}")
 
     _LOGGER.warning(
-        "nim_address 0x%02X: NIM emulation is an experimental work in progress. "
-        "The steady-state protocol is proven from a real SYSTXCCNIM01 capture, but "
-        "cold-commissioning against a real thermostat has never been observed — the "
-        "thermostat may not register the emulated device", nim
+        "nim_address 0x%02X: NIM emulation is experimental. Protocol shapes "
+        "match real SYSTXCCNIM01 captures and commissioning succeeded on an "
+        "Infinity Touch, but no other control model has been tested", nim
     )
     return config
 
