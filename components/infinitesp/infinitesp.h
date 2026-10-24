@@ -406,7 +406,7 @@ static const uint8_t REG3B06_SIZE = 52;
 //
 // Table 0x03 RLCSMAIN:
 static const uint16_t REG_IDU_STATUS = 0x0306;     // Blower RPM, operating info (10 bytes)
-static const uint16_t REG_IDU_CONFIG = 0x0316;      // Heat stage [0], airflow CFM [4..5] (14 bytes)
+static const uint16_t REG_IDU_CONFIG = 0x0316;      // Heat stage [0], airflow CFM [4..5], static pressure [7..8] (14 bytes)
 static const uint16_t REG_IDU_AIRFLOW_CMD = 0x0305; // tstat->IDU blower CFM command, BE16 [4..5], write-only
 static const uint16_t REG_IDU_CYCLES = 0x0310;     // Cycle counters (4-byte key-value entries)
 static const uint16_t REG_IDU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-value entries)
@@ -1035,6 +1035,15 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   static float idu_airflow_cfm_(const std::vector<uint8_t> &data) {
     if (data.size() < 6) return NAN;
     return (float) (((uint16_t) data[4] << 8) | data[5]);
+  }
+  // IDU register 0316 (REG_IDU_CONFIG): duct static pressure u16 BE at
+  // [7..8], /65536 → inH2O (full-scale 1.00). Equipment-native value; the
+  // thermostat °F/°C flag never reformats it. 0.000 at blower-off is
+  // plausible-correct (no airflow → no duct static); no sentinel observed
+  // on furnace or fan-coil families.
+  static float idu_static_pressure_(const std::vector<uint8_t> &data) {
+    if (data.size() < 9) return NAN;
+    return (float) (((uint16_t) data[7] << 8) | data[8]) / 65536.0f;
   }
   // IDU register 0316: electric heat present, data[0] & 0x03
   static bool idu_electric_heat_(const std::vector<uint8_t> &data) {

@@ -54,6 +54,7 @@ SYSTEM_CORE = [
     ("sensor", "outdoor_temperature", "Outdoor Temperature"),
     ("sensor", "blower_rpm", "Blower RPM"),
     ("sensor", "airflow_cfm", "Airflow CFM"),
+    ("sensor", "idu_static_pressure", "IDU Static Pressure"),
     ("sensor", "idu_heat_stage", "IDU Heat Stage"),
     ("sensor", "vacation_min_temp", "Vacation Min Temp"),
     ("sensor", "vacation_max_temp", "Vacation Max Temp"),

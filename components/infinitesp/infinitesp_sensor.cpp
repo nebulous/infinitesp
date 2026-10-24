@@ -226,6 +226,18 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
+  // Duct static pressure from register 0316 [7..8]: BE16 /65536 → inH2O.
+  // Class-4 gate above delivers only the IDU's 0316 — the emulated NIM's
+  // mirror (class 8) never reaches this branch.
+  if (register_key == REG_IDU_CONFIG && sensor_type_ == "idu_static_pressure") {
+    auto *data = parent_->get_register(device_addr, REG_IDU_CONFIG);
+    if (data) {
+      float sp = parent_->idu_static_pressure_(*data);
+      if (!std::isnan(sp))
+        value = sp;
+    }
+  }
+
   // IDU heat stage from register 0316 byte 0: 0 off, 1/2/3 low/med/hi.
   // Source-blind (gas burners on furnace gear, elements on fan-coil); the
   // heat_source text sensor carries the interpretation, this carries the fact.

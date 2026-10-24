@@ -51,6 +51,13 @@ SENSOR_TYPES = {
     # IDU 0316[0]: heat stage 0-3, source-blind (gas on furnace gear,
     # elements on fan-coil). heat_source text sensor interprets.
     "idu_heat_stage": {"key": "idu_heat_stage", "bus_class": 4},
+    # IDU register 0316 [7..8]: duct static pressure, BE16 / 65536 → inH₂O
+    # (full-scale 1.00). Live on both our 58CVA110 furnace and the FE5B fan
+    # coil family (#56); same decode in Infinitive. Native value — the
+    # thermostat °F/°C flag never reformats it. Unit string must carry the
+    # Unicode subscript (HA UnitOfPressure.INH2O = "inH₂O"); ASCII "inH2O"
+    # fails PressureConverter matching.
+    "idu_static_pressure": {"key": "idu_static_pressure", "unit": "inH₂O", "device_class": DEVICE_CLASS_PRESSURE, "bus_class": 4, "accuracy_decimals": 3},
     # ODU sensors — device class 5
     # bare = actual (measured) RPM [2..3] (the original `compressor_rpm` read
     # [0..1] = target; re-pointed to actual). target_compressor_rpm [0..1] is
