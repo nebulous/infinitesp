@@ -16,7 +16,7 @@ static const uint8_t POLL_REGS[][2] = {
     {0x3B, 0x02},  // system state: temps, mode, humidity
     {0x3B, 0x03},  // zone settings: setpoints, fan, hold
 };
-static const uint8_t POLL_REG_COUNT = 2;
+static const uint8_t POLL_REG_COUNT = sizeof(POLL_REGS) / sizeof(POLL_REGS[0]);
 
 // Slow-poll thermostat registers, polled less frequently than the 3B02/3B03
 // fast poll. Mix of the device info block (0x0104) and thermostat-internal
@@ -43,7 +43,8 @@ static const uint8_t SLOW_POLL_REGS[][2] = {
     {0x46, 0x09},  // Cloud: host, device IP
     {0x46, 0x0A},  // dealer info: name, brand, URL
 };
-static const uint8_t SLOW_POLL_REG_COUNT = 8;
+static const uint8_t SLOW_POLL_REG_COUNT =
+    sizeof(SLOW_POLL_REGS) / sizeof(SLOW_POLL_REGS[0]);  // derived: a row can't orphan the tail (issue #58 — 460A sat unpollled for 8 days)
 static const uint32_t SLOW_POLL_INTERVAL_MS = 31000;  // poll every 31s (prime, avoids beating with other timers)
 
 // ODU slow-poll union set: registers consumed by curated odu_* sensors that at
@@ -54,7 +55,7 @@ static const uint32_t SLOW_POLL_INTERVAL_MS = 31000;  // poll every 31s (prime, 
 // class-5 device. Variable-speed units refuse the 3E entries with FUNC 0x15
 // (probed live on a 24VNA9); refusals are blacklisted for the session.
 static const uint16_t ODU_SLOW_POLL_REGS[] = {0x0304, 0x3E01, 0x3E02, 0x3E08};
-static const uint8_t ODU_SLOW_POLL_REG_COUNT = 4;
+static const uint8_t ODU_SLOW_POLL_REG_COUNT = sizeof(ODU_SLOW_POLL_REGS) / sizeof(ODU_SLOW_POLL_REGS[0]);
 static const uint32_t ODU_SLOW_POLL_INTERVAL_MS = 31000;
 // Table-name discovery: probe one observed (device, table) 0xNN01 per cycle.
 // Conservative cadence to stay off the thermostat's bus schedule.

@@ -263,7 +263,7 @@ corrupt them.
 | `manufacture_date` | - | one per class | Thermostat (bare), IDU, ODU. See matching rules below. |
 | `version` | - | diagnostic | Firmware version. |
 | `clock_sync` | - | diagnostic | Outcome of the last manual clock sync. See [thermostat clock](#thermostat-clock). |
-| `tstat_ssid`, `tstat_hostname`, `tstat_wifi_mac`, `tstat_cloud_host`, `tstat_proxy_server`, `tstat_dealer_name`, `tstat_dealer_brand`, `tstat_dealer_url` | - | diagnostic | |
+| `tstat_ssid`, `tstat_hostname`, `tstat_wifi_mac`, `tstat_cloud_host`, `tstat_proxy_server`, `tstat_dealer_name`, `tstat_dealer_brand`, `tstat_dealer_url` | - | diagnostic | Dealer fields decode name/brand/URL (validated live on an ITC Touch, 120 B row). One BBECC01 install reported the dealer phone under Brand — either installer data entry or the 222 B family layout differs. |
 
 ### `manufacture_date` matching
 
