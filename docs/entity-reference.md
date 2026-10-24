@@ -192,7 +192,7 @@ The 3E two-stage ODU family does not serve most of these.
 | `vacation_max_temp` | - | °C | core | |
 | `blower_rpm` | - | RPM | core | IDU. |
 | `airflow_cfm` | - | ft³/min | core | IDU. |
-| `idu_static_pressure` | - | inH₂O | core | IDU 0316 [7..8], BE16 /65536. |
+| `idu_static_pressure` | - | inH₂O | core | IDU 0316 [7..8], BE16 /65536. HA converts to your unit system's pressure unit by default (psi on US customary); pick inH₂O in the entity's settings if you prefer. |
 | `compressor_rpm` | - | RPM | conditional | Actual RPM. |
 | `target_compressor_rpm` | - | RPM | conditional | |
 | `odu_requested_cfm` | - | ft³/min | conditional | ODU 0608. `compressor_frequency` is the deprecated alias. |
