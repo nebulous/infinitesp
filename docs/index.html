@@ -210,6 +210,7 @@
 
     /* ---------- Steps ---------- */
     .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; counter-reset: step; }
+    .steps.four { grid-template-columns: repeat(2, 1fr); }
     .step { position: relative; padding: 34px 28px; background: var(--bg-soft); border-radius: var(--radius); border: 1px solid var(--line-soft); }
     .step .num {
       counter-increment: step;
@@ -274,7 +275,7 @@
     .hw-list p { font-size: .94rem; color: var(--ink-soft); }
 
     /* ---------- Compat ---------- */
-    .compat-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; }
+    .compat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }
     .compat-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 24px; }
     .compat-card h3 { font-size: 1.05rem; margin-bottom: 6px; display: flex; align-items: center; gap: 9px; }
     .compat-card h3 svg { width: 18px; height: 18px; color: var(--cool); }
@@ -363,7 +364,7 @@
       .nav-links a { width: 100%; padding: 12px 0; border-top: 1px solid rgba(255,255,255,.07); }
       .nav-cta { display: none; }
       .nav-toggle { display: inline-flex; }
-      .features-grid, .entity-grid, .steps, .compat-grid, .qa-grid, .venn-cards { grid-template-columns: 1fr; }
+      .features-grid, .entity-grid, .steps, .steps.four, .compat-grid, .qa-grid, .venn-cards { grid-template-columns: 1fr; }
       .cta-band, .realtalk { padding: 40px 26px; }
       footer.site .ftop { grid-template-columns: 1fr; gap: 28px; }
       .hero { padding: 60px 0 80px; }
@@ -584,6 +585,11 @@
         <p>Operates in one of two modes: passively observes a Damper Control Module on your bus, or emulates one. The emulation mode is for systems without a Damper Control Module installed.</p>
         <div class="models"><span>emulated</span></div>
       </div>
+      <div class="compat-card reveal">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5M9 17h6a3 3 0 0 0 3-3v-3H6v3a3 3 0 0 0 3 3zM9 8V4M15 8V4"/></svg> Non-communicating appliances</h3>
+        <p>Carrier's Network Interface Module (NIM) bridges one non-communicating appliance onto the ABCD bus: a dual-fuel heat pump, a two-speed outdoor unit, or an ERV. InfinitESP emulates one (experimental) or passively monitors a real one.</p>
+        <div class="models"><span>SYSTXCCNIM01</span><span>emulated</span><span>experimental</span></div>
+      </div>
     </div>
 
     <div class="callout reveal">
@@ -602,7 +608,7 @@
           <a href="https://amzn.to/4mX6tLp" target="_blank" rel="noopener">
             <img src="https://www.waveshare.com/w/upload/thumb/e/ee/ESP32-S3-Relay-6CH.jpg/1200px-ESP32-S3-Relay-6CH.jpg" alt="Waveshare ESP32-S3-Relay-6CH board" loading="lazy" />
           </a>
-          <div class="cap">Waveshare ESP32-S3-Relay-6CH is a board the author has used. It's overkill for monitoring and SAM emulation, and its RS-485 interface has some caveats. Any ESP32 with an RS485 port could work. Leave a comment in GitHub with what you use.<a href="https://amzn.to/4mX6tLp" target="_blank" rel="noopener">View on Amazon</a><a href="#affiliate-disclosure" style="font-size:.7em;vertical-align:super;text-decoration:none;margin-left:2px" aria-label="Affiliate disclosure">†</a></div>
+          <div class="cap">Waveshare ESP32-S3-Relay-6CH is a board the author has used. It's overkill for monitoring and SAM emulation, but the relays can drive dampers or an emulated NIM, and its RS-485 interface has some caveats. Any ESP32 with an RS485 port could work. Leave a comment in GitHub with what you use.<a href="https://amzn.to/4mX6tLp" target="_blank" rel="noopener">View on Amazon</a><a href="#affiliate-disclosure" style="font-size:.7em;vertical-align:super;text-decoration:none;margin-left:2px" aria-label="Affiliate disclosure">†</a></div>
         </div>
       </div>
 
@@ -638,7 +644,7 @@
       <p class="lead">InfinitESP connects as a device on the RS-485 serial bus.</p>
     </div>
 
-    <div class="steps">
+    <div class="steps four">
       <div class="step reveal">
         <div class="num"></div>
         <h3>Listening</h3>
@@ -652,7 +658,12 @@
       <div class="step reveal">
         <div class="num"></div>
         <h3>Zone-controller emulation</h3>
-        <p>InfinitESP can additionally emulate a Damper control module. Home Assistant sensors can report to the HVAC system as zone temperatures, and damper commands from the serial bus can trigger Home Assistant actuators. Optional, and the most involved of the three.</p>
+        <p>InfinitESP can additionally emulate a Damper control module. Home Assistant sensors can report to the HVAC system as zone temperatures, and damper commands from the serial bus can trigger Home Assistant actuators. Optional, and the most involved.</p>
+      </div>
+      <div class="step reveal">
+        <div class="num"></div>
+        <h3>NIM emulation</h3>
+        <p>InfinitESP can also emulate a Carrier Network Interface Module, the accessory that bridges a non-communicating appliance onto the bus: a heat pump in a dual-fuel system, a two-speed outdoor unit, or an ERV. Thermostat demand writes fire triggers wired to your relays. Optional and experimental.</p>
       </div>
     </div>
   </div>
