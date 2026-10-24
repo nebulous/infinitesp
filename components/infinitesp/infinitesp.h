@@ -358,19 +358,25 @@ static const uint8_t REG3B04_FLAG_MAX_HUM = 0x20;     // data[9]
 static const uint8_t REG3B04_FLAG_FAN = 0x40;         // data[10]
 
 // Register 3B05 (REG_SAM_ACCESSORIES) layout — accessory life & reminders (11 bytes)
-// NOTE on provenance: inherited from Infinitude's CarBus::SAM 3B05 parser (our
-// own RE, not a Carrier source). Which byte maps to which accessory (filter/UV/
-// humidifier/ventilator, life vs. reminder) is unconfirmed vs. real hardware.
-// Values are presumed to be consumption % (0 = new/reset, 100 = replace); the
-// ASCII `FILTRLVL!0` reset presumably maps to writing 0 here. byte 1 is the
-// shared metric_units flag (the one offset with live-test backing).
+// NOTE on provenance: ordering validated 2026-10-24 against a live capture
+// from lurgh's install (real SAM polls his tstat every ~6 s; frame
+// 03 00 00 1E 00 00 01 00 00 00 00 = filter 30% used + filter reminder ON,
+// the two fields he vouches for), which discriminated between this layout
+// (blhoward2's, #54) and the older Infinitude-inherited ordering (ventilator
+// at 6, reminders at 7-10 — decodes his frame as "ventilator 1%" on a system
+// with no ventilator). Unused accessories read 0x00 on his tstat; 0xFF means
+// not configured (physical-SAM probe 2026-06, all accessory bytes FF).
+// Values are consumption % (0 = new/reset, 100 = replace); the ASCII
+// `FILTRLVL!0` reset presumably maps to writing 0 here. byte 1 is the
+// shared metric_units flag (live-tested). [0] and [2] are undecoded flags
+// (seen: 0x00/0x03 at [0], 0x00/0x80 at [2]).
 static const uint8_t REG3B05_FILTER = 3;          // filter life used %
 static const uint8_t REG3B05_UV = 4;              // UV lamp life used %
 static const uint8_t REG3B05_HUMIDIFIER = 5;      // humidifier pad life used %
-static const uint8_t REG3B05_VENTILATOR = 6;      // ventilator filter life used %
-static const uint8_t REG3B05_FILTER_RMD = 7;      // 0=off, 1=on
-static const uint8_t REG3B05_UV_RMD = 8;
-static const uint8_t REG3B05_HUMIDIFIER_RMD = 9;
+static const uint8_t REG3B05_FILTER_RMD = 6;      // 0=off, 1=on
+static const uint8_t REG3B05_UV_RMD = 7;
+static const uint8_t REG3B05_HUMIDIFIER_RMD = 8;
+static const uint8_t REG3B05_VENTILATOR = 9;      // ventilator filter life used %
 static const uint8_t REG3B05_VENTILATOR_RMD = 10;
 static const uint8_t REG3B05_SIZE = 11;
 

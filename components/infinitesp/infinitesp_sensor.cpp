@@ -226,6 +226,30 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
     }
   }
 
+  // Accessory life used % from tstat 3B05 (0 = new, 100 = replace).
+  // 0xFF = accessory not configured -> publish nothing (unknown).
+  // Offsets per the REG3B05_* constants; the register is tstat-served and
+  // mirrored to the SAM address in every acquisition mode.
+  if (register_key == REG_SAM_ACCESSORIES &&
+      (sensor_type_ == "filter_level" || sensor_type_ == "uv_lamp_level" ||
+       sensor_type_ == "humidifier_pad_level" || sensor_type_ == "ventilator_filter_level")) {
+    uint8_t off = (sensor_type_ == "filter_level") ? REG3B05_FILTER :
+                  (sensor_type_ == "uv_lamp_level") ? REG3B05_UV :
+                  (sensor_type_ == "humidifier_pad_level") ? REG3B05_HUMIDIFIER : REG3B05_VENTILATOR;
+    auto *data = parent_->get_register(device_addr, REG_SAM_ACCESSORIES);
+    if (data && data->size() > off) {
+      uint8_t raw = (*data)[off];
+      if (raw != 0xFF) {
+        value = (float) raw;
+      } else {
+        // Accessory not configured (0xFF sentinel): explicit unknown, not a
+        // stale previous value.
+        publish_state(NAN);
+        return;
+      }
+    }
+  }
+
   // Duct static pressure from register 0316 [7..8]: BE16 /65536 → inH2O.
   // Class-4 gate above delivers only the IDU's 0316 — the emulated NIM's
   // mirror (class 8) never reaches this branch.

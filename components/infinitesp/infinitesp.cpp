@@ -30,6 +30,12 @@ static const uint8_t SLOW_POLL_REGS[][2] = {
                     // once the entities are wired to it
     {0x40, 0x12},  // vacation settings (min/max temp, fan)
     {0x42, 0x02},  // fault history (10 entries × 7 bytes)
+    {0x3B, 0x05},  // accessories: filter/UV/humidifier/ventilator life % +
+                    // reminders. The tstat owns this table and serves it to a
+                    // SAM read (real SAMs poll it ~6 s; life-% needs far less),
+                    // so all SAM modes acquire it via the rotation. Fixes
+                    // FILTRLVL?=0 in 0x93/emulated configs (#54). Passive
+                    // installs keep the metric-units poll / snooped traffic.
     {0x3D, 0x02},  // zone temps at 1/16 °F (issue #53; UIZ-line serves, ITC
                     // line refuses by silence -> backoff drops it; consumers
                     // keep the 3B02 fallback either way)
@@ -37,7 +43,7 @@ static const uint8_t SLOW_POLL_REGS[][2] = {
     {0x46, 0x09},  // Cloud: host, device IP
     {0x46, 0x0A},  // dealer info: name, brand, URL
 };
-static const uint8_t SLOW_POLL_REG_COUNT = 7;
+static const uint8_t SLOW_POLL_REG_COUNT = 8;
 static const uint32_t SLOW_POLL_INTERVAL_MS = 31000;  // poll every 31s (prime, avoids beating with other timers)
 
 // ODU slow-poll union set: registers consumed by curated odu_* sensors that at
@@ -1367,9 +1373,11 @@ void InfinitESPComponent::handle_reply_() {
       ESP_LOGI("InfinitESP", "3D02 zone temps served (1/16 F); zone flags: %s", flags_buf);
     }
 
-    // Mirror state/zones registers to SAM's own address so READ requests
-    // to the SAM serve current values instead of stale defaults
-    if (reg_key == REG_SAM_STATE || reg_key == REG_SAM_ZONES) {
+    // Mirror state/zones/accessories registers to SAM's own address so READ
+    // requests to the SAM serve current values instead of stale defaults.
+    // 3B05 (#54): the tstat owns the accessory table; mirroring lets FILTRLVL?
+    // and a tstat READ of our emulated SAM serve the fresh image.
+    if (reg_key == REG_SAM_STATE || reg_key == REG_SAM_ZONES || reg_key == REG_SAM_ACCESSORIES) {
       mirror_to_sam_(reg_key, data);
       // Log time fields from 3B02 for debugging
       if (reg_key == REG_SAM_STATE && data.size() >= REG3B02_MINUTES + 2) {
@@ -1684,9 +1692,18 @@ void InfinitESPComponent::handle_discovery_reply_() {
   // no name below.
   discovery_misses_.erase({current_frame_.src, table});
 
-  // Metric-units poll reply (3B05, sam not emulated)
-  if (reg_key == REG_SAM_ACCESSORIES && temperature_unit_ == TemperatureUnit::AUTO) {
-    handle_metric_units_reply_(current_frame_.src, reg_key, data);
+  // 3B05 (accessories, #54): the tstat owns this table. In a 0x93
+  // (fake-SAM) config the slow-poll reply arrives HERE (dst == our own
+  // address == ADDR_FAKESAM), so mirror it for FILTRLVL?/serving just like
+  // handle_reply_ does; the pure-passive metric poll (sam_address_ 0) skips
+  // the mirror. Notify in both cases so the accessory-level sensors publish
+  // from the 0x20-keyed store in every mode. Not a tabledef — stop here.
+  if (reg_key == REG_SAM_ACCESSORIES) {
+    if (sam_enabled() && current_frame_.dst == sam_address_)
+      mirror_to_sam_(reg_key, data);
+    if (temperature_unit_ == TemperatureUnit::AUTO)
+      handle_metric_units_reply_(current_frame_.src, reg_key, data);
+    notify_entities_(current_frame_.src, reg_key);
     return;
   }
 
@@ -2684,17 +2701,12 @@ void InfinitESPComponent::initialize_defaults_() {
     // not a flat config (see REG3B04_FLAG_* in the header).
     // Vacation config lives in the vacation_* members and is pushed on demand.
 
-    // Register 3B05 - Accessories (11 bytes)
+    // Register 3B05 - Accessories (11 bytes; layout: header comment on the
+    // REG3B05_* constants — life % at 3/4/5/9, reminders at 6/7/8/10). The
+    // seed is replaced by the tstat's own image once the slow poll's 3B05
+    // reply lands (mirror), so these zeros only ever serve pre-first-reply.
     {
       std::vector<uint8_t> data(11, 0);
-      data[3] = 0;   // filter_consumption
-      data[4] = 0;   // uv_consumption
-      data[5] = 0;   // humidifier_consumption
-      data[6] = 0;   // ventilator_consumption
-      data[7] = 0;   // filter_reminders: off
-      data[8] = 0;   // uv_reminders: off
-      data[9] = 0;   // humidifier_reminders: off
-      data[10] = 0;  // ventilator_reminders: off
       store_register_(sam_address_, REG_SAM_ACCESSORIES, data);
     }
 

@@ -190,6 +190,10 @@ The 3E two-stage ODU family does not serve most of these.
 | `outdoor_temperature` | - | °C | core | |
 | `vacation_min_temp` | - | °C | core | |
 | `vacation_max_temp` | - | °C | core | |
+| `filter_level` | - | % | core | Tstat 3B05 life used %. 0xFF → unknown; reminders via SAM ASCII (`FILTRRMD?`). |
+| `uv_lamp_level` | - | % | core | 3B05. |
+| `humidifier_pad_level` | - | % | core | 3B05. |
+| `ventilator_filter_level` | - | % | core | 3B05. |
 | `blower_rpm` | - | RPM | core | IDU. |
 | `airflow_cfm` | - | ft³/min | core | IDU. |
 | `idu_static_pressure` | - | inH₂O | core | IDU 0316 [7..8], BE16 /65536. HA converts to your unit system's pressure unit by default (psi on US customary); pick inH₂O in the entity's settings if you prefer. |

@@ -45,6 +45,14 @@ SENSOR_TYPES = {
     "outdoor_temperature": {"key": "outdoor_temperature", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 0},
     "vacation_min_temp": {"key": "vacation_min_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 0},
     "vacation_max_temp": {"key": "vacation_max_temp", "unit": "\u00b0C", "device_class": DEVICE_CLASS_TEMPERATURE, "bus_class": 0},
+    # Tstat 3B05 accessory life used % (0=new, 100=replace; 0xFF = not
+    # configured -> no publish). Layout validated against a live 2026-10-08
+    # capture from the #54 reporter's install; reminders stay ASCII-only
+    # (FILTRRMD? etc). No device_class: life-% is not humidity.
+    "filter_level": {"key": "filter_level", "unit": "%", "bus_class": 0, "accuracy_decimals": 0},
+    "uv_lamp_level": {"key": "uv_lamp_level", "unit": "%", "bus_class": 0, "accuracy_decimals": 0},
+    "humidifier_pad_level": {"key": "humidifier_pad_level", "unit": "%", "bus_class": 0, "accuracy_decimals": 0},
+    "ventilator_filter_level": {"key": "ventilator_filter_level", "unit": "%", "bus_class": 0, "accuracy_decimals": 0},
     # IDU sensors — device class 4
     "blower_rpm": {"key": "blower_rpm", "unit": "RPM", "bus_class": 4},
     "airflow_cfm": {"key": "airflow_cfm", "unit": "ft³/min", "device_class": DEVICE_CLASS_VOLUME_FLOW_RATE, "bus_class": 4},
