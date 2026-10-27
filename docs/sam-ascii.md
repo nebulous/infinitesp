@@ -93,6 +93,12 @@ Z1HOLD!on            # Permanent hold
 Z1HOLD!off           # Cancel hold, resume schedule
 ```
 
+Every hold write (any surface: this port, the hold-minutes/hold-until
+entities, or the climate preset) is caller-tagged in the logs, and cancels
+additionally log at WARN. The last 16 hold commands are kept in the
+`hold_events` array of `REPORT?` (millis, zone, minutes, source tag), so a
+hold that vanished can be traced to its commanding surface after the fact.
+
 ### Clock verbs
 
 `TIME!` mimics the physical SAM's verb: 12-hour `HH:MM` plus `A`/`P`, leading

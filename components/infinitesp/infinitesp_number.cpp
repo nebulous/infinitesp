@@ -39,7 +39,7 @@ void InfinitESPNumber::control(float value) {
   if (minutes > 0)
     minutes = InfinitESPComponent::normalize_timed_hold(minutes);
   ESP_LOGD("InfinitESP", "Zone %u hold minutes set %u (debounced)", zone_, minutes);
-  parent_->queue_hold_set(zone_, minutes, 1500);
+  parent_->queue_hold_set(zone_, minutes, 1500, "hold-min");
   this->readback_holdoff_ms_ = millis() + 10000;
   this->last_published_ = (float) minutes;
   this->publish_state((float) minutes);

@@ -204,7 +204,7 @@ void InfinitESPComponent::loop() {
     if (pending_hold_sets_[z].active && millis() >= pending_hold_sets_[z].until_ms) {
       pending_hold_sets_[z].active = false;
       ESP_LOGI("InfinitESP", "Zone %u hold set -> %u min", z + 1, pending_hold_sets_[z].minutes);
-      set_zone_hold(z + 1, pending_hold_sets_[z].minutes);
+      set_zone_hold(z + 1, pending_hold_sets_[z].minutes, pending_hold_sets_[z].source);
     }
   }
 
@@ -1975,12 +1975,15 @@ uint8_t InfinitESPComponent::get_zone_active_mask() const {
   return 0;
 }
 
-void InfinitESPComponent::queue_hold_set(uint8_t zone, uint16_t minutes, uint32_t debounce_ms) {
+void InfinitESPComponent::queue_hold_set(uint8_t zone, uint16_t minutes, uint32_t debounce_ms, const char *source) {
   if (zone < 1 || zone > 8)
     return;
   pending_hold_sets_[zone - 1].minutes = minutes;
   pending_hold_sets_[zone - 1].until_ms = millis() + debounce_ms;
   pending_hold_sets_[zone - 1].active = true;
+  strncpy(pending_hold_sets_[zone - 1].source, source ? source : "?",
+          sizeof(pending_hold_sets_[zone - 1].source) - 1);
+  pending_hold_sets_[zone - 1].source[sizeof(pending_hold_sets_[zone - 1].source) - 1] = '\0';
 }
 
 uint16_t InfinitESPComponent::get_zone_hold_duration(uint8_t zone) const {
@@ -2307,11 +2310,26 @@ uint8_t InfinitESPComponent::encode_hold_(uint16_t duration, uint8_t idx,
   return duration > 0 ? (CHANGE_HOLD | CHANGE_OVERRIDE) : CHANGE_HOLD;
 }
 
-void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes) {
+void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes, const char *source) {
   if (!sam_enabled()) return;
   auto *zones_data = get_register(sam_address_, REG_SAM_ZONES);
   if (!zones_data || zones_data->size() < REG3B03_SIZE)
     return;
+
+  // Q13 audit ring: survives without a log listener, surfaces in REPORT?.
+  {
+    HoldEvent ev{};
+    ev.ms = millis();
+    ev.zone = zone;
+    ev.minutes = duration_minutes;
+    strncpy(ev.source, source ? source : "?", sizeof(ev.source) - 1);
+    ev.source[sizeof(ev.source) - 1] = '\0';
+    hold_events_.push_back(ev);
+    while (hold_events_.size() > HOLD_EVENT_MAX)
+      hold_events_.pop_front();
+  }
+  if (duration_minutes == 0)
+    ESP_LOGW("InfinitESP", "Hold CANCEL zone %u via %s", zone, source ? source : "?");
 
   // Normalize finite durations onto the thermostat's timed-hold grid. Without
   // this, sub-floor values are silently not adopted by the thermostat (it
@@ -2337,7 +2355,8 @@ void InfinitESPComponent::set_zone_hold(uint8_t zone, uint16_t duration_minutes)
   payload.insert(payload.end(), data.begin() + 3, data.end());
 
   send_write_frame_(ADDR_THERMOSTAT, 0x01, payload);
-  ESP_LOGI("InfinitESP", "Set zone %d hold=%d min (flags=0x%02X)", zone, duration, flags);
+  ESP_LOGI("InfinitESP", "Set zone %d hold=%d min (flags=0x%02X, src=%s)", zone, duration, flags,
+           source ? source : "?");
 }
 
 void InfinitESPComponent::apply_activity(uint8_t zone, uint8_t activity_index, uint16_t hold_duration) {
@@ -3551,6 +3570,18 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
       write_fn((const uint8_t *)buf, n, ctx);
     }
     emit("\"}");
+    first = false;
+  }
+  emit("]");
+
+  // Hold-command audit ring (Q13). Oldest first, capped at HOLD_EVENT_MAX.
+  emit(",\"hold_events\":[");
+  first = true;
+  for (auto &he : hold_events_) {
+    n = snprintf(buf, sizeof(buf),
+             "%s{\"ms\":%u,\"zone\":%u,\"min\":%u,\"src\":\"%s\"}",
+             first ? "" : ",", he.ms, he.zone, he.minutes, he.source);
+    write_fn((const uint8_t *) buf, n, ctx);
     first = false;
   }
   emit("]");

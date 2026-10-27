@@ -364,14 +364,15 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     }
 
     if (write_cmd == "HOLD") {
+      ESP_LOGI(TAG, "ASCII Z%uHOLD!%s", zone, write_val.c_str());
       if (write_val == "ON") {
-        parent_->set_zone_hold(zone, InfinitESPComponent::HOLD_PERMANENT);
+        parent_->set_zone_hold(zone, InfinitESPComponent::HOLD_PERMANENT, "ascii");
       } else if (write_val == "OFF") {
-        parent_->set_zone_hold(zone, 0);
+        parent_->set_zone_hold(zone, 0, "ascii");
       } else {
         int minutes = atoi(write_val.c_str());
         if (minutes <= 0) { respond_nak_(prefix, "VAL"); return; }
-        parent_->set_zone_hold(zone, (uint16_t) minutes);
+        parent_->set_zone_hold(zone, (uint16_t) minutes, "ascii");
       }
       respond_(prefix, "ACK");
       return;

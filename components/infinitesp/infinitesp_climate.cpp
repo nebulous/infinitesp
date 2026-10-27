@@ -198,7 +198,7 @@ void InfinitESPClimate::control(const climate::ClimateCall &call) {
     auto custom = call.get_custom_preset();
     if (custom == PRESET_SCHEDULE) {
       // Cancel hold — resume schedule
-      parent_->set_zone_hold(zone_, 0);
+      parent_->set_zone_hold(zone_, 0, "preset");
       hold_duration_ = 0;
       last_activity_ = NO_ACTIVITY;
       this->set_custom_preset_(PRESET_SCHEDULE);

@@ -600,7 +600,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // plain entities, NOT Components: auto-spawned Component registrations
   // corrupt the loop-slot scheduling and stall this loop entirely — the
   // 2026-08-28 outage). Each zone has one pending slot; a new set replaces it.
-  void queue_hold_set(uint8_t zone, uint16_t minutes, uint32_t debounce_ms);
+  void queue_hold_set(uint8_t zone, uint16_t minutes, uint32_t debounce_ms, const char *source);
   float get_setup_priority() const override { return setup_priority::DATA; }
 
   void set_sam_address(uint8_t addr) { sam_address_ = addr; }
@@ -759,7 +759,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // no table 40 on the bus).
   bool command_setpoint_half(uint8_t zone, bool is_heat, float target_c);
   void set_zone_fan(uint8_t zone, uint8_t fan_mode);
-  void set_zone_hold(uint8_t zone, uint16_t duration_minutes);
+  void set_zone_hold(uint8_t zone, uint16_t duration_minutes, const char *source);
   void set_system_mode(uint8_t mode);
   // Sets SAM 3B02 byte 28 (which zone the wall unit displays). ACKed by every
   // tstat tested; adoption is generation-dependent (UIZ/UID family yes, newer
@@ -1333,6 +1333,20 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   };
   std::deque<WriteCapture> write_captures_;
 
+  // Hold-command audit ring (Q13: the 2026-10-27 spontaneous hold-cancel
+  // had no log listener attached, so its caller went unidentified). Every
+  // set_zone_hold() appends {millis, zone, minutes, source}; REPORT?
+  // surfaces it as hold_events[]. Cancels (minutes==0) also log at WARN so
+  // any attached capture names the caller without post-hoc reconstruction.
+  static const size_t HOLD_EVENT_MAX = 16;
+  struct HoldEvent {
+    uint32_t ms;
+    uint8_t zone;
+    uint16_t minutes;
+    char source[12];
+  };
+  std::deque<HoldEvent> hold_events_;
+
   uint16_t compute_crc_(const uint8_t *data, uint16_t len) const;
 
   // Per-device register storage: address → (register_key → data)
@@ -1496,6 +1510,7 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     uint16_t minutes;
     uint32_t until_ms;
     bool active;
+    char source[12];  // setter tag ("hold-min"/"hold-until"), rides to the audit ring
   };
   PendingHoldSet pending_hold_sets_[8] = {};
   // Cached WiFi credentials discovered from thermostat register 4608

@@ -28,7 +28,7 @@ void InfinitESPDateTime::control(const datetime::TimeCall &call) {
     delta += 1440;
   delta = InfinitESPComponent::normalize_timed_hold(delta);
   ESP_LOGD("InfinitESP", "Zone %u hold_until %02u:%02u -> %u min (debounced)", zone_, *h, *m, delta);
-  parent_->queue_hold_set(zone_, delta, 1500);
+  parent_->queue_hold_set(zone_, delta, 1500, "hold-until");
   // Let the adoption land before readback republishes (a poll observing the
   // pre-write state would briefly fling the entity back to the old end).
   this->readback_holdoff_ms_ = millis() + 10000;
