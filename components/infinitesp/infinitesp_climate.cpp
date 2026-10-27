@@ -277,15 +277,17 @@ bool InfinitESPClimate::compute_action_() {
   // zone_damper_open() is always true (single-zone system, action tracks
   // the system 1:1).
   //
-  // Direction (two-layer design):
+  // Direction (layered design):
   //  1. mode nibble HEAT/COOL/EHEAT → trust it. This covers furnace heating
   //     (a gas furnace is conventional 2-stage → nibble flips to HEAT during
   //     active heat). No inference needed.
-  //  2. mode nibble AUTO → infer from THIS zone's demand vs its own setpoints
-  //     (temp > cool_sp → COOLING, temp < heat_sp → HEATING). Uses the same
-  //     inputs the thermostat uses; system-type-agnostic (AC/HP/furnace).
-  //     On variable-speed systems the nibble stays AUTO during active operation,
-  //     so this is the path that resolves the old "always IDLE" bug.
+  //  2. mode nibble AUTO → IDU equipment evidence (0316 heat/cool bytes)
+  //     resolves the direction when present (#51); otherwise infer from THIS
+  //     zone's demand vs its own setpoints (temp > cool_sp → COOLING,
+  //     temp < heat_sp → HEATING). Uses the same inputs the thermostat uses;
+  //     system-type-agnostic (AC/HP/furnace). On variable-speed systems the
+  //     nibble stays AUTO during active operation, so this is the path that
+  //     resolves the old "always IDLE" bug.
   //  3. else (deadband) → IDLE. Never guess.
   climate::ClimateAction action = climate::CLIMATE_ACTION_IDLE;
   if (last_stage_ > 0 && parent_->zone_damper_open(zone_)) {
@@ -294,7 +296,23 @@ bool InfinitESPClimate::compute_action_() {
       case SYSMODE_COOL:  action = climate::CLIMATE_ACTION_COOLING; break;
       case SYSMODE_EHEAT:
       case SYSMODE_HEATPUMP: action = climate::CLIMATE_ACTION_HEATING; break;
-      case SYSMODE_AUTO:
+      case SYSMODE_AUTO: {
+        // Equipment evidence first (#51): the IDU's own direction bytes beat
+        // temp-vs-setpoint inference — the control conditions beyond
+        // setpoints (dehumidify, unoccupied-zone purge), and inference
+        // misreports in both directions (overstating during a lockout,
+        // understating during dehumidify). Zeros are not idle-proof
+        // (dual-fuel HP heat reads 0/0 with the blower running), so silence
+        // falls through to inference, never to a forced IDLE.
+        int8_t dir = parent_->equipment_direction_();
+        if (dir == 1) {
+          action = climate::CLIMATE_ACTION_HEATING;
+          break;
+        }
+        if (dir == 2) {
+          action = climate::CLIMATE_ACTION_COOLING;
+          break;
+        }
         // Demand of this zone (the one being served, damper open). Bus-fresh
         // cached values from 3B02/3B03, not HA-side attributes. Use >= / <= not
         // strict > / <: the thermostat cools AT cool_sp (hysteresis) — observed
@@ -305,6 +323,7 @@ bool InfinitESPClimate::compute_action_() {
         else if (current_temp_ <= parent_->setpoint_to_celsius(heat_sp_))
           action = climate::CLIMATE_ACTION_HEATING;
         break;  // deadband → IDLE
+      }
       default: break;
     }
   }
@@ -331,6 +350,15 @@ void InfinitESPClimate::on_register_update(uint8_t device_addr, uint16_t registe
       this->mode = display;
       changed = true;
     }
+  }
+
+  // Equipment-direction evidence (#51): the IDU's 0316 heat/cool bytes
+  // changed — re-resolve the action now instead of waiting for the next
+  // 3B02 poll (direction flips land within one IDU poll, ~10 s).
+  if (register_key == REG_IDU_CONFIG) {
+    if (compute_action_())
+      publish_state();
+    return;
   }
 
   if (register_key == REG_SAM_STATE) {

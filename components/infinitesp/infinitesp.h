@@ -573,6 +573,24 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // Class-scoped register store lookup for IDU registers, tolerant of the
   // commissioned address varying across installs (0x40 here, 0x3E on some).
   const std::vector<uint8_t> *get_idu_register(uint16_t key) const;
+
+  // Equipment-evidence direction for climate action (#51): 1 = heating,
+  // 2 = cooling, -1 = no positive evidence. IDU 0316 heat stage first,
+  // cooling flag second. Compressor-running elimination is deliberately
+  // NOT implemented: it needs an HP-vs-AC system identity the bus does not
+  // carry (0602 has no direction bit — C1 and 0x81 both appear in one
+  // HP-heat window; idle values vary by family: 0xC0 on 0x57, 0xD0 on
+  // 24VNA9 — checked 2026-10-24).
+  int8_t equipment_direction_() const {
+    const auto *idu = get_idu_register(REG_IDU_CONFIG);
+    if (idu && !idu->empty()) {
+      if (idu_electric_heat_(*idu))
+        return 1;
+      if (idu_cooling_(*idu))
+        return 2;
+    }
+    return -1;
+  }
   // Same for ODU registers (class 5; first matching node wins - installs
   // with a second class-5 node like the 0x5F refrig board return whichever
   // serves the key, which in practice is the commissioned ODU).
@@ -1054,6 +1072,12 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // IDU register 0316: electric heat present, data[0] & 0x03
   static bool idu_electric_heat_(const std::vector<uint8_t> &data) {
     return !data.empty() && (data[0] & 0x03) != 0;
+  }
+  // IDU register 0316: system cooling flag, data[2] & 0x03 == 2 while
+  // compressor cooling. Validated against a 16 h capture's independent
+  // demand source (2026-10-24; PROTOCOL "IDU" 0316 row).
+  static bool idu_cooling_(const std::vector<uint8_t> &data) {
+    return data.size() > 2 && (data[2] & 0x03) == 0x02;
   }
   // ODU register 0604 (REG_ODU_COMP_SPEED): two uint16 BE pairs per stage.
   //   [0..1] = target (commanded) RPM  — holds round rated stage speeds

@@ -46,6 +46,11 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
 
     auto *cfg = parent_->get_idu_register(REG_IDU_CONFIG);
     uint8_t idu_heat = (cfg && !cfg->empty()) ? ((*cfg)[0] & 0x0F) : 0;
+    // Cooling flag (0316[2] & 3 == 2): excludes the heat_pump branch — an
+    // AC-only variable-speed rig sits at nibble AUTO while cooling (issue
+    // #7), so `mode != SYSMODE_COOL` alone mislabels "heat_pump" all
+    // summer. Residual: families that never set the flag keep the mislabel.
+    bool idu_cool = cfg && parent_->idu_cooling_(*cfg);
     auto *spd = parent_->get_odu_register(REG_ODU_COMP_SPEED);
     float comp_rpm = spd ? parent_->odu_compressor_actual_rpm_(*spd) : NAN;
     float cmd_stage = NAN;
@@ -68,7 +73,7 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
         // SAM-forced path; never observed served by a tstat, kept for
         // installs that honor a nibble-4 command.
         value = "heat_pump";
-      } else if (mode != SYSMODE_COOL &&
+      } else if (mode != SYSMODE_COOL && !idu_cool &&
                  ((!std::isnan(comp_rpm) && comp_rpm > 0) ||
                   (!std::isnan(cmd_stage) && cmd_stage > 0))) {
         value = "heat_pump";
