@@ -173,6 +173,16 @@ the number and the Vacation preset work on UIZ/UID installs too. The firmware de
 polling after five unanswered reads; `fault_timestamp` then shows unavailable, and the
 `REPORT?` snapshot lists the dropped registers. Rebooting re-probes once.
 
+The dealer strings have their own fallback: when the rich `0x460A` dealer row is not
+served (UIZ/UID generation), the dealer name and brand entities fall back to the legacy
+`0x3B06` dealer register, which every generation serves. On Touch-family controls the
+3B06 row is a truncating mirror of 460A, so values can be shorter there (name capped at
+20 characters, brand at 10); the URL entity has no 3B06 equivalent and reports an empty
+string while the fallback source is active. The brand field is free-form dealer contact
+text — some installs carry a brand name, others a phone number. When 460A is fresh it
+always wins, so which source is active never changes the value mid-stream except by
+reporting the fuller string.
+
 Equipment-conditional group (generated disabled by default, enable in HA if your hardware
 serves the registers): compressor RPM, target compressor RPM, ODU requested CFM, ODU
 expansion valve, ODU floats 1-6, ODU discharge and suction temps, ODU suction superheat.

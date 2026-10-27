@@ -36,6 +36,12 @@ static const uint8_t SLOW_POLL_REGS[][2] = {
                     // so all SAM modes acquire it via the rotation. Fixes
                     // FILTRLVL?=0 in 0x93/emulated configs (#54). Passive
                     // installs keep the metric-units poll / snooped traffic.
+    {0x3B, 0x06},  // dealer config row: fallback source for the dealer text
+                    // sensors when 460A is not served (UIZ line has no 46xx
+                    // table at all; Touch serves 3B06 as a truncating mirror
+                    // of its own 460A). Served to 0x93 and 0x92 (2026-10-27,
+                    // issue #59). Read reply lands under 0x20; the SAM-side
+                    // seeded/written copy under 0x92 never enters the chain.
     {0x3D, 0x02},  // zone temps at 1/16 °F (issue #53; UIZ-line serves, ITC
                     // line refuses by silence -> backoff drops it; consumers
                     // keep the 3B02 fallback either way)
@@ -1881,6 +1887,16 @@ bool InfinitESPComponent::register_fresh_(uint8_t addr, uint16_t key, uint32_t m
   if (reg_it == dev_it->second.end())
     return false;
   return (uint32_t) (millis() - reg_it->second) <= max_age_ms;
+}
+
+const std::vector<uint8_t> *InfinitESPComponent::freshest_register_(
+    std::initializer_list<RegisterSource> sources) const {
+  for (const auto &s : sources) {
+    auto *data = get_register(s.addr, s.key);
+    if (data && !data->empty() && register_fresh_(s.addr, s.key, s.max_age_ms))
+      return data;
+  }
+  return nullptr;
 }
 
 float InfinitESPComponent::odu_outdoor_temp_c_() const {

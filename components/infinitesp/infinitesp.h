@@ -135,6 +135,11 @@ static const uint32_t ODU_FINE_FRESHNESS_MS = 5UL * 60UL * 1000UL;
 // replaces. Consumers also apply a 5 °C divergence guard against the fresh
 // 3B02 byte, which no legal indoor drift can trip.
 static const uint32_t TSTAT_3D02_FRESHNESS_MS = 10UL * 60UL * 1000UL;
+// Dealer rows (460A rich + 3B06 fallback) are quasi-static installer data;
+// 60 min is generous against the ~5-min worst-case slow-poll rotation plus
+// retries, and only gates source preference, not liveness (a stale source
+// simply loses to the other one; sensors keep their last value).
+static const uint32_t TSTAT_DEALER_FRESHNESS_MS = 60UL * 60UL * 1000UL;
 static const uint16_t REG_TSTAT_WIFI = 0x4608;          // SSID, password, hostname (~216 bytes)
 
 // Comfort-profile register for a zone (zone 1-8). 400A+zone-1.
@@ -383,9 +388,12 @@ static const uint8_t REG3B05_SIZE = 11;
 // Register 3B06 (REG_SAM_DEALER) layout — dealer info & config (52 bytes)
 // NOTE on provenance: inherited from Infinitude's CarBus::SAM 3B06 parser (our
 // own RE, not a Carrier source) after its 2026-06-26 restructure. The metric_units
-// flag at byte 1 (mirror at byte 10) has live-test backing; the rest (deadband,
-// cycles_per_hour, schedule_periods, programs_enabled, dealer_name/phone offsets)
-// is unconfirmed vs. real hardware. byte 7 was previously guessed 'temp_units'
+// flag at byte 1 (mirror at byte 10) has live-test backing; deadband,
+// cycles_per_hour, schedule_periods, programs_enabled remain unconfirmed.
+// The dealer string fields were confirmed live 2026-10-27 (issue #59): on
+// Touch models 3B06 is a truncating mirror of the tstat's own 460A (name@12
+// capped at 20, contact@32 capped at 10); on UIZ (no 46xx table) it is the
+// native store. byte 7 was previously guessed 'temp_units'
 // but is observed 0xFF on Touch (the F/C ASCII codes live only on the RS-232 port,
 // not in this register); the prior 'auto_mode' guess at byte 1 is incompatible
 // with the unit flag, so CFGAUTO has no confirmed field and is not exposed.
@@ -395,8 +403,8 @@ static const uint8_t REG3B06_DEADBAND = 3;          // 0-6
 static const uint8_t REG3B06_CYCLES_PER_HOUR = 4;   // 2-6
 static const uint8_t REG3B06_SCHEDULE_PERIODS = 5;  // 2 or 4
 static const uint8_t REG3B06_PROGRAMS_ENABLED = 6;  // 0=off, 1=on
-static const uint8_t REG3B06_DEALER_NAME = 12;      // 20 bytes (18 usable)
-static const uint8_t REG3B06_DEALER_PHONE = 32;     // 20 bytes (18 usable)
+static const uint8_t REG3B06_DEALER_NAME = 12;      // 20 bytes (confirmed live 2026-10-27: 20-char truncation of the 460A name)
+static const uint8_t REG3B06_DEALER_PHONE = 32;     // 10 bytes (free-form contact: brand on our rig, phone on a BBECC01-C; confirmed live)
 static const uint8_t REG3B06_SIZE = 52;
 
 // IDU (Indoor Unit / Furnace / Air Handler) register keys
@@ -845,6 +853,19 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // True when the (addr, key) register was stored within max_age_ms.
   // Rollover-safe: age uses (uint32_t)(millis() - stamp) subtraction.
   bool register_fresh_(uint8_t addr, uint16_t key, uint32_t max_age_ms) const;
+
+  // Freshness-ordered source selection for register fallback chains (issue
+  // #59): try candidates in order, return the first register that exists,
+  // is non-empty, and was stored within its max_age; nullptr when none
+  // qualify. This helper only picks the source — decoders stay with the
+  // consumer. The zone-temp 3D02->3B02 and ODU 3E->0302 chains are the
+  // inline ancestors of this pattern.
+  struct RegisterSource {
+    uint8_t addr;
+    uint16_t key;
+    uint32_t max_age_ms;
+  };
+  const std::vector<uint8_t> *freshest_register_(std::initializer_list<RegisterSource> sources) const;
   // The ODU's own outdoor sensor at full /16 °F resolution, converted to °C
   // with the hardcoded ODU conversion (never bus_temp_to_celsius: ODU
   // registers don't reformat with the tstat units flag). Tries 3E01 slot 0

@@ -199,36 +199,35 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
     return;
   }
 
-  // Dealer name from 460A
-  if (sensor_type_ == "tstat_dealer_name") {
-    if (register_key != REG_TSTAT_DEALER)
+  // Dealer info: 460A (Touch family, rich: name@0, contact@50, URL@70)
+  // with a 3B06 fallback (52 B: name@12 capped at 20, contact@32 capped at
+  // 10, no URL). On UIZ-generation controls 46xx is never served and 3B06
+  // is the native store; on Touch models 3B06 mirrors 460A with truncation.
+  // 460A wins whenever fresh, so resolution is deterministic. Wire facts and
+  // provenance: PROTOCOL rows 3B06/460A (issue #59, live 2026-10-27).
+  if (sensor_type_ == "tstat_dealer_name" || sensor_type_ == "tstat_dealer_brand" ||
+      sensor_type_ == "tstat_dealer_url") {
+    if (register_key != REG_TSTAT_DEALER && register_key != REG_SAM_DEALER)
       return;
-    auto *data = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_DEALER);
-    if (!data || data->empty())
+    auto *rich = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_DEALER);
+    auto *data = parent_->freshest_register_({
+        {ADDR_THERMOSTAT, REG_TSTAT_DEALER, TSTAT_DEALER_FRESHNESS_MS},
+        {ADDR_THERMOSTAT, REG_SAM_DEALER, TSTAT_DEALER_FRESHNESS_MS}});
+    if (!data)
       return;
-    publish_state(extract_cstr(*data, 0));
-    return;
-  }
-
-  // Dealer brand from 460A
-  if (sensor_type_ == "tstat_dealer_brand") {
-    if (register_key != REG_TSTAT_DEALER)
-      return;
-    auto *data = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_DEALER);
-    if (!data || data->size() < 51)
-      return;
-    publish_state(extract_cstr(*data, 50));
-    return;
-  }
-
-  // Dealer URL from 460A
-  if (sensor_type_ == "tstat_dealer_url") {
-    if (register_key != REG_TSTAT_DEALER)
-      return;
-    auto *data = parent_->get_register(ADDR_THERMOSTAT, REG_TSTAT_DEALER);
-    if (!data || data->size() < 71)
-      return;
-    publish_state(extract_cstr(*data, 70));
+    bool from_rich = (data == rich);  // pointer identity: which source won
+    std::string value;
+    if (sensor_type_ == "tstat_dealer_name")
+      value = extract_cstr(*data, from_rich ? 0 : REG3B06_DEALER_NAME);
+    else if (sensor_type_ == "tstat_dealer_brand")
+      value = extract_cstr(*data, from_rich ? 50 : REG3B06_DEALER_PHONE);
+    else
+      value = from_rich ? extract_cstr(*data, 70) : "";  // 3B06 carries no URL
+    if (!has_published_value_ || value != last_published_value_) {
+      has_published_value_ = true;
+      last_published_value_ = value;
+      publish_state(value);
+    }
     return;
   }
 

@@ -17,6 +17,8 @@ class InfinitESPTextSensor : public text_sensor::TextSensor, public InfinitESPEn
  protected:
   std::string sensor_type_;
   std::string last_clock_sync_published_;  // dedupe for the clock_sync flavor
+  std::string last_published_value_;       // dedupe for the dealer flavor (two notify sources)
+  bool has_published_value_{false};        // empty-string first publish must not be swallowed
 };
 
 } // namespace infinitesp
