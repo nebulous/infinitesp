@@ -33,6 +33,11 @@ bus_jsonl:
 
 Timestamps use whatever `time:` platform the config declares to avoid extra wiring. Leaving it enabled costs little: with no client connected the stream costs almost no cpu and about a kilobyte of RAM. To disable it anyway, comment out the `jsonl_uart` server entry and the `bus_jsonl` block.
 
+For a device- and table-level inventory rather than a frame stream, run
+`SCAN? ALL` on the SAM ASCII port (see the bus workbench section of the
+[SAM ASCII docs](sam-ascii.md)): it enumerates every observed device's
+served tables with names and row counts in one attachable output.
+
 ## Raw Bus Tap (Network)
 
 Expose the raw ABCD serial bus over TCP so external tools (Infinitude, Wireshark dissector, custom scripts) can observe the bus in real time. This is useful for protocol analysis and for running Infinitude alongside InfinitESP.

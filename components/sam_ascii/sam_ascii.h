@@ -2,7 +2,10 @@
 
 #include "esphome/core/component.h"
 #include "esphome/components/uart/uart.h"
+#include "esphome/components/infinitesp/infinitesp.h"
 #include <string>
+#include <vector>
+#include <algorithm>
 #include <cstdint>
 
 namespace esphome {
@@ -20,6 +23,12 @@ class SamAsciiComponent : public Component, public uart::UARTDevice {
   float get_setup_priority() const override { return setup_priority::DATA; }
 
   void set_infinitesp(esphome::infinitesp::InfinitESPComponent *parent) { parent_ = parent; }
+  // REG! yaml gate (raw_writes, default false). Forwards to the hub's
+  // diagnostic-write gate; called from codegen after set_infinitesp.
+  void set_raw_writes(bool v) {
+    if (parent_)
+      parent_->set_diag_writes_allowed(v);
+  }
 
  protected:
   void process_line_(const std::string &line);
@@ -27,6 +36,17 @@ class SamAsciiComponent : public Component, public uart::UARTDevice {
   void respond_nak_(const std::string &prefix, const std::string &reason = "");
   std::string format_temp_(uint8_t temp_f);
   std::string format_time_(uint16_t minutes);
+  // Diagnostic workbench (SCAN? / REG? / REG!): drain engine events each
+  // loop and render them as response lines.
+  void diag_drain_();
+  void diag_render_scan_event_(const infinitesp::InfinitESPComponent::DiagScanEvent &ev);
+  void handle_workbench_(const std::string &body);
+  std::string diag_hex_(const uint8_t *data, size_t len);
+  // Parses "REG"-command argument tails. addr defaults to the thermostat
+  // when absent; reg accepts both 400A and "40 0A" forms. tokens are the
+  // space-split parts after "REG"; consumed says how many were used.
+  bool diag_parse_reg_args_(const std::vector<std::string> &tokens, size_t from, uint8_t &addr,
+                            uint16_t &reg, size_t &consumed);
   // Parses a TIME! write value into bus clock fields. Accepts the SAM-native
   // 12-hour form "HH:MM A/P" (leading zeros required, per SAM01-04XA Table 1
   // examples 8/9; weekday left as CLOCK_KEEP_WEEKDAY) and the InfinitESP
@@ -38,14 +58,27 @@ class SamAsciiComponent : public Component, public uart::UARTDevice {
  private:
   esphome::infinitesp::InfinitESPComponent *parent_{nullptr};
 
-  // Line buffer
+  // Line buffer. 352: a REG! full-row write on the largest served row
+  // (3B03, 150 bytes = 300 hex chars) plus the command itself must fit.
   std::string line_buf_;
   uint32_t last_char_time_{0};
   uint32_t last_activity_time_{0};  // Last time any byte was received
   bool banner_sent_{false};         // True after banner sent for current "connection"
-  static const size_t MAX_LINE = 64;
+  static const size_t MAX_LINE = 352;
   static const uint32_t INTER_CHAR_TIMEOUT_MS = 5000;
   static const uint32_t CONNECTION_IDLE_MS = 10000;  // ≥10s silence = new connection
+
+  // Diagnostic workbench state: per-device refusal/timeout table lists for
+  // SCAN rendering, and pending-command markers for the async replies.
+  bool diag_scan_streaming_{false};
+  std::string diag_scan_refused_;
+  std::string diag_scan_timeouts_;
+  bool diag_read_pending_{false};
+  uint16_t diag_read_reg_{0};
+  bool diag_readback_{false};  // pending REG? is the READBACK half of a REG!
+  bool diag_write_pending_{false};
+  uint16_t diag_write_reg_{0};
+  uint8_t diag_write_dest_{0};
 };
 
 }  // namespace sam_ascii

@@ -514,8 +514,10 @@ void InfinitESPComponent::loop() {
 
   // Table-name discovery: probe one observed device's 0xNN01 register from
   // ADDR_FAKESAM (0x93) when 0x93 is free (not our SAM address). One query
-  // per cycle, never in the same iteration as a thermostat poll.
+  // per cycle, never in the same iteration as a thermostat poll. Paused
+  // while a diagnostic scan runs (the scan owns 0x93-seat probing).
   if (!discovery_holdoff && sam_address_ != ADDR_FAKESAM && bus_online_ &&
+      !diag_scan_active() &&
       !fast_poll_sent && !retransmit_sent &&
       (now - last_discovery_poll_ms_ >= DISCOVERY_POLL_INTERVAL_MS) && bus_idle_ms > 50) {
     poll_discovery_();
@@ -531,13 +533,19 @@ void InfinitESPComponent::loop() {
   // pure-passive (no-emulation) config.
   bool bus_active = (now - last_rx_time_) < 5000;
   if (!discovery_holdoff && temperature_unit_ == TemperatureUnit::AUTO && !sam_enabled() &&
-      sam_address_ != ADDR_FAKESAM && bus_active &&
+      sam_address_ != ADDR_FAKESAM && bus_active && !diag_scan_active() &&
       !fast_poll_sent && !retransmit_sent && bus_idle_ms > 50 &&
       (!metric_units_known_ || (now - last_unit_poll_ms_) > 300000) &&
       (now - last_unit_poll_ms_) > 5000) {
     poll_metric_units_();
     last_unit_poll_ms_ = now;
   }
+
+  // Diagnostic workbench service pass (SCAN? engine, REG? mailbox TX,
+  // REG! write drain). Same gates as the pollers; discovery and the metric
+  // poll pause while a scan runs so 0x93-seat frames are unambiguous.
+  if (!discovery_holdoff && bus_idle_ms > 50)
+    diag_service_(now, bus_idle_ms, discovery_holdoff);
 
   // ZC sensor staleness fallback: check every 10s
   if (zc_enabled() && (now - last_zc_sensor_check_ > 10000)) {
@@ -766,6 +774,18 @@ void InfinitESPComponent::dispatch_frame_(uint16_t frame_len) {
   bool to_zc = is_emu_zc_addr_(current_frame_.dst);
   bool to_nim = is_emu_nim_addr_(current_frame_.dst);
 
+  // Diagnostic-seat claims (SCAN? / REG? / REG!): REPLY and EXCEPTION frames
+  // addressed to the 0x93 seat are offered to the diagnostic engines before
+  // the poll-match, write-ACK, and discovery paths. Claiming is by exact
+  // (src, reg) match against outstanding diagnostic requests where the
+  // payload carries one, so ordinary traffic (including the fake-SAM-mode
+  // slow-poll replies that share dst 0x93) is untouched unless a diagnostic
+  // request for that same (src, reg) is in flight.
+  const bool diag_claimed =
+      (current_frame_.dst == ADDR_FAKESAM) &&
+      (current_frame_.func == FUNC_REPLY || current_frame_.func == FUNC_EXCEPTION) &&
+      diag_claim_frame_();
+
   // Write-ACK handling: a bare [00] REPLY addressed to one of our
   // emulated addresses indicates acceptance of a WRITE we sent.
   // Remove already-sent queue entries for that destination so successful
@@ -775,7 +795,7 @@ void InfinitESPComponent::dispatch_frame_(uint16_t frame_len) {
   // already-sent entries match, so a 3B03 notify's ACK cannot cancel an
   // unsent 3B02 write queued behind it. Unmatched ACKs are ignored (seen
   // once: six ACKs for one command right after OTA).
-  if (current_frame_.func == FUNC_REPLY && (to_us || to_zc) &&
+  if (!diag_claimed && current_frame_.func == FUNC_REPLY && (to_us || to_zc) &&
       current_frame_.payload.size() == 1 && current_frame_.payload[0] == 0x00) {
     for (auto it = pending_retransmits_.begin(); it != pending_retransmits_.end(); ++it) {
       if (it->sent && it->dst == current_frame_.src) {
@@ -790,7 +810,7 @@ void InfinitESPComponent::dispatch_frame_(uint16_t frame_len) {
   }
 
   // Reply matching: if this is a REPLY addressed to us, check against pending polls
-  if (current_frame_.func == FUNC_REPLY && to_us) {
+  if (!diag_claimed && current_frame_.func == FUNC_REPLY && to_us) {
     diag_reply_received_++;
     if (current_frame_.payload.size() >= 3) {
       uint16_t reply_reg = (current_frame_.payload[1] << 8) | current_frame_.payload[2];
@@ -831,9 +851,9 @@ void InfinitESPComponent::dispatch_frame_(uint16_t frame_len) {
     reply_handled = true;
   }
 
-  if (current_frame_.func == FUNC_REPLY && current_frame_.dst == ADDR_FAKESAM) {
+  if (!diag_claimed && current_frame_.func == FUNC_REPLY && current_frame_.dst == ADDR_FAKESAM) {
     handle_discovery_reply_();
-  } else if (current_frame_.func == FUNC_EXCEPTION && current_frame_.dst == ADDR_FAKESAM) {
+  } else if (!diag_claimed && current_frame_.func == FUNC_EXCEPTION && current_frame_.dst == ADDR_FAKESAM) {
     // A FUNC 0x15 refusal of a tabledef probe, addressed to 0x93. It never
     // reaches handle_exception_ (that matches pending_polls_, which discovery
     // probes never enter), so without this branch the pair would retry
@@ -2094,6 +2114,407 @@ void InfinitESPComponent::poll_register(uint8_t table, uint8_t row) {
   std::vector<uint8_t> payload = {0x00, table, row};
   send_frame_(ADDR_THERMOSTAT, 0x01, FUNC_READ, payload);
   pending_polls_.back().tx_seq = diag_tx_seq_;
+}
+
+// --- Diagnostic workbench (sam_ascii SCAN? / REG? / REG!) ---
+
+// Defined below (privacy redaction helpers); forward-declared for the
+// diagnostic engine, which sits early in the file.
+static bool register_is_dropped_(uint16_t reg);
+static void redact_serial_regions_(uint16_t reg, uint8_t *data, size_t len);
+
+bool InfinitESPComponent::diag_scan_addr_allowed_(uint8_t addr) const {
+  // Same skip rules as poll_discovery_: never probe our own emulated seats
+  // or class-8 (NIM) - passive NIM monitoring is zero-TX and a phantom 0x93
+  // READ at the NIM would break that guarantee. The install-discovery
+  // address and table 0 never apply either.
+  if (addr == sam_address_ || is_emu_zc_addr_(addr) || is_emu_nim_addr_(addr) ||
+      addr == ADDR_FAKESAM || addr == ADDR_DISCOVERY || addr == 0x00)
+    return false;
+  if ((addr >> 4) == CLASS_NIM)
+    return false;
+  return true;
+}
+
+bool InfinitESPComponent::diag_scan_start_all() {
+  if (diag_scan_active())
+    return false;
+  diag_scan_.devices.clear();
+  for (const auto &akv : device_registers_) {
+    if (diag_scan_addr_allowed_(akv.first))
+      diag_scan_.devices.push_back(akv.first);
+  }
+  if (diag_scan_.devices.empty())
+    return false;
+  diag_scan_.active = true;
+  diag_scan_.dev_idx = 0;
+  diag_scan_.next_table = 1;  // table 0 is not a valid table number
+  diag_scan_.device_started = false;
+  diag_scan_.outstanding = false;
+  diag_scan_.events.clear();
+  ESP_LOGI("InfinitESP", "DIAG SCAN ALL: %zu devices", diag_scan_.devices.size());
+  return true;
+}
+
+bool InfinitESPComponent::diag_scan_start(uint8_t addr) {
+  if (diag_scan_active() || !diag_scan_addr_allowed_(addr))
+    return false;
+  diag_scan_.devices.assign(1, addr);
+  diag_scan_.active = true;
+  diag_scan_.dev_idx = 0;
+  diag_scan_.next_table = 1;  // table 0 is not a valid table number
+  diag_scan_.device_started = false;
+  diag_scan_.outstanding = false;
+  diag_scan_.events.clear();
+  ESP_LOGI("InfinitESP", "DIAG SCAN %02X", addr);
+  return true;
+}
+
+void InfinitESPComponent::diag_scan_abort() {
+  if (!diag_scan_active())
+    return;
+  if (diag_scan_.device_started)
+    diag_scan_finish_device_(false);
+  DiagScanEvent ev{};
+  ev.type = DiagScanEvent::SCAN_DONE;
+  ev.aborted = true;
+  ev.devices = diag_scan_.devices.size();
+  diag_scan_.events.push_back(ev);
+  while (diag_scan_.events.size() > DIAG_EVENT_MAX)
+    diag_scan_.events.pop_front();
+  diag_scan_.active = false;
+  ESP_LOGI("InfinitESP", "DIAG SCAN aborted");
+}
+
+bool InfinitESPComponent::diag_scan_pop(DiagScanEvent &ev) {
+  if (diag_scan_.events.empty())
+    return false;
+  ev = diag_scan_.events.front();
+  diag_scan_.events.pop_front();
+  return true;
+}
+
+void InfinitESPComponent::diag_scan_finish_device_(bool absent) {
+  DiagScanEvent ev{};
+  ev.type = DiagScanEvent::DEVICE_DONE;
+  ev.addr = diag_scan_.cur_addr;
+  ev.hits = diag_scan_.hits;
+  ev.refused = diag_scan_.refused;
+  ev.timeouts = diag_scan_.timeouts;
+  ev.absent = absent;
+  diag_scan_.events.push_back(ev);
+  while (diag_scan_.events.size() > DIAG_EVENT_MAX)
+    diag_scan_.events.pop_front();
+  diag_scan_.device_started = false;
+  diag_scan_.outstanding = false;
+  ESP_LOGI("InfinitESP", "DIAG SCAN %02X done: hits=%u refused=%u timeouts=%u%s",
+           diag_scan_.cur_addr, diag_scan_.hits, diag_scan_.refused, diag_scan_.timeouts,
+           absent ? " (absent)" : "");
+}
+
+void InfinitESPComponent::diag_service_(uint32_t now, uint32_t bus_idle_ms, bool holdoff) {
+  // REG? mailbox: send the requested read once, then age it out.
+  if (diag_read_.phase == DiagReadState::REQUESTED) {
+    std::vector<uint8_t> payload = {0x00, (uint8_t) (diag_read_.reg >> 8), (uint8_t) diag_read_.reg};
+    transmit_frame_(diag_read_.dest, 0x01, ADDR_FAKESAM, 0x01, FUNC_READ, payload);
+    diag_read_.phase = DiagReadState::SENT;
+    diag_read_.deadline_ms = now + POLL_REPLY_TIMEOUT_MS;
+  } else if (diag_read_.phase == DiagReadState::SENT && !diag_read_.ready) {
+    if ((int32_t) (now - diag_read_.deadline_ms) >= 0) {
+      diag_read_.reply = DiagReply{};  // ok=false, timeout
+      diag_read_.ready = true;
+      diag_read_.phase = DiagReadState::IDLE;
+    }
+  }
+
+  // REG! write state machine: queue-only drain behind the bus-idle gate
+  // (ADR: WRITE frames queue behind the bus-idle gate), ACK-wait, bounded
+  // retries, then ready with the outcome.
+  if (diag_write_.phase == DiagWriteState::QUEUED && (int32_t) (now - diag_write_.fire_ms) >= 0 &&
+      bus_idle_ms > 50 && !holdoff) {
+    transmit_frame_(diag_write_.dst, 0x01, ADDR_FAKESAM, 0x01, FUNC_WRITE, diag_write_.payload);
+    diag_write_.attempts++;
+    diag_write_.phase = DiagWriteState::WAIT_ACK;
+    diag_write_.deadline_ms = now + POLL_REPLY_TIMEOUT_MS;
+  } else if (diag_write_.phase == DiagWriteState::WAIT_ACK && !diag_write_.ready) {
+    if ((int32_t) (now - diag_write_.deadline_ms) >= 0) {
+      if (diag_write_.attempts_left > 0) {
+        diag_write_.attempts_left--;
+        diag_write_.phase = DiagWriteState::QUEUED;
+        diag_write_.fire_ms = now + RETRANSMIT_DELAY_MS;
+        ESP_LOGI("InfinitESP", "DIAG WRITE %04X: no ACK, %u attempts left",
+                 diag_write_.reg, diag_write_.attempts_left);
+      } else {
+        diag_write_.ready = true;  // acked=false
+        diag_write_.phase = DiagWriteState::IDLE;
+        ESP_LOGW("InfinitESP", "DIAG WRITE %04X to %02X: not acknowledged",
+                 diag_write_.reg, diag_write_.dst);
+      }
+    }
+  }
+
+  if (!diag_scan_active())
+    return;
+
+  // Outstanding-probe timeout bookkeeping.
+  if (diag_scan_.outstanding && (int32_t) (now - diag_scan_.sent_ms) >= (int32_t) POLL_REPLY_TIMEOUT_MS) {
+    diag_scan_.outstanding = false;
+    diag_scan_.timeouts++;
+    diag_scan_.consec_timeouts++;
+    DiagScanEvent ev{};
+    ev.type = DiagScanEvent::TABLE_RESULT;
+    ev.addr = diag_scan_.cur_addr;
+    ev.table = diag_scan_.outstanding_table;
+    ev.status = DiagScanEvent::TIMEOUT;
+    diag_scan_.events.push_back(ev);
+    while (diag_scan_.events.size() > DIAG_EVENT_MAX)
+      diag_scan_.events.pop_front();
+  }
+
+  // Early-abort: a device that times out DIAG_SCAN_ABORT_TIMEOUTS tables in
+  // a row is not answering; finish it and move on (the 0x50 phantom
+  // precedent: unbounded probing of a dead address is how 11,821 useless
+  // frames happened).
+  if (diag_scan_.consec_timeouts >= DIAG_SCAN_ABORT_TIMEOUTS && diag_scan_.device_started) {
+    diag_scan_finish_device_(true);
+    diag_scan_.dev_idx++;
+    diag_scan_.next_table = 1;
+  }
+
+  // Exhaustion: every table of the current device probed (and nothing
+  // outstanding) - finish it and move to the next.
+  if (diag_scan_.device_started && !diag_scan_.outstanding && diag_scan_.next_table > 0xFF) {
+    diag_scan_finish_device_(false);
+    diag_scan_.dev_idx++;
+    diag_scan_.next_table = 1;
+  }
+
+  // Advance to the next device when the current one is exhausted.
+  if (!diag_scan_.device_started) {
+    if (diag_scan_.dev_idx >= diag_scan_.devices.size()) {
+      DiagScanEvent ev{};
+      ev.type = DiagScanEvent::SCAN_DONE;
+      ev.devices = diag_scan_.devices.size();
+      diag_scan_.events.push_back(ev);
+      while (diag_scan_.events.size() > DIAG_EVENT_MAX)
+        diag_scan_.events.pop_front();
+      diag_scan_.active = false;
+      ESP_LOGI("InfinitESP", "DIAG SCAN all devices done");
+      return;
+    }
+    diag_scan_.cur_addr = diag_scan_.devices[diag_scan_.dev_idx];
+    diag_scan_.hits = diag_scan_.refused = diag_scan_.timeouts = 0;
+    diag_scan_.consec_timeouts = 0;
+    diag_scan_.device_started = true;
+    DiagScanEvent ev{};
+    ev.type = DiagScanEvent::DEVICE_START;
+    ev.addr = diag_scan_.cur_addr;
+    diag_scan_.events.push_back(ev);
+    while (diag_scan_.events.size() > DIAG_EVENT_MAX)
+      diag_scan_.events.pop_front();
+  }
+
+  // Fire the next tabledef probe, pace-gated and idle-gated.
+  if (!diag_scan_.outstanding && diag_scan_.next_table <= 0xFF &&
+      (now - diag_scan_.last_probe_ms) >= DIAG_SCAN_PROBE_INTERVAL_MS && bus_idle_ms > 50 && !holdoff) {
+    uint8_t table = (uint8_t) diag_scan_.next_table++;
+    std::vector<uint8_t> payload = {0x00, table, TABLEDEF_ROW};
+    transmit_frame_(diag_scan_.cur_addr, 0x01, ADDR_FAKESAM, 0x01, FUNC_READ, payload);
+    diag_scan_.outstanding = true;
+    diag_scan_.outstanding_table = table;
+    diag_scan_.sent_ms = now;
+    diag_scan_.last_probe_ms = now;
+  }
+}
+
+bool InfinitESPComponent::diag_claim_frame_() {
+  const std::vector<uint8_t> &payload = current_frame_.payload;
+  const uint8_t src = current_frame_.src;
+  const bool exception = (current_frame_.func == FUNC_EXCEPTION);
+
+  // FUNC 0x15 carries no register echo (a bare code), so refusals match by
+  // recency against outstanding diagnostic requests to that source.
+  if (exception) {
+    uint8_t code = payload.empty() ? 0 : payload.back();
+    if (diag_write_.phase == DiagWriteState::WAIT_ACK && src == diag_write_.dst) {
+      diag_write_.ready = true;  // acked=false
+      diag_write_.phase = DiagWriteState::IDLE;
+      ESP_LOGW("InfinitESP", "DIAG WRITE %04X to %02X: refused (code %02X)",
+               diag_write_.reg, src, code);
+      return true;
+    }
+    if (diag_read_.phase == DiagReadState::SENT && !diag_read_.ready && src == diag_read_.dest) {
+      diag_read_.reply = DiagReply{};
+      diag_read_.reply.refused = true;
+      diag_read_.reply.code = code;
+      diag_read_.ready = true;
+      diag_read_.phase = DiagReadState::IDLE;
+      return true;
+    }
+    if (diag_scan_active() && diag_scan_.outstanding && src == diag_scan_.cur_addr) {
+      diag_scan_.outstanding = false;
+      diag_scan_.refused++;
+      diag_scan_.consec_timeouts = 0;
+      DiagScanEvent ev{};
+      ev.type = DiagScanEvent::TABLE_RESULT;
+      ev.addr = src;
+      ev.table = diag_scan_.outstanding_table;
+      ev.status = DiagScanEvent::REFUSED;
+      ev.code = code;
+      diag_scan_.events.push_back(ev);
+      while (diag_scan_.events.size() > DIAG_EVENT_MAX)
+        diag_scan_.events.pop_front();
+      return true;
+    }
+    return false;
+  }
+
+  // Write ACK: a bare [00] REPLY, no register echo.
+  if (diag_write_.phase == DiagWriteState::WAIT_ACK && payload.size() == 1 && payload[0] == 0x00 &&
+      src == diag_write_.dst) {
+    diag_write_.acked = true;
+    diag_write_.ready = true;
+    diag_write_.phase = DiagWriteState::IDLE;
+    ESP_LOGI("InfinitESP", "DIAG WRITE %04X to %02X: ACK", diag_write_.reg, src);
+    // Update the audit ring entry (newest matching reg/dst).
+    for (auto it = diag_audit_.rbegin(); it != diag_audit_.rend(); ++it) {
+      if (it->reg == diag_write_.reg && it->dst == diag_write_.dst && !it->acked) {
+        it->acked = true;
+        break;
+      }
+    }
+    return true;
+  }
+
+  if (payload.size() < 3)
+    return false;  // no register echo to match on
+  uint16_t reg = (payload[1] << 8) | payload[2];
+
+  if (diag_read_.phase == DiagReadState::SENT && !diag_read_.ready && src == diag_read_.dest &&
+      reg == diag_read_.reg) {
+    diag_read_.reply = DiagReply{};
+    diag_read_.reply.ok = true;
+    diag_read_.reply.data.assign(payload.begin() + 3, payload.end());
+    redact_serial_regions_(diag_read_.reg, diag_read_.reply.data.data(), diag_read_.reply.data.size());
+    diag_read_.ready = true;
+    diag_read_.phase = DiagReadState::IDLE;
+    return true;
+  }
+
+  if (diag_scan_active() && diag_scan_.outstanding && src == diag_scan_.cur_addr &&
+      reg == ((uint16_t) diag_scan_.outstanding_table << 8 | TABLEDEF_ROW)) {
+    diag_scan_.outstanding = false;
+    diag_scan_.hits++;
+    diag_scan_.consec_timeouts = 0;
+    DiagScanEvent ev{};
+    ev.type = DiagScanEvent::TABLE_RESULT;
+    ev.addr = src;
+    ev.table = diag_scan_.outstanding_table;
+    ev.status = DiagScanEvent::HIT;
+    ev.data.assign(payload.begin() + 3, payload.end());
+    diag_scan_.events.push_back(ev);
+    while (diag_scan_.events.size() > DIAG_EVENT_MAX)
+      diag_scan_.events.pop_front();
+    return true;
+  }
+  return false;
+}
+
+bool InfinitESPComponent::diag_read_request(uint8_t dest, uint16_t reg) {
+  if (diag_read_.phase != DiagReadState::IDLE || diag_read_.ready)
+    return false;  // one mailbox read at a time
+  if (diag_scan_active())
+    return false;  // the scan owns 0x93-seat replies while running
+  if (register_is_dropped_(reg))
+    return false;  // 46xx credential/dealer class: never served as hex
+  diag_read_.dest = dest;
+  diag_read_.reg = reg;
+  diag_read_.phase = DiagReadState::REQUESTED;
+  return true;
+}
+
+InfinitESPComponent::DiagReply InfinitESPComponent::diag_read_result() {
+  DiagReply out = diag_read_.reply;
+  diag_read_.ready = false;
+  diag_read_.reply = DiagReply{};
+  return out;
+}
+
+bool InfinitESPComponent::diag_write_request(uint8_t dest, uint16_t reg,
+                                             const std::vector<uint8_t> &row,
+                                             bool &unknown_size, const char **refused) {
+  unknown_size = false;
+  *refused = nullptr;
+  if (!diag_writes_allowed_) {
+    *refused = "LOCKED";
+    return false;
+  }
+  if (diag_write_.phase != DiagWriteState::IDLE || diag_write_.ready) {
+    *refused = "BUSY";
+    return false;
+  }
+  if (diag_scan_active()) {
+    *refused = "BUSY";  // the scan owns 0x93-seat traffic while running
+    return false;
+  }
+  if (register_is_dropped_(reg)) {
+    *refused = "REDACTED";
+    return false;
+  }
+  // Protected: device identity is store-protected already; commissioning
+  // (table 04) and the unknown 3F table stay out of arbitrary writes (the
+  // S1CFG policy line: some writes never get a grammar surface).
+  if (reg == REG_DEVICE_INFO || (reg >> 8) == 0x04 || (reg >> 8) == 0x3F) {
+    *refused = "PROT";
+    return false;
+  }
+  // Full-row rule: when a served copy exists its length IS the wire-proven
+  // row size, so enforce an exact match. Without a copy the write proceeds
+  // flagged ROWSIZE UNKNOWN (the caller must say so).
+  auto *served = get_register(dest, reg);
+  if (served != nullptr && served->size() != row.size()) {
+    *refused = "VAL";
+    return false;
+  }
+  if (served == nullptr)
+    unknown_size = true;
+
+  diag_write_.dst = dest;
+  diag_write_.reg = reg;
+  diag_write_.payload.assign(1, 0x00);
+  diag_write_.payload.push_back(reg >> 8);
+  diag_write_.payload.push_back(reg & 0xFF);
+  diag_write_.payload.insert(diag_write_.payload.end(), row.begin(), row.end());
+  diag_write_.fire_ms = millis();
+  diag_write_.attempts_left = DIAG_WRITE_ATTEMPTS - 1;
+  diag_write_.ready = false;
+  diag_write_.acked = false;
+  diag_write_.attempts = 0;
+  diag_write_.phase = DiagWriteState::QUEUED;
+
+  DiagAudit a{};
+  a.ms = millis();
+  a.reg = reg;
+  a.dst = dest;
+  a.acked = false;
+  diag_audit_.push_back(a);
+  while (diag_audit_.size() > DIAG_AUDIT_MAX)
+    diag_audit_.pop_front();
+  ESP_LOGW("InfinitESP", "DIAG WRITE %04X to %02X: %zu bytes queued (seat 93)",
+           reg, dest, row.size());
+  return true;
+}
+
+InfinitESPComponent::DiagWriteResult InfinitESPComponent::diag_write_result() {
+  DiagWriteResult out{};
+  out.acked = diag_write_.acked;
+  out.attempts = diag_write_.attempts;
+  diag_write_.ready = false;
+  return out;
+}
+
+bool InfinitESPComponent::diag_reg_is_redacted(uint16_t reg) const {
+  return register_is_dropped_(reg);
 }
 
 // --- Domain Methods ---
@@ -3595,8 +4016,21 @@ void InfinitESPComponent::stream_bus_report_(void (*write_fn)(const uint8_t *, s
   first = true;
   for (auto &he : hold_events_) {
     n = snprintf(buf, sizeof(buf),
-             "%s{\"ms\":%u,\"zone\":%u,\"min\":%u,\"src\":\"%s\"}",
+             "%s{\"ms\":%" PRIu32 ",\"zone\":%u,\"min\":%u,\"src\":\"%s\"}",
              first ? "" : ",", he.ms, he.zone, he.minutes, he.source);
+    write_fn((const uint8_t *) buf, n, ctx);
+    first = false;
+  }
+  emit("]");
+
+  // Diagnostic write audit (REG!). Every accepted arbitrary write, newest
+  // last, capped at DIAG_AUDIT_MAX; acked flips when the bare-[00] ACK lands.
+  emit(",\"diag_writes\":[");
+  first = true;
+  for (auto &da : diag_audit_) {
+    n = snprintf(buf, sizeof(buf),
+             "%s{\"ms\":%" PRIu32 ",\"reg\":\"%04X\",\"dst\":\"%02X\",\"from\":\"93\",\"acked\":%s,\"src\":\"REG!\"}",
+             first ? "" : ",", da.ms, da.reg, da.dst, da.acked ? "true" : "false");
     write_fn((const uint8_t *) buf, n, ctx);
     first = false;
   }

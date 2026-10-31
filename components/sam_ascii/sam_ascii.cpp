@@ -35,6 +35,10 @@ void SamAsciiComponent::loop() {
 
   const uint32_t now = millis();
 
+  // Drain diagnostic engine events (SCAN? results, REG?/REG! completions)
+  // whether or not input arrived this pass.
+  diag_drain_();
+
   // Reset banner flag when idle so next connection triggers it
   if (banner_sent_ && last_activity_time_ != 0 &&
       (now - last_activity_time_) > CONNECTION_IDLE_MS) {
@@ -226,6 +230,13 @@ bool SamAsciiComponent::parse_clock_value_(const std::string &val, uint8_t &week
 void SamAsciiComponent::process_line_(const std::string &line) {
   ESP_LOGD(TAG, "RX: '%s'", line.c_str());
 
+  // Any input line aborts a running diagnostic scan (bus workbench rule):
+  // the engine finishes synchronously and the closing events render through
+  // diag_drain_() on the next loop pass. Runs before HELP/REPORT so the
+  // rule really is "any input".
+  if (diag_scan_streaming_ && parent_->diag_scan_active())
+    parent_->diag_scan_abort();
+
   // Uppercase the input for case-insensitive matching
   std::string cmd = line;
   for (auto &c : cmd)
@@ -244,6 +255,7 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     respond_(prefix, "VACATION: VACAT VACDAYS VACHOURS VACMINT VACMAXT VACMINH VACMAXH VACFAN  CONFIG: CFGDEAD CFGCPH CFGPER CFGPGM DEALER DEALERPH");
     respond_(prefix, "SET: MODE!<mode> Z#HTSP!<temp> Z#CLSP!<temp> Z#FAN!<mode> Z#HOLD!<on|off|minutes> VACDAYS!<days> VACHOURS!<hours> VACMINT!<temp> VACMAXT!<temp> VACFAN!<mode>");
     respond_(prefix, "CLOCK: TIME!<HH:MM A/P | YYYY-MM-DDTHH:MM | NOW> DAY!<0-6>  (NOW = ESPHome time source; one 3B02 write; no auto-sync)");
+    respond_(prefix, "BUS: SCAN?[ ALL|addr] REG?[ addr] reg | table row REG![ addr] reg hexrow  (frames from bus address 0x93; REG! needs raw_writes)");
     return;
   }
 
@@ -256,6 +268,23 @@ void SamAsciiComponent::process_line_(const std::string &line) {
     parent_->stream_bus_report_(write_cb, this);
     flush();
     return;
+  }
+
+  // ---- Bus workbench: SCAN? / REG? / REG! (diagnostic seat 0x93) ----
+  // Runs before the bus-online gate: the diagnostics seat initiates its own
+  // traffic, so it works in passive installs too, where bus_online_ never
+  // flips (no replies are ever addressed to the emulated seats).
+  {
+    std::string wb = cmd;
+    size_t wb_pos = 0;
+    if (wb.size() >= 2 && wb[0] == 'S' && wb[1] >= '1' && wb[1] <= '9')
+      wb_pos = 2;
+    wb = wb.substr(wb_pos);
+    wb.erase(std::remove(wb.begin(), wb.end(), '?'), wb.end());
+    if (wb.rfind("SCAN", 0) == 0 || wb.rfind("REG", 0) == 0) {
+      handle_workbench_(wb);
+      return;
+    }
   }
 
   // Check bus online
@@ -742,6 +771,284 @@ void SamAsciiComponent::respond_nak_(const std::string &prefix, const std::strin
   ESP_LOGD(TAG, "TX: '%s'", response.c_str());
   write_str(response.c_str());
   flush();
+}
+
+// --- Bus workbench (SCAN? / REG? / REG!) ---
+
+namespace {
+bool hex_nibble_(char c, uint8_t &out) {
+  if (c >= '0' && c <= '9') { out = c - '0'; return true; }
+  if (c >= 'A' && c <= 'F') { out = c - 'A' + 10; return true; }
+  return false;  // input is already uppercased
+}
+bool hex_byte_(const std::string &s, uint8_t &out) {
+  if (s.size() != 2) return false;
+  uint8_t hi, lo;
+  if (!hex_nibble_(s[0], hi) || !hex_nibble_(s[1], lo)) return false;
+  out = (hi << 4) | lo;
+  return true;
+}
+bool hex_word_(const std::string &s, uint16_t &out) {
+  if (s.size() != 4) return false;
+  uint8_t hi, lo;
+  if (!hex_byte_(s.substr(0, 2), hi) || !hex_byte_(s.substr(2, 2), lo)) return false;
+  out = ((uint16_t) hi << 8) | lo;
+  return true;
+}
+std::vector<std::string> split_tokens_(const std::string &s) {
+  std::vector<std::string> out;
+  std::string cur;
+  for (char c : s) {
+    if (c == ' ') {
+      if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+    } else {
+      cur += c;
+    }
+  }
+  if (!cur.empty()) out.push_back(cur);
+  return out;
+}
+}  // namespace
+
+std::string SamAsciiComponent::diag_hex_(const uint8_t *data, size_t len) {
+  static const char *HEX = "0123456789ABCDEF";
+  std::string out;
+  out.reserve(len * 2);
+  for (size_t i = 0; i < len; i++) {
+    out += HEX[data[i] >> 4];
+    out += HEX[data[i] & 0x0F];
+  }
+  return out;
+}
+
+bool SamAsciiComponent::diag_parse_reg_args_(const std::vector<std::string> &tokens, size_t from,
+                                             uint8_t &addr, uint16_t &reg, size_t &consumed) {
+  // Accepted shapes (thermostat default when no address): [reg4],
+  // [table2 row2], [addr2 reg4], [addr2 table2 row2].
+  size_t n = tokens.size() - from;
+  uint16_t v4 = 0;
+  uint8_t v2a = 0, v2b = 0, v2c = 0;
+  if (n == 1 && hex_word_(tokens[from], v4)) {
+    addr = 0x20; reg = v4; consumed = 1; return true;
+  }
+  if (n == 2 && hex_byte_(tokens[from], v2a) && hex_byte_(tokens[from + 1], v2b)) {
+    addr = 0x20; reg = ((uint16_t) v2a << 8) | v2b; consumed = 2; return true;
+  }
+  if (n == 2 && hex_byte_(tokens[from], v2a) && hex_word_(tokens[from + 1], v4)) {
+    addr = v2a; reg = v4; consumed = 2; return true;
+  }
+  if (n == 3 && hex_byte_(tokens[from], v2a) && hex_byte_(tokens[from + 1], v2b) &&
+      hex_byte_(tokens[from + 2], v2c)) {
+    addr = v2a; reg = ((uint16_t) v2b << 8) | v2c; consumed = 3; return true;
+  }
+  return false;
+}
+
+void SamAsciiComponent::handle_workbench_(const std::string &body) {
+  // SCAN form: SCAN | SCAN ALL | SCAN <addr2>
+  if (body.rfind("SCAN", 0) == 0) {
+    auto tokens = split_tokens_(body);
+    if (tokens.empty() || tokens[0] != "SCAN") { respond_nak_("SCAN", "CMD"); return; }
+    if (diag_read_pending_ || diag_write_pending_) { respond_nak_("SCAN", "BUSY"); return; }
+    bool started = false;
+    if (tokens.size() == 1 || (tokens.size() == 2 && tokens[1] == "ALL")) {
+      started = parent_->diag_scan_start_all();
+    } else if (tokens.size() == 2) {
+      uint8_t addr = 0;
+      if (hex_byte_(tokens[1], addr))
+        started = parent_->diag_scan_start(addr);
+    }
+    if (!started) { respond_nak_("SCAN", "VAL"); return; }
+    diag_scan_streaming_ = true;
+    diag_scan_refused_.clear();
+    diag_scan_timeouts_.clear();
+    respond_("SCAN", "STARTED");
+    return;
+  }
+
+  // REG forms. Read: REG [addr] reg | table row. Write (vendor bang
+  // grammar, value after '!'): REG![addr] reg|table row <hexrow> - the
+  // register arguments sit between REG and the final hex-row token, whether
+  // the bang is attached ("REG!400A AABB") or the head carries the address
+  // ("REG 20 400A!AABB").
+  bool is_write = body.find('!') != std::string::npos;
+  std::string flattened = body;
+  std::replace(flattened.begin(), flattened.end(), '!', ' ');
+  auto tokens = split_tokens_(flattened);
+  if (tokens.empty() || tokens[0] != "REG") { respond_nak_("REG", "CMD"); return; }
+  if (tokens.size() < 2) { respond_nak_("REG", "VAL"); return; }
+  std::string hexrow_tok = is_write ? tokens.back() : "";
+  size_t arg_end = is_write ? tokens.size() - 1 : tokens.size();  // exclusive
+  uint8_t addr = 0;
+  uint16_t reg = 0;
+  size_t consumed = 0;
+  {
+    // Parse against just the argument span (diag_parse_reg_args_ reads to
+    // the end of `tokens`, so hand it the span).
+    std::vector<std::string> span(tokens.begin(), tokens.begin() + arg_end);
+    if (!diag_parse_reg_args_(span, 1, addr, reg, consumed) || consumed != arg_end - 1) {
+      respond_nak_("REG", "VAL");
+      return;
+    }
+  }
+  char rb[8], rh[8];
+  snprintf(rb, sizeof(rb), "%02X", addr);
+  snprintf(rh, sizeof(rh), "%04X", reg);
+
+  if (!is_write) {
+    // REG? read
+    if (parent_->diag_reg_is_redacted(reg)) { respond_nak_("REG", "REDACTED"); return; }
+    if (!parent_->diag_read_request(addr, reg)) { respond_nak_("REG", "BUSY"); return; }
+    diag_read_pending_ = true;
+    diag_read_reg_ = reg;
+    diag_readback_ = false;
+    respond_("REG", std::string("SENT ") + rb + " " + rh + " AS 93");
+    return;
+  }
+
+  // REG! write: hexrow is the final token
+  const std::string &hexrow = hexrow_tok;
+  if (hexrow.empty() || hexrow.size() % 2 != 0 || hexrow.size() > 600) {
+    respond_nak_("REG", "VAL");
+    return;
+  }
+  std::vector<uint8_t> row(hexrow.size() / 2);
+  for (size_t i = 0; i < row.size(); i++) {
+    if (!hex_byte_(hexrow.substr(i * 2, 2), row[i])) { respond_nak_("REG", "VAL"); return; }
+  }
+  bool unknown_size = false;
+  const char *refused = nullptr;
+  if (!parent_->diag_write_request(addr, reg, row, unknown_size, &refused)) {
+    respond_nak_("REG", refused ? refused : "VAL");
+    if (refused && std::string(refused) == "LOCKED")
+      respond_("REG", "ENABLE WITH sam_ascii raw_writes: true");
+    return;
+  }
+  diag_write_pending_ = true;
+  diag_write_reg_ = reg;
+  diag_write_dest_ = addr;
+  char lenb[8];
+  snprintf(lenb, sizeof(lenb), "%uB", (unsigned) row.size());
+  respond_("REG", std::string("WRITE ") + rb + " " + rh + " " + lenb +
+                    (unknown_size ? " ROWSIZE UNKNOWN" : "") + " QUEUED");
+}
+
+void SamAsciiComponent::diag_render_scan_event_(const infinitesp::InfinitESPComponent::DiagScanEvent &ev) {
+  using E = infinitesp::InfinitESPComponent::DiagScanEvent;
+  // Sized for a HIT line with a large tabledef payload in DATA (147-byte
+  // 4609 tabledef renders ~330 chars of hex; snprintf truncates safely
+  // beyond that rather than overflowing).
+  char line[768];
+  switch (ev.type) {
+    case E::DEVICE_START:
+      diag_scan_refused_.clear();
+      diag_scan_timeouts_.clear();
+      snprintf(line, sizeof(line), "SCAN %02X BEGIN\r\n", ev.addr);
+      break;
+    case E::TABLE_RESULT: {
+      char t[4];
+      snprintf(t, sizeof(t), "%02X", ev.table);
+      if (ev.status == E::HIT) {
+        // Tabledef layout (PROTOCOL, discovery parser): name at [2..9],
+        // alloc BE16 at [10..11], row count at [12]. Non-printable names
+        // render as raw hex (the table-3E live-data-at-row-01 case).
+        const auto &d = ev.data;
+        std::string name;
+        bool printable = d.size() >= 10;
+        if (printable) {
+          name.assign(d.begin() + 2, d.begin() + 10);
+          while (!name.empty() && (name.back() == 0 || name.back() == ' ')) name.pop_back();
+          for (char c : name)
+            if ((uint8_t) c < 0x20 || (uint8_t) c > 0x7E) { printable = false; break; }
+        }
+        unsigned alloc = (d.size() >= 12) ? (unsigned) ((d[10] << 8) | d[11]) : 0;
+        unsigned rows = (d.size() >= 13) ? (unsigned) d[12] : 0;
+        if (printable && !name.empty()) {
+          snprintf(line, sizeof(line), "SCAN %02X %02X HIT NAME=%s ALLOC=%u ROWS=%u LEN=%u DATA=%s\r\n",
+                   ev.addr, ev.table, name.c_str(), alloc, rows, (unsigned) d.size(),
+                   diag_hex_(d.data(), d.size()).c_str());
+        } else {
+          snprintf(line, sizeof(line), "SCAN %02X %02X HIT RAW LEN=%u DATA=%s\r\n",
+                   ev.addr, ev.table, (unsigned) d.size(), diag_hex_(d.data(), d.size()).c_str());
+        }
+      } else {
+        // Refusals and timeouts aggregate into per-device table lists
+        // rendered at DEVICE_DONE (one line per probed table would bury the
+        // hits; the lists are the negative inventory).
+        std::string &agg = (ev.status == E::REFUSED) ? diag_scan_refused_ : diag_scan_timeouts_;
+        if (!agg.empty()) agg += ",";
+        agg += t;
+        return;
+      }
+      break;
+    }
+    case E::DEVICE_DONE: {
+      std::string out;
+      char head[16];
+      snprintf(head, sizeof(head), "SCAN %02X ", ev.addr);
+      if (!diag_scan_refused_.empty())
+        out += head + std::string("REFUSED_TABLES=") + diag_scan_refused_ + "\r\n";
+      if (!diag_scan_timeouts_.empty())
+        out += head + std::string("TIMEOUT_TABLES=") + diag_scan_timeouts_ + "\r\n";
+      snprintf(line, sizeof(line), "SCAN %02X DONE HITS=%u REFUSED=%u TIMEOUTS=%u%s\r\n",
+               ev.addr, ev.hits, ev.refused, ev.timeouts, ev.absent ? " ABSENT" : "");
+      out += line;
+      write_str(out.c_str());
+      flush();
+      return;
+    }
+    case E::SCAN_DONE:
+      diag_scan_streaming_ = false;
+      snprintf(line, sizeof(line), "SCAN DONE DEVICES=%u%s\r\n", ev.devices,
+               ev.aborted ? " ABORTED" : "");
+      break;
+  }
+  write_str(line);
+  flush();
+}
+
+void SamAsciiComponent::diag_drain_() {
+  using infinitesp::InfinitESPComponent;
+  InfinitESPComponent::DiagScanEvent ev;
+  while (parent_->diag_scan_pop(ev))
+    diag_render_scan_event_(ev);
+
+  if (diag_write_pending_ && parent_->diag_write_ready()) {
+    auto r = parent_->diag_write_result();
+    diag_write_pending_ = false;
+    char line[64];
+    snprintf(line, sizeof(line), "REG %04X: %s (%u ATTEMPTS)\r\n", diag_write_reg_,
+             r.acked ? "ACK" : "NOACK", r.attempts);
+    write_str(line);
+    flush();
+    // READBACK: re-read the register so an ACK-and-ignore control shows its
+    // unchanged value inline (the #61 lesson: ACK means nothing, adoption
+    // is what matters).
+    if (parent_->diag_read_request(diag_write_dest_, diag_write_reg_)) {
+      diag_read_pending_ = true;
+      diag_read_reg_ = diag_write_reg_;
+      diag_readback_ = true;
+    }
+  }
+
+  if (diag_read_pending_ && parent_->diag_read_ready()) {
+    auto r = parent_->diag_read_result();
+    diag_read_pending_ = false;
+    char rh[8];
+    snprintf(rh, sizeof(rh), "%04X", diag_read_reg_);
+    std::string line;
+    if (r.refused)
+      line = "REG " + std::string(rh) + ": REFUSED " + std::to_string(r.code);
+    else if (!r.ok)
+      line = "REG " + std::string(rh) + ": TIMEOUT";
+    else
+      line = "REG " + std::string(rh) + ": " + (diag_readback_ ? "READBACK " : "") +
+             diag_hex_(r.data.data(), r.data.size());
+    line += "\r\n";
+    write_str(line.c_str());
+    flush();
+    diag_readback_ = false;
+  }
 }
 
 }  // namespace sam_ascii

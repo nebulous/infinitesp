@@ -123,6 +123,64 @@ clock ends a fraction of a minute behind the value written. One write per
 command by design. ACK reflects transport, not adoption: Touch-family
 controls queue time writes while the wall UI sleeps and apply them at wake.
 
+## Bus Workbench (SCAN? / REG? / REG!)
+
+Three commands talk to bus devices directly. They send their frames from bus
+address 0x93, a second bus identity separate from the emulated SAM, so they
+work in every mode, passive included, and their traffic is easy to tell
+apart from SAM traffic in a capture. Nothing at 0x93 answers, so no control
+will mistake it for a SAM. In fake-SAM test mode (`sam_address: 0x93`) the
+commands share that address.
+
+Diagnostic traffic does not enter
+the register store or the poll-health counters: `STATS` `poll_drop` is
+unchanged by a full scan.
+
+```
+SCAN?               # sweep every observed device's full table space
+SCAN? ALL           # same thing, explicit
+SCAN? 20            # sweep one device (any bus address)
+REG? 400A           # read thermostat register 400A
+REG? 40 0A          # same register, table/row form
+REG? 52 0302        # read the ODU's 0302
+REG! 400A <hexrow>  # write a full register row (needs raw_writes)
+```
+
+`SCAN?` probes the self-describing row `0xNN01` of every table (0x00-0xFF)
+per device and prints one line per hit (name, allocation, row count, hex)
+plus per-device lists of refused and timed-out tables. A device that times
+out 8 tables in a row is marked `ABSENT` and skipped. Any input line aborts
+a running scan. The output doubles as an install inventory: attach it to an
+issue instead of hand-collecting REPORT? excerpts. `SCAN? ALL` covers every
+device the bus has shown (minus InfinitESP's own emulated devices; NIM-class
+devices are
+never probed, matching the passive-monitoring zero-TX rule).
+
+`REG?` issues one read and prints the hex payload; the response names the bus
+address the read was sent from (`AS 93`).
+Registers in the credential/dealer privacy class (0x4608-0x460C) answer
+`REDACTED`; serial-bearing registers print with serial suffixes masked.
+
+`REG!` writes one full register row. It is disabled unless the config opts
+in:
+
+```yaml
+sam_ascii:
+  infinitesp_id: infinitesp_hub
+  uart_id: ascii_uart
+  raw_writes: true
+```
+
+Rules: the hex length must match the served row size when a copy exists
+(`ROWSIZE UNKNOWN` flags the case where none does); register 0104 and all of
+tables 04 and 3F are refused (`NAK PROT`); redacted registers are refused.
+After the ACK the command re-reads the register and prints
+`READBACK <hex>`, because some controls ACK writes they then ignore: the
+readback, not the ACK, is the result. Every accepted `REG!` lands in the
+`diag_writes` array of `REPORT?` with register, destination, source address,
+and ACK
+state.
+
 ## REPORT?
 
 `REPORT?` provides a quick bus snapshot and often eliminates the need for full logs. It produces a JSON dump of all observed bus traffic, device info, cached registers, and diagnostic counters: a self-contained snapshot of the bus state.

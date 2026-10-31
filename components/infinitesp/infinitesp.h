@@ -824,6 +824,68 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // One-shot poll of a specific thermostat register (for discovery / debugging)
   void poll_register(uint8_t table, uint8_t row);
 
+  // --- Diagnostic workbench (sam_ascii SCAN? / REG? / REG!) ---
+  // All diagnostic traffic transmits from the 0x93 seat (ADDR_FAKESAM; the
+  // only case where that is also the emulated SAM address is sam_address:
+  // 0x93, where diagnostics reuse the seat). The seat initiates requests and
+  // consumes their replies but never answers anything itself. Diagnostic
+  // results never enter the operational register store, the poll-drop
+  // accounting, or entity notifications (STATS poll_drop must not move).
+  struct DiagScanEvent {
+    enum Type : uint8_t { DEVICE_START = 0, TABLE_RESULT = 1, DEVICE_DONE = 2, SCAN_DONE = 3 };
+    enum Status : uint8_t { HIT = 0, REFUSED = 1, TIMEOUT = 2 };
+    Type type;
+    uint8_t addr;
+    uint8_t table;                      // TABLE_RESULT
+    Status status;                      // TABLE_RESULT
+    uint8_t code;                       // FUNC 0x15 code when REFUSED
+    uint16_t hits, refused, timeouts;   // DEVICE_DONE tallies
+    bool absent;                        // DEVICE_DONE: early-aborted as unreachable
+    bool aborted;                       // SCAN_DONE
+    uint8_t devices;                    // SCAN_DONE: device count attempted
+    std::vector<uint8_t> data;          // HIT: tabledef payload
+  };
+  struct DiagReply {
+    bool ok{false};        // false = timeout or refusal
+    bool refused{false};   // FUNC 0x15 came back (code in `code`)
+    uint8_t code{0};
+    std::vector<uint8_t> data;  // serial-masked copy of the payload
+  };
+  struct DiagWriteResult {
+    bool acked{false};
+    uint8_t attempts{0};
+  };
+  // Tabledef sweep over the register-store device census (minus our own
+  // seats; class-8 NIM is never probed, same rule as poll_discovery_).
+  // Returns false when a scan is already active or no devices qualify.
+  bool diag_scan_start_all();
+  // Single-device sweep (explicit address; use for unseen devices too).
+  bool diag_scan_start(uint8_t addr);
+  bool diag_scan_active() const { return diag_scan_.active; }
+  // Finish the scan synchronously (abort-on-input); queues the closing events.
+  void diag_scan_abort();
+  // Pop one queued event (oldest first). False when the queue is empty.
+  bool diag_scan_pop(DiagScanEvent &ev);
+  // Arbitrary one-shot read from the 0x93 seat. False when another read is
+  // outstanding or the register is redacted (46xx credential/dealer class).
+  bool diag_read_request(uint8_t dest, uint16_t reg);
+  bool diag_read_ready() { return diag_read_.ready; }
+  DiagReply diag_read_result();
+  // Arbitrary full-row write from the 0x93 seat (sam_ascii REG!). Drains
+  // behind the bus-idle gate like every WRITE, ACK-wait + retry, then the
+  // caller re-reads via diag_read_request for the READBACK print. Refusal
+  // reasons (returned through `refused`): "LOCKED" (yaml gate off), "BUSY",
+  // "REDACTED", "PROT" (0104 / tables 0x04 and 0x3F), "VAL" (length does
+  // not match the served row). `unknown_size` is set when no served copy
+  // exists to check the length against (the response must say so).
+  bool diag_write_request(uint8_t dest, uint16_t reg, const std::vector<uint8_t> &row,
+                          bool &unknown_size, const char **refused);
+  bool diag_write_ready() { return diag_write_.ready; }
+  DiagWriteResult diag_write_result();
+  // Exposed for sam_ascii: is this register in the never-serve hex class?
+  bool diag_reg_is_redacted(uint16_t reg) const;
+  void set_diag_writes_allowed(bool v) { diag_writes_allowed_ = v; }
+
   // ZC zone temperature sensor references
   void set_zc_temperature_sensor(uint8_t zone, sensor::Sensor *s);
   void set_zc_sensor_is_fahrenheit(uint8_t zone, bool is_f) {
@@ -1501,6 +1563,72 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     uint16_t reg_key;
   };
   std::vector<PendingPoll> pending_polls_;
+
+  // --- Diagnostic workbench state (SCAN? / REG? / REG!) ---
+  // One scan at a time, one mailbox read at a time, one write state machine.
+  // Events queue is bounded; overflow drops the oldest (the ASCII client
+  // pops every loop, so this only matters if the client vanished).
+  static const size_t DIAG_EVENT_MAX = 32;
+  static const uint8_t DIAG_SCAN_ABORT_TIMEOUTS = 8;  // consecutive -> device absent
+  static const uint32_t DIAG_SCAN_PROBE_INTERVAL_MS = 250;
+  struct DiagScanState {
+    bool active{false};
+    std::vector<uint8_t> devices;
+    size_t dev_idx{0};
+    uint8_t cur_addr{0};
+    uint16_t next_table{0};      // 0..255; 256 = device exhausted
+    bool device_started{false};
+    bool outstanding{false};
+    uint8_t outstanding_table{0};
+    uint32_t sent_ms{0};
+    uint32_t last_probe_ms{0};
+    uint8_t consec_timeouts{0};
+    uint16_t hits{0}, refused{0}, timeouts{0};
+    std::deque<DiagScanEvent> events;
+  } diag_scan_;
+  struct DiagReadState {
+    enum Phase : uint8_t { IDLE = 0, REQUESTED, SENT };
+    Phase phase{IDLE};
+    uint8_t dest{0};
+    uint16_t reg{0};
+    uint32_t deadline_ms{0};
+    bool ready{false};
+    DiagReply reply;
+  } diag_read_;
+  static const uint8_t DIAG_WRITE_ATTEMPTS = 3;
+  struct DiagWriteState {
+    enum Phase : uint8_t { IDLE = 0, QUEUED, WAIT_ACK };
+    Phase phase{IDLE};
+    uint8_t dst{0};
+    uint16_t reg{0};
+    std::vector<uint8_t> payload;  // full wire payload [00, table, row, data...]
+    uint32_t fire_ms{0};
+    uint32_t deadline_ms{0};
+    uint8_t attempts_left{0};
+    bool ready{false};
+    bool acked{false};
+    uint8_t attempts{0};
+  } diag_write_;
+  bool diag_writes_allowed_{false};
+  // REG! audit ring (rendered in REPORT? as diag_writes[]).
+  static const size_t DIAG_AUDIT_MAX = 8;
+  struct DiagAudit {
+    uint32_t ms;
+    uint16_t reg;
+    uint8_t dst;
+    bool acked;
+  };
+  std::deque<DiagAudit> diag_audit_;
+  // Service pass from loop(): drives the scan engine, the mailbox TX, and
+  // the diag write drain, all behind the bus-idle gate and holdoff.
+  void diag_service_(uint32_t now, uint32_t bus_idle_ms, bool discovery_holdoff);
+  void diag_scan_finish_device_(bool absent);
+  // Offer a dst==0x93 REPLY/EXCEPTION to the diagnostic engines. True when
+  // consumed (scan hit / mailbox / write-ACK / refusal).
+  bool diag_claim_frame_();
+  // Device passes the same skip rules as poll_discovery_ (our seats,
+  // class-8 NIM) plus the install-discovery address.
+  bool diag_scan_addr_allowed_(uint8_t addr) const;
 
   // Queued write frames. Each entry transmits from loop() at fire_ms behind
   // the bus-idle gate, up to attempts_left + 1 sends total, FIFO. An entry
