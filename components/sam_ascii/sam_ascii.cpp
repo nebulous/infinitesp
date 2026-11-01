@@ -891,9 +891,6 @@ void SamAsciiComponent::handle_workbench_(const std::string &body) {
       return;
     }
   }
-  char rb[8], rh[8];
-  snprintf(rb, sizeof(rb), "%02X", addr);
-  snprintf(rh, sizeof(rh), "%04X", reg);
 
   if (!is_write) {
     // REG? read
@@ -902,7 +899,12 @@ void SamAsciiComponent::handle_workbench_(const std::string &body) {
     diag_read_pending_ = true;
     diag_read_reg_ = reg;
     diag_readback_ = false;
-    respond_("REG", std::string("SENT ") + rb + " " + rh + " AS 93");
+    char line[128];
+    snprintf(line, sizeof(line),
+             "{\"ev\":\"sent\",%s,\"cmd\":\"REG?\",\"dst\":\"%02X\",\"reg\":\"%04X\",\"from\":\"93\"}\r\n",
+             diag_ts_json_().c_str(), addr, reg);
+    write_str(line);
+    flush();
     return;
   }
 
@@ -927,32 +929,58 @@ void SamAsciiComponent::handle_workbench_(const std::string &body) {
   diag_write_pending_ = true;
   diag_write_reg_ = reg;
   diag_write_dest_ = addr;
-  char lenb[8];
-  snprintf(lenb, sizeof(lenb), "%uB", (unsigned) row.size());
-  respond_("REG", std::string("WRITE ") + rb + " " + rh + " " + lenb +
-                    (unknown_size ? " ROWSIZE UNKNOWN" : "") + " QUEUED");
+  char line[160];
+  snprintf(line, sizeof(line),
+           "{\"ev\":\"queued\",%s,\"cmd\":\"REG!\",\"dst\":\"%02X\",\"reg\":\"%04X\",\"bytes\":%u,\"rowsize_known\":%s}\r\n",
+           diag_ts_json_().c_str(), addr, reg, (unsigned) row.size(), unknown_size ? "false" : "true");
+  write_str(line);
+  flush();
+}
+
+std::string SamAsciiComponent::diag_ts_json_() {
+  char buf[40];
+  auto *clock = parent_->get_time_source();
+  if (clock != nullptr) {
+    auto now = clock->now();
+    if (now.is_valid()) {
+      snprintf(buf, sizeof(buf), "\"ts\":%" PRIu64, (uint64_t) now.timestamp * 1000ULL + (millis() % 1000));
+      return buf;
+    }
+  }
+  snprintf(buf, sizeof(buf), "\"ms\":%" PRIu32, millis());
+  return buf;
+}
+
+std::string SamAsciiComponent::diag_table_array_(const std::vector<uint8_t> &tables) {
+  std::string out = "[";
+  char t[8];
+  for (size_t i = 0; i < tables.size(); i++) {
+    snprintf(t, sizeof(t), "%s\"%02X\"", i ? "," : "", tables[i]);
+    out += t;
+  }
+  out += "]";
+  return out;
 }
 
 void SamAsciiComponent::diag_render_scan_event_(const infinitesp::InfinitESPComponent::DiagScanEvent &ev) {
   using E = infinitesp::InfinitESPComponent::DiagScanEvent;
-  // Sized for a HIT line with a large tabledef payload in DATA (147-byte
-  // 4609 tabledef renders ~330 chars of hex; snprintf truncates safely
-  // beyond that rather than overflowing).
-  char line[768];
+  // Sized for a hit line with a large tabledef payload in data (snprintf
+  // truncates safely beyond that rather than overflowing).
+  const std::string ts = diag_ts_json_();
+  char line[800];
   switch (ev.type) {
     case E::DEVICE_START:
       diag_scan_refused_.clear();
       diag_scan_timeouts_.clear();
-      snprintf(line, sizeof(line), "SCAN %02X BEGIN\r\n", ev.addr);
+      snprintf(line, sizeof(line), "{\"ev\":\"scan_begin\",%s,\"addr\":\"%02X\"}\r\n", ts.c_str(), ev.addr);
       break;
     case E::TABLE_RESULT: {
-      char t[4];
+      char t[8];
       snprintf(t, sizeof(t), "%02X", ev.table);
+      const auto &d = ev.data;
       if (ev.status == E::HIT) {
-        // Tabledef layout (PROTOCOL, discovery parser): name at [2..9],
-        // alloc BE16 at [10..11], row count at [12]. Non-printable names
-        // render as raw hex (the table-3E live-data-at-row-01 case).
-        const auto &d = ev.data;
+        // Tabledef layout (PROTOCOL): name at [2..9], alloc BE16 at [10..11],
+        // row count at [12]. Non-printable names fall back to raw hex only.
         std::string name;
         bool printable = d.size() >= 10;
         if (printable) {
@@ -963,44 +991,43 @@ void SamAsciiComponent::diag_render_scan_event_(const infinitesp::InfinitESPComp
         }
         unsigned alloc = (d.size() >= 12) ? (unsigned) ((d[10] << 8) | d[11]) : 0;
         unsigned rows = (d.size() >= 13) ? (unsigned) d[12] : 0;
-        if (printable && !name.empty()) {
-          snprintf(line, sizeof(line), "SCAN %02X %02X HIT NAME=%s ALLOC=%u ROWS=%u LEN=%u DATA=%s\r\n",
-                   ev.addr, ev.table, name.c_str(), alloc, rows, (unsigned) d.size(),
-                   diag_hex_(d.data(), d.size()).c_str());
-        } else {
-          snprintf(line, sizeof(line), "SCAN %02X %02X HIT RAW LEN=%u DATA=%s\r\n",
-                   ev.addr, ev.table, (unsigned) d.size(), diag_hex_(d.data(), d.size()).c_str());
-        }
+        snprintf(line, sizeof(line),
+                 "{\"ev\":\"table\",%s,\"addr\":\"%02X\",\"table\":\"%s\",\"status\":\"hit\",\"name\":\"%s\"," 
+                 "\"alloc\":%u,\"rows\":%u,\"data\":\"%s\"}\r\n",
+                 ts.c_str(), ev.addr, t, printable ? name.c_str() : "", alloc, rows,
+                 diag_hex_(d.data(), d.size()).c_str());
       } else {
-        // Refusals and timeouts aggregate into per-device table lists
-        // rendered at DEVICE_DONE (one line per probed table would bury the
-        // hits; the lists are the negative inventory).
-        std::string &agg = (ev.status == E::REFUSED) ? diag_scan_refused_ : diag_scan_timeouts_;
-        if (!agg.empty()) agg += ",";
-        agg += t;
-        return;
+        // Refusals and timeouts also land in the device_done summary arrays;
+        // the individual line carries the refusal code.
+        if (ev.status == E::REFUSED) {
+          diag_scan_refused_.push_back(ev.table);
+          snprintf(line, sizeof(line),
+                   "{\"ev\":\"table\",%s,\"addr\":\"%02X\",\"table\":\"%s\",\"status\":\"refused\",\"code\":%u}\r\n",
+                   ts.c_str(), ev.addr, t, ev.code);
+        } else {
+          diag_scan_timeouts_.push_back(ev.table);
+          snprintf(line, sizeof(line),
+                   "{\"ev\":\"table\",%s,\"addr\":\"%02X\",\"table\":\"%s\",\"status\":\"timeout\"}\r\n",
+                   ts.c_str(), ev.addr, t);
+        }
       }
       break;
     }
     case E::DEVICE_DONE: {
-      std::string out;
-      char head[16];
-      snprintf(head, sizeof(head), "SCAN %02X ", ev.addr);
-      if (!diag_scan_refused_.empty())
-        out += head + std::string("REFUSED_TABLES=") + diag_scan_refused_ + "\r\n";
-      if (!diag_scan_timeouts_.empty())
-        out += head + std::string("TIMEOUT_TABLES=") + diag_scan_timeouts_ + "\r\n";
-      snprintf(line, sizeof(line), "SCAN %02X DONE HITS=%u REFUSED=%u TIMEOUTS=%u%s\r\n",
-               ev.addr, ev.hits, ev.refused, ev.timeouts, ev.absent ? " ABSENT" : "");
-      out += line;
+      char head[128];
+      snprintf(head, sizeof(head),
+               "{\"ev\":\"device_done\",%s,\"addr\":\"%02X\",\"hits\":%u,\"refused\":%u,\"timeouts\":%u,\"absent\":%s,",
+               ts.c_str(), ev.addr, ev.hits, ev.refused, ev.timeouts, ev.absent ? "true" : "false");
+      std::string out = std::string(head) + "\"refused_tables\":" + diag_table_array_(diag_scan_refused_) +
+                        ",\"timeout_tables\":" + diag_table_array_(diag_scan_timeouts_) + "}\r\n";
       write_str(out.c_str());
       flush();
       return;
     }
     case E::SCAN_DONE:
       diag_scan_streaming_ = false;
-      snprintf(line, sizeof(line), "SCAN DONE DEVICES=%u%s\r\n", ev.devices,
-               ev.aborted ? " ABORTED" : "");
+      snprintf(line, sizeof(line), "{\"ev\":\"scan_done\",%s,\"devices\":%u%s}\r\n", ts.c_str(), ev.devices,
+               ev.aborted ? ",\"aborted\":true" : "");
       break;
   }
   write_str(line);
@@ -1016,9 +1043,11 @@ void SamAsciiComponent::diag_drain_() {
   if (diag_write_pending_ && parent_->diag_write_ready()) {
     auto r = parent_->diag_write_result();
     diag_write_pending_ = false;
-    char line[64];
-    snprintf(line, sizeof(line), "REG %04X: %s (%u ATTEMPTS)\r\n", diag_write_reg_,
-             r.acked ? "ACK" : "NOACK", r.attempts);
+    const std::string ts = diag_ts_json_();
+    char line[128];
+    snprintf(line, sizeof(line),
+             "{\"ev\":\"write\",%s,\"reg\":\"%04X\",\"status\":\"%s\",\"attempts\":%u}\r\n",
+             ts.c_str(), diag_write_reg_, r.acked ? "ack" : "noack", r.attempts);
     write_str(line);
     flush();
     // READBACK: re-read the register so an ACK-and-ignore control shows its
@@ -1034,16 +1063,23 @@ void SamAsciiComponent::diag_drain_() {
   if (diag_read_pending_ && parent_->diag_read_ready()) {
     auto r = parent_->diag_read_result();
     diag_read_pending_ = false;
-    char rh[8];
-    snprintf(rh, sizeof(rh), "%04X", diag_read_reg_);
+    const std::string ts = diag_ts_json_();
     std::string line;
-    if (r.refused)
-      line = "REG " + std::string(rh) + ": REFUSED " + std::to_string(r.code);
-    else if (!r.ok)
-      line = "REG " + std::string(rh) + ": TIMEOUT";
+    char head[96];
+    if (diag_readback_)
+      snprintf(head, sizeof(head), "{\"ev\":\"readback\",%s,\"reg\":\"%04X\",", ts.c_str(), diag_read_reg_);
     else
-      line = "REG " + std::string(rh) + ": " + (diag_readback_ ? "READBACK " : "") +
-             diag_hex_(r.data.data(), r.data.size());
+      snprintf(head, sizeof(head), "{\"ev\":\"reply\",%s,\"reg\":\"%04X\",", ts.c_str(), diag_read_reg_);
+    line = head;
+    if (r.refused) {
+      char tail[32];
+      snprintf(tail, sizeof(tail), "\"status\":\"refused\",\"code\":%u}", r.code);
+      line += tail;
+    } else if (!r.ok) {
+      line += "\"status\":\"timeout\"}";
+    } else {
+      line += "\"status\":\"ok\",\"data\":\"" + diag_hex_(r.data.data(), r.data.size()) + "\"}";
+    }
     line += "\r\n";
     write_str(line.c_str());
     flush();

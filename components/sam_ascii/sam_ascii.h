@@ -42,6 +42,11 @@ class SamAsciiComponent : public Component, public uart::UARTDevice {
   void diag_render_scan_event_(const infinitesp::InfinitESPComponent::DiagScanEvent &ev);
   void handle_workbench_(const std::string &body);
   std::string diag_hex_(const uint8_t *data, size_t len);
+  // JSONL timestamp field: "ts":<epoch_ms> when the hub's time source is
+  // valid, "ms":<boot_ms> otherwise (same fallback semantics as bus_jsonl).
+  std::string diag_ts_json_();
+  // Renders ["1F","2A"] arrays for device_done lines.
+  std::string diag_table_array_(const std::vector<uint8_t> &tables);
   // Parses "REG"-command argument tails. addr defaults to the thermostat
   // when absent; reg accepts both 400A and "40 0A" forms. tokens are the
   // space-split parts after "REG"; consumed says how many were used.
@@ -69,10 +74,12 @@ class SamAsciiComponent : public Component, public uart::UARTDevice {
   static const uint32_t CONNECTION_IDLE_MS = 10000;  // ≥10s silence = new connection
 
   // Diagnostic workbench state: per-device refusal/timeout table lists for
-  // SCAN rendering, and pending-command markers for the async replies.
+  // SCAN device_done arrays, and pending-command markers for the async
+  // replies. Output is JSONL (one JSON object per event line); the vendor
+  // ACK/NAK surface stays text.
   bool diag_scan_streaming_{false};
-  std::string diag_scan_refused_;
-  std::string diag_scan_timeouts_;
+  std::vector<uint8_t> diag_scan_refused_;
+  std::vector<uint8_t> diag_scan_timeouts_;
   bool diag_read_pending_{false};
   uint16_t diag_read_reg_{0};
   bool diag_readback_{false};  // pending REG? is the READBACK half of a REG!

@@ -147,17 +147,33 @@ REG! 400A <hexrow>  # write a full register row (needs raw_writes)
 ```
 
 `SCAN?` probes the self-describing row `0xNN01` of every table (0x00-0xFF)
-per device and prints one line per hit (name, allocation, row count, hex)
-plus per-device lists of refused and timed-out tables. A device that times
-out 8 tables in a row is marked `ABSENT` and skipped. Any input line aborts
-a running scan. The output doubles as an install inventory: attach it to an
-issue instead of hand-collecting REPORT? excerpts. `SCAN? ALL` covers every
+per device. A device that times out 8 tables in a row is marked `absent` and
+is skipped. Any input line aborts a running scan. `SCAN? ALL` covers every
 device the bus has shown (minus InfinitESP's own emulated devices; NIM-class
-devices are
-never probed, matching the passive-monitoring zero-TX rule).
+devices are never probed, matching the passive-monitoring zero-TX rule).
 
-`REG?` issues one read and prints the hex payload; the response names the bus
-address the read was sent from (`AS 93`).
+All three commands emit their data as JSONL: one JSON object per event line,
+with the same conventions as the port-2373 capture stream (hex-string
+addresses and registers, numbers as numbers, `ts` epoch-milliseconds when
+the ESPHome clock is synced, boot-relative `ms` otherwise). The output
+doubles as an install inventory: attach it to an issue instead of
+hand-collecting REPORT? excerpts. NAKs stay vendor-grammar text.
+
+```
+{"ev":"scan_begin","ts":1761834000123,"addr":"20"}
+{"ev":"table","ts":1761834000251,"addr":"20","table":"40","status":"hit","name":"SCHEDULE","alloc":1017,"rows":23,"data":"002053..."}
+{"ev":"table","ts":1761834004717,"addr":"20","table":"05","status":"refused","code":4}
+{"ev":"device_done","ts":1761834062000,"addr":"20","hits":20,"refused":230,"timeouts":5,"absent":false,"refused_tables":["05","08"],"timeout_tables":["07"]}
+{"ev":"scan_done","ts":1761834062001,"devices":3,"aborted":false}
+{"ev":"sent","cmd":"REG?","dst":"20","reg":"400A","from":"93"}
+{"ev":"reply","ts":1761834070000,"reg":"400A","status":"ok","data":"414B00..."}
+{"ev":"queued","cmd":"REG!","dst":"20","reg":"400A","bytes":35,"rowsize_known":true}
+{"ev":"write","ts":1761834080000,"reg":"400A","status":"ack","attempts":1}
+{"ev":"readback","ts":1761834081000,"reg":"400A","data":"414B00..."}
+```
+
+`REG?` issues one read; the `sent` event names the bus address the read was
+sent from (`"from":"93"`).
 Registers in the credential/dealer privacy class (0x4608-0x460C) answer
 `REDACTED`; serial-bearing registers print with serial suffixes masked.
 
