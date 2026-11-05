@@ -34,7 +34,7 @@ class SamAsciiComponent : public Component, public uart::UARTDevice {
   void process_line_(const std::string &line);
   void respond_(const std::string &prefix, const std::string &value);
   void respond_nak_(const std::string &prefix, const std::string &reason = "");
-  std::string format_temp_(uint8_t temp_f);
+  std::string format_temp_(int16_t temp_f);
   std::string format_time_(uint16_t minutes);
   // Diagnostic workbench (SCAN? / REG? / REG!): drain engine events each
   // loop and render them as response lines.

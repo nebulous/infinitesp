@@ -112,7 +112,9 @@ void SamAsciiComponent::loop() {
 
 // Format a temperature value (stored in bus units, °F or °C) with unit suffix.
 // Uses parent's detected/configured unit setting, not the SAM 3B06 register.
-std::string SamAsciiComponent::format_temp_(uint8_t temp_bus) {
+// int16_t: the outdoor byte is signed (wire-proven, issue #62) and renders
+// negative below 0; zone/setpoint callers pass positive values unchanged.
+std::string SamAsciiComponent::format_temp_(int16_t temp_bus) {
   using namespace infinitesp;
   char buf[16];
   if (parent_->bus_uses_celsius()) {
@@ -528,7 +530,7 @@ void SamAsciiComponent::process_line_(const std::string &line) {
       respond_nak_(prefix, "");
       return;
     }
-    respond_(prefix, format_temp_((*state)[REG3B02_OUTDOOR_TEMP]));
+    respond_(prefix, format_temp_((int8_t) (*state)[REG3B02_OUTDOOR_TEMP]));
 
   } else if (body == "DAY") {
     if (!parent_->has_real_state()) {

@@ -1959,10 +1959,13 @@ float InfinitESPComponent::tstat_zone_temp_c_(uint8_t zone) const {
     return NAN;
   size_t off = 1 + (size_t) (zone - 1) * 5;  // [0]=0xA5 flag byte, then 8 x 5 B entries
   uint16_t flags = ((uint16_t) (*data)[off] << 8) | (*data)[off + 1];
-  uint16_t raw = ((uint16_t) (*data)[off + 2] << 8) | (*data)[off + 3];
-  if (flags == 0x0000 || raw == 0x0000)
+  uint16_t raw_u = ((uint16_t) (*data)[off + 2] << 8) | (*data)[off + 3];
+  if (flags == 0x0000 || raw_u == 0x0000)
     return NAN;  // zone not installed / unpopulated entry
-  float f = (float) raw / 16.0f;
+  // Signed /16 F word: the plausibility band below now admits legitimate
+  // sub-0 F readings instead of failing them as unsigned garbage (which the
+  // band turned into NAN by accident; issue #62 audit).
+  float f = (float) (int16_t) raw_u / 16.0f;
   if (f < ZC_THERMISTOR_MIN_F || f > ZC_THERMISTOR_MAX_F)
     return NAN;  // outside the -40..250 °F plausibility band
   return (f - 32.0f) * (5.0f / 9.0f);

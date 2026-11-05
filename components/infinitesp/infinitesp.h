@@ -1256,8 +1256,10 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
         continue;
       if (seen++ < occurrence)
         continue;
-      uint16_t raw = (data[off + 2] << 8) | data[off + 3];
-      return (float) raw;
+      uint16_t raw_u = (data[off + 2] << 8) | data[off + 3];
+      // Signed: temperatures and deltas (SSH superheat) go negative; a
+      // negative word read unsigned decodes to ~4000 F (issue #62 audit).
+      return (float) (int16_t) raw_u;
     }
     return NAN;
   }
@@ -1283,10 +1285,13 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
     size_t off = (size_t) slot * 2;
     if (off + 1 >= data.size())
       return NAN;
-    uint16_t raw = ((uint16_t) data[off] << 8) | data[off + 1];
-    if (raw == 0x03FF)
-      return NAN;  // unpopulated sensor slot
-    return (float) raw / 16.0f;
+    uint16_t raw_u = ((uint16_t) data[off] << 8) | data[off + 1];
+    if (raw_u == 0x03FF)
+      return NAN;  // unpopulated sensor slot (positive sentinel; stays valid)
+    // Signed: outdoor ambient goes below 0 F in winter and a negative word
+    // read unsigned decodes to ~4000 F (issue #62 audit; the tstat's own
+    // whole-degree outdoor byte is wire-proven signed, #62).
+    return (float) (int16_t) raw_u / 16.0f;
   }
   // ODU register 3E02 (REG_ODU_3E_STAGE), 2-stage/two-capacity family: stage
   // byte, fed by the ODU's read replies ONLY (01=off, 02, 04). The thermostat

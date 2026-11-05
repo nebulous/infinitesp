@@ -99,7 +99,7 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
           outdoor_source_odu_ = false;
           ESP_LOGI("InfinitESP", "Outdoor Temperature: ODU source stale/absent, falling back to 3B02");
         }
-        value = parent_->bus_temp_to_celsius((float) data->at(REG3B02_OUTDOOR_TEMP));
+        value = parent_->bus_temp_to_celsius((float) (int8_t) data->at(REG3B02_OUTDOOR_TEMP));
       }
     } else if (sensor_type_ == "temperature") {
       uint8_t idx = zone_ - 1;
