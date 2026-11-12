@@ -120,6 +120,10 @@ static const uint16_t REG_TSTAT_ZONETEMPS = 0x3D02;
 // rotation at 31 s/slot). Beyond it the preset detector falls back to the
 // setpoint-match heuristic and the number keeps its last value.
 static const uint32_t VACATION_SERVED_STALE_MS = 15UL * 60UL * 1000UL;
+// Standing 0307 writes arrive ~every 10 s in every observed state (idle
+// included — zeros). Five minutes covers any realistic gap without holding
+// a stale call forever.
+static const uint32_t IDU_HUMID_STALE_MS = 5UL * 60UL * 1000UL;
 // Outdoor Temperature repoint freshness window (issue #53): ODU temp tables
 // arrive at least every few seconds on tstat-polled installs and every ODU
 // slow-poll cycle (~31 s per register) in SAM mode, so 5 min only trips when
@@ -422,6 +426,7 @@ static const uint8_t REG3B06_SIZE = 52;
 static const uint16_t REG_IDU_STATUS = 0x0306;     // Blower RPM, operating info (10 bytes)
 static const uint16_t REG_IDU_CONFIG = 0x0316;      // Heat stage [0], airflow CFM [4..5], static pressure [7..8] (14 bytes)
 static const uint16_t REG_IDU_AIRFLOW_CMD = 0x0305; // tstat->IDU blower CFM command, BE16 [4..5], write-only
+static const uint16_t REG_IDU_HUMID = 0x0307;      // tstat->IDU humidifier call, [0] = 01 calling (write-only on our family; served by some)
 static const uint16_t REG_IDU_CYCLES = 0x0310;     // Cycle counters (4-byte key-value entries)
 static const uint16_t REG_IDU_RUNTIME = 0x0311;    // Runtime hours (4-byte key-value entries)
 
@@ -1033,6 +1038,16 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   uint16_t get_vacation_days() const { return (vacation_hours_ + 23) / 24; }
   uint16_t get_vacation_hours() const { return vacation_hours_; }
   bool is_vacation_active() const { return vacation_active_; }
+  // Commanded humidifier call, tstat->IDU 0307 write byte 0 (~10 s standing
+  // cadence; live-verified both call states 2026-11-09..12). Two sources,
+  // freshest wins: the captured write (dedicated members below — NEVER the
+  // register store: on families whose IDU serves 0307 replies the reply
+  // capture owns the store key) and, on those serving families, the stored
+  // reply itself. write_fresh()/reply candidate handled in the .cpp getter.
+  bool idu_humidifier_call(bool &fresh) const;
+  bool idu_humid_write_fresh_() const {
+    return idu_humid_call_ms_ != 0 && (millis() - idu_humid_call_ms_) < IDU_HUMID_STALE_MS;
+  }
   // Served 3B04 is fresh for ~4 missed rotations; beyond that (or never polled:
   // passive mode) callers must not trust is_vacation_active().
   bool vacation_state_fresh() const {
@@ -1100,6 +1115,12 @@ class InfinitESPComponent : public Component, public uart::UARTDevice {
   // are not consumed as entities; 4012 owns the vacation temp sensors).
   uint16_t vacation_hours_{0};       // duration, hours (0 = inactive)
   bool vacation_active_{false};      // served 3B04 data[3]
+  // Commanded humidifier call from the tstat->IDU 0307 write (dedicated
+  // members — the register store deliberately skips 0307 writes so it
+  // cannot fight the reply capture on serving families; see the 0305
+  // branch comment in infinitesp.cpp).
+  bool idu_humid_call_{false};       // last write byte 0 != 0
+  uint32_t idu_humid_call_ms_{0};    // millis of that write (0 = never)
   uint32_t vacation_served_ms_{0};   // millis of last served 3B04 reply (0 = never)
   uint8_t vacation_min_temp_{60};    // °F or °C per bus unit
   uint8_t vacation_max_temp_{85};

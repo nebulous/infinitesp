@@ -12,6 +12,9 @@ class InfinitESPBinarySensor : public binary_sensor::BinarySensor, public Infini
 
  private:
   std::string sensor_type_;
+  // idu_humidifier: dedupe for the transition log line + stale-WARN once.
+  bool last_published_call_{false};
+  bool warned_stale_{false};
 };
 
 } // namespace infinitesp

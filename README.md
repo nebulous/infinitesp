@@ -15,7 +15,7 @@ InfinitESP speaks the Carrier ABCD bus protocol and registers as a SAM (address 
 | **Climate** | Per-zone thermostat with heat/cool/auto/off modes, dual heat+cool setpoints, fan control, and preset support (per schedule, home, away, sleep, wake, hold timer, hold indefinitely) |
 | **Covers** | Per-zone damper position (0–100%) from the zone controller (either an emulated or a real physical zone controller) |
 | **Sensors** | Zone temperature, zone humidity, outdoor air temp, blower RPM, airflow CFM, compressor RPM, ODU demand/stage/modulation, expansion valve position, superheat/subcooling targets & actuals, ODU temperatures (outdoor/coil/suction/discharge) plus suction superheat, vacation min/max temps |
-| **Binary Sensors** | Bus online/offline status, compressor running, electric heat active, per-zone occupancy (active_fault deprecated) |
+| **Binary Sensors** | Bus online/offline status, compressor running, electric heat active, humidifier call (commanded), per-zone occupancy (active_fault deprecated) |
 | **Selects** | System mode (heat/cool/auto/off; emergency heat/heat pump behind an experimental flag), per-zone fan speed (auto/low/med/high) |
 | **Text Sensors** | Zone names, hold state, thermostat WiFi SSID/hostname/MAC, proxy server, dealer info, comfort profile dump |
 

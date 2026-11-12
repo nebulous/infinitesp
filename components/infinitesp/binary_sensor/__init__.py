@@ -32,6 +32,10 @@ InfinitESPBinarySensor = infinitesp_ns.class_("InfinitESPBinarySensor", binary_s
 # value = {"bus_class": <device-class nibble>, "device_class": optional HA default}
 BINARY_SENSOR_TYPES = {
     "bus_status": {"bus_class": 0},          # not register-based
+    # Commanded humidifier call, tstat->IDU 0307[0] (write capture; IDU-scoped).
+    # Publishes the COMMAND, not the relay state: on families where the IDU
+    # never serves 0307 (58CVA class) no actual-state signal exists on the bus.
+    "idu_humidifier": {"bus_class": 4},
     "compressor_running": {"bus_class": 5},  # ODU register
     # Per-zone: SAM 3B02 offset-21 zones_unoccupied flag (occupied = bit clear).
     # NOTE this is the thermostat's occupied/away schedule state, not motion.

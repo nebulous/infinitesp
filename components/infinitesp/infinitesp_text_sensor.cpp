@@ -243,8 +243,12 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
 
     const char *names[] = {"home", "away", "sleep", "wake", "manual"};
     const char *fan_names[] = {"off", "low", "med", "high"};
-    // Show temperatures in both °C and °F for universal readability
-    // (HA can't auto-convert text sensor strings)
+    // Temperatures render °F-only to fit HA's 255-char state cap once the
+    // humidity fields joined (5 activities x dual-unit temps + humidity was
+    // ~308 chars; single-unit lands ~225). Humidity: comfort byte[3] =
+    // (rhtg << 4) | rclg, byte[4] bit 7 = humidifier enable, rhtg/rclg are
+    // %/5 (cross-validated against Infinitude + wall edits, 2026-11-09,
+    // issue #63 session; PROTOCOL table 40).
     std::string result;
     for (uint8_t i = 0; i < COMFORT_ACTIVITY_COUNT; i++) {
       uint8_t base = i * COMFORT_ENTRY_SIZE;
@@ -252,13 +256,17 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
       float cl_c = parent_->comfort_byte_to_celsius((*data)[base + 1]);
       float ht_f = ht_c * 9.0f / 5.0f + 32.0f;
       float cl_f = cl_c * 9.0f / 5.0f + 32.0f;
+      uint8_t rhtg = (*data)[base + 3] >> 4;
+      uint8_t rclg = (*data)[base + 3] & 0x0F;
+      bool hum_en = (*data)[base + 4] & 0x80;
       if (i > 0)
         result += "; ";
       char buf[80];
-      snprintf(buf, sizeof(buf), "%s: ht=%.0f\xc2\xb0" "F/%.1f\xc2\xb0" "C cl=%.0f\xc2\xb0" "F/%.1f\xc2\xb0" "C fan=%s",
-               names[i],
-               ht_f, ht_c, cl_f, cl_c,
-               (*data)[base + 2] < 4 ? fan_names[(*data)[base + 2]] : "?");
+      snprintf(buf, sizeof(buf), "%s: ht=%.0fF cl=%.0fF fan=%s hum=%u%%/%u%% %s",
+               names[i], ht_f, cl_f,
+               (*data)[base + 2] < 4 ? fan_names[(*data)[base + 2]] : "?",
+               (unsigned) rhtg * 5, (unsigned) rclg * 5,
+               hum_en ? "on" : "off");
       result += buf;
     }
     publish_state(result);

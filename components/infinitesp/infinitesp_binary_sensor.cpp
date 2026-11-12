@@ -39,6 +39,28 @@ void InfinitESPBinarySensor::on_register_update(uint8_t device_addr, uint16_t re
     }
   }
 
+  // Commanded humidifier call: tstat->IDU 0307 byte 0 (issue #63; live both
+  // call states 2026-11-09..12). The notification arrives from EITHER the
+  // write-capture branch (dedicated members, families that never serve 0307
+  // reads) or the passive reply capture (families whose IDU serves 0307 —
+  // Heil/ICP class); the getter arbitrates by recency. Publishes the COMMAND:
+  // our 58CVA class reports no actual relay state anywhere on the bus.
+  if (sensor_type_ == "idu_humidifier" && register_key == REG_IDU_HUMID) {
+    bool fresh = false;
+    bool call = parent_->idu_humidifier_call(fresh);
+    if (fresh) {
+      if (call != last_published_call_) {
+        ESP_LOGI("InfinitESP", "IDU humidifier call: %s", call ? "ON" : "OFF");
+        last_published_call_ = call;
+      }
+      publish_state(call);
+    } else if (!warned_stale_) {
+      warned_stale_ = true;
+      ESP_LOGW("InfinitESP", "IDU humidifier: no fresh 0307 source (write or reply) in %u s",
+               (unsigned) (IDU_HUMID_STALE_MS / 1000));
+    }
+  }
+
   // active_fault is deprecated (see binary_sensor/__init__.py): no fault-active
   // state exists on the bus. The type stays config-valid but publishes nothing.
 }

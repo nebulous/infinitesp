@@ -259,6 +259,7 @@ corrupt them.
 | `bus_status` | - | core | |
 | `electric_heat` | - | core | IDU. |
 | `compressor_running` | - | core | ODU. |
+| `idu_humidifier` | - | conditional | Commanded humidifier call from the tstat-to-IDU 0307 write (byte 0). Publishes the COMMAND, not the relay state (on furnace families that never serve 0307, no actual-state signal exists on the bus). Enable when a humidifier is installed. The call engages only when measured RH is 2-4 points below target (thermostat deadband). |
 | `occupancy` | yes | per-zone | Thermostat occupied/away schedule state, not motion. |
 | `active_fault` | - | manual | Deprecated, publishes nothing. No fault liveness exists on the bus. |
 

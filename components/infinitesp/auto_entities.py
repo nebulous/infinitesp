@@ -115,6 +115,7 @@ SYSTEM_DIAGNOSTIC = [
 # two-stage family does not serve them). Spawned disabled_by_default so they
 # do not clutter HA on installs whose equipment lacks them.
 SYSTEM_CONDITIONAL = [
+    ("binary_sensor", "idu_humidifier", "IDU Humidifier"),
     ("sensor", "compressor_rpm", "Compressor RPM"),
     ("sensor", "target_compressor_rpm", "Compressor Target RPM"),
     ("sensor", "odu_requested_cfm", "ODU Requested CFM"),

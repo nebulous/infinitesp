@@ -1004,13 +1004,29 @@ void InfinitESPComponent::handle_passive_frame_() {
 
     // Thermostat->IDU blower CFM command (0305, ~10 s cadence, write-only).
     // Distinguishes fan-only (nonzero) from off (0) while both share mode
-    // nibble 5. 0305 only: other tstat->IDU write rows (0307/031D/0403/0409)
-    // share register keys with reply rows and must not fight the reply capture.
+    // nibble 5. 0305 and 0307 store differently BY DESIGN: 0305 is write-only
+    // on every family observed so it takes the store; 0307's write goes to
+    // dedicated hub members (idu_humid_call_) because on families whose IDU
+    // serves 0307 replies the reply capture owns the store key and the two
+    // capture paths would fight. Other tstat->IDU write rows (031D/0403/0409)
+    // remain uncaptured — same reply-key conflict class, no consumer yet.
     if (is_idu_addr_(current_frame_.dst) && current_frame_.src == ADDR_THERMOSTAT &&
         reg_key == REG_IDU_AIRFLOW_CMD && current_frame_.payload.size() > 3 + 6) {
       std::vector<uint8_t> idu_data(current_frame_.payload.begin() + 3,
                                     current_frame_.payload.end());
       store_register_(current_frame_.dst, reg_key, idu_data);
+      notify_entities_(current_frame_.dst, reg_key);
+    }
+
+    // Thermostat->IDU humidifier call (0307 byte 0, ~10 s standing cadence,
+    // live-verified 2026-11-09..12 in both call states; issue #63). Dedicated
+    // members, never the store (see the 0305 comment above). byte 0 = 01
+    // calling, 00 idle; the call is gated by a 2-4 pt RH deadband on the
+    // thermostat side. Works in passive mode: the branch is passive-side.
+    if (is_idu_addr_(current_frame_.dst) && current_frame_.src == ADDR_THERMOSTAT &&
+        reg_key == REG_IDU_HUMID && current_frame_.payload.size() > 3) {
+      idu_humid_call_ = current_frame_.payload[3] != 0;
+      idu_humid_call_ms_ = millis();
       notify_entities_(current_frame_.dst, reg_key);
     }
 
@@ -1994,6 +2010,47 @@ const std::vector<uint8_t> *InfinitESPComponent::get_idu_register(uint16_t key) 
       return &it->second;
   }
   return nullptr;
+}
+
+bool InfinitESPComponent::idu_humidifier_call(bool &fresh) const {
+  // Freshest of two sources. The captured write (dedicated members) exists on
+  // every family — the tstat writes 0307 at a ~10 s standing cadence in all
+  // observed states. The stored reply exists only on families whose IDU
+  // serves 0307 (the Heil/ICP class); the passive reply capture owns the
+  // store key there, so the write members and the reply never collide.
+  bool write_ok = idu_humid_write_fresh_();
+  // Reply candidate: the IDU register under the pin or any observed IDU.
+  uint32_t reply_age = UINT32_MAX;
+  bool reply_call = false;
+  for (const auto &dev : device_registers_) {
+    if (!is_idu_addr_(dev.first))
+      continue;
+    auto it = dev.second.find(REG_IDU_HUMID);
+    if (it != dev.second.end() && !it->second.empty() &&
+        register_fresh_(dev.first, REG_IDU_HUMID, IDU_HUMID_STALE_MS)) {
+      reply_call = it->second[0] != 0;
+      auto last_it = register_last_ms_.find(dev.first);
+      if (last_it != register_last_ms_.end()) {
+        auto ts_it = last_it->second.find(REG_IDU_HUMID);
+        if (ts_it != last_it->second.end())
+          reply_age = millis() - ts_it->second;
+      }
+      break;
+    }
+  }
+  bool write_ok_now = write_ok;
+  uint32_t write_age = idu_humid_call_ms_ != 0 ? millis() - idu_humid_call_ms_ : UINT32_MAX;
+  fresh = write_ok_now || reply_age != UINT32_MAX;
+  if (!fresh)
+    return idu_humid_call_;  // stale: caller keeps the last published state
+  // Freshest source wins; write beats reply on a tie (the write is the
+  // command, the reply is its echo — on disagreement the command is newer
+  // bus intent).
+  if (!write_ok_now)
+    return reply_call;
+  if (reply_age == UINT32_MAX || write_age <= reply_age)
+    return idu_humid_call_;
+  return reply_call;
 }
 
 const std::vector<uint8_t> *InfinitESPComponent::get_odu_register(uint16_t key) const {
