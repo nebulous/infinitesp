@@ -263,6 +263,13 @@ async def _spawn(domain, stype, zone, cfg):
 
         if id_obj.type.inherits_from(_cg.Component):
             CORE.component_ids.add(id_obj.id)
+    # Same for the anonymous mqtt_id ESPHome adds to every entity when mqtt:
+    # is configured: give it a name and register it, or register_mqtt_component
+    # fails ("Component ID  was not declared to inherit from Component").
+    mqtt_id = cfg.get("mqtt_id")
+    if mqtt_id is not None and not mqtt_id.id:
+        mqtt_id.id = f"{id_obj.id}_mqtt"
+        CORE.component_ids.add(mqtt_id.id)
     await mod.to_code(cfg)
 
 
