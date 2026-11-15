@@ -258,11 +258,13 @@ async def _spawn(domain, stype, zone, cfg):
     # after that pass, so register them here. Generic: keyed on the declared
     # class actually inheriting Component.
     id_obj = cfg.get("id")
+    added = 0
     if hasattr(id_obj, "type") and getattr(id_obj.type, "inherits_from", None):
         from esphome import codegen as _cg
 
         if id_obj.type.inherits_from(_cg.Component):
             CORE.component_ids.add(id_obj.id)
+            added += 1
     # Same for the anonymous mqtt_id ESPHome adds to every entity when mqtt:
     # is configured: give it a name and register it, or register_mqtt_component
     # fails ("Component ID  was not declared to inherit from Component").
@@ -270,7 +272,27 @@ async def _spawn(domain, stype, zone, cfg):
     if mqtt_id is not None and not mqtt_id.id:
         mqtt_id.id = f"{id_obj.id}_mqtt"
         CORE.component_ids.add(mqtt_id.id)
+        added += 1
+    _grow_component_count(added)
     await mod.to_code(cfg)
+
+
+def _grow_component_count(added):
+    """Add spawned components to ESPHOME_COMPONENT_COUNT.
+
+    Core emits the define before this hub's to_code runs, and
+    App::components_ is a StaticVector of that size: components registered
+    past it are silently dropped (never set up or looped).
+    """
+    if not added:
+        return
+    from esphome.core import Define
+
+    old = next((d for d in CORE.defines if d.name == "ESPHOME_COMPONENT_COUNT"), None)
+    if old is None:
+        return
+    CORE.defines.discard(old)
+    CORE.add_define(Define("ESPHOME_COMPONENT_COUNT", int(getattr(old.value, "i", old.value)) + added))
 
 
 def zone_prefix(climate_name, zone):
