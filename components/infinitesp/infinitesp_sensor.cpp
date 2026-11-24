@@ -144,7 +144,7 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
             (*faults)[i * FAULT_ENTRY_SIZE + FAULT_SOURCE] == 0)
           continue;  // empty slot
         if (!fault_entry_time_valid(*faults, i))
-          continue;  // garbage time fields (non-tstat source packing)
+          continue;  // still-invalid time fields (after the ODU 0x40 hour mask)
         int32_t age = fault_entry_age_minutes(*faults, i, now_bus_min);
         if (age < 0)
           continue;
@@ -159,6 +159,10 @@ void InfinitESPSensor::on_register_update(uint8_t device_addr, uint16_t register
       if (best_age >= 0) {
         // Publish only when the newest entry changes: the value depends on the
         // 3B02 clock sample, which drifts vs wall time between rotations.
+        // The signature hashes RAW register bytes, deliberately not the
+        // fault_entry_hour() mask: it is an entry-identity hash, so a raw-vs-
+        // masked divergence can only republish an identical value, never a
+        // wrong one. Do not "fix" it to the masked hour.
         uint8_t bb = best_i * FAULT_ENTRY_SIZE;
         uint32_t sig = (uint32_t) best_code |
                        ((uint32_t) (*faults)[bb + FAULT_HOUR] << 8) |

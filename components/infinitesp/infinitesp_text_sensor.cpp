@@ -282,7 +282,8 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
   // across installs. No fault liveness exists on the bus. Dates are rendered
   // RELATIVE (trailer - entry days) because the day counter is per-install
   // (Infinitude's fixed 2013-01-01 epoch is disproven). Non-thermostat sources
-  // may pack garbage into the time fields.
+  // may pack garbage into the time fields, except the ODU 0x40 hour flag
+  // (issue #66): fault_entry_hour() masks it so ODU rows keep their time.
   if (sensor_type_ == "fault_history") {
     if (register_key != REG_TSTAT_FAULTS)
       return;
@@ -353,7 +354,7 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
           snprintf(src_prefix, sizeof(src_prefix), " %s", src_name);
         snprintf(buf, sizeof(buf), "%u%s%s %s %02d:%02d",
                  code, occ_suffix, src_prefix, day,
-                 (*data)[base + FAULT_HOUR], (*data)[base + FAULT_MINUTE]);
+                 fault_entry_hour(*data, i), (*data)[base + FAULT_MINUTE]);
       } else {
         // Invalid/garbage time fields (non-thermostat source packing): keep
         // the code visible without rendering a wrong date.

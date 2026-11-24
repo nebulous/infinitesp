@@ -160,9 +160,13 @@ static inline uint16_t comfort_reg_for_zone(uint8_t zone) {
 // acknowledgment, and unusable as a new-fault detector (it changes faster than
 // one slow-poll rotation). Semantics not characterized across installs — render
 // nothing based on it. No fault
-// liveness exists anywhere on the bus. Non-thermostat sources may pack fields
-// differently (observed hours 47/79) — entries with hour > 23, minute > 59, or
-// days > trailer are invalid for age math.
+// liveness exists anywhere on the bus. Outdoor-sourced rows carry the hour OR'd
+// with 0x40 (issue #66, edymax: every 0x56-sourced row in his captures; our
+// earlier "observed hour 79" note is 0x40|15): fault_entry_hour() masks those
+// (and any row with bit 6 set) to the 5-bit hour before validation. Entries
+// still failing hour > 23, minute > 59, or days > trailer are invalid for age
+// math (other non-thermostat packing; a 0x2F hour with no 0x40 bit stays
+// rejected unless its source is ODU-class).
 static const uint8_t FAULT_ENTRY_COUNT = 10;
 static const uint8_t FAULT_ENTRY_SIZE = 7;
 static const uint8_t FAULT_REG_SIZE = 72;  // 10*7 + 2-byte day-counter trailer
@@ -178,13 +182,31 @@ enum FaultEntry : uint8_t {
   FAULT_STATUS = 6,
 };
 
-// True if the entry's time/days fields are plausible (thermostat-sourced entries
-// are; some non-thermostat sources pack other data into these bytes).
+// Decode the entry's hour byte. Outdoor-sourced rows carry the hour OR'd with
+// 0x40 (issue #66, edymax: every 0x56-sourced row in his captures; our earlier
+// "observed hour 79" note is 0x40|15), so mask those to the 5-bit hour, and any
+// row with bit 6 set. Generalized from his src == 0x56 to the ODU class nibble
+// because ODU instance addresses vary per install (0x56 his rig, 0x52 ours,
+// 0x53 lurgh's). Identity for every previously-valid row (hour <= 23 has bits
+// 5/6 clear); callers still validate hour <= 23 afterward, so unflagged
+// garbage that masks into range stays rejected only through the ODU/bit-6
+// branches above.
+static inline uint8_t fault_entry_hour(const std::vector<uint8_t> &data, uint8_t i) {
+  uint8_t base = i * FAULT_ENTRY_SIZE;
+  uint8_t raw = data[base + FAULT_HOUR];
+  if ((data[base + FAULT_SOURCE] >> 4) == CLASS_OUTDOOR_UNIT || (raw & 0x40))
+    return raw & 0x1F;
+  return raw;
+}
+
+// True if the entry's time/days fields are plausible after the ODU 0x40
+// hour-flag mask (thermostat-sourced entries are; some non-thermostat sources
+// still pack other data into these bytes).
 static inline bool fault_entry_time_valid(const std::vector<uint8_t> &data, uint8_t i) {
   uint8_t base = i * FAULT_ENTRY_SIZE;
   uint16_t days = ((uint16_t) data[base + FAULT_DAYS_HI] << 8) | data[base + FAULT_DAYS_LO];
   uint16_t trailer = ((uint16_t) data[70] << 8) | data[71];
-  return data[base + FAULT_HOUR] <= 23 && data[base + FAULT_MINUTE] <= 59 && days <= trailer;
+  return fault_entry_hour(data, i) <= 23 && data[base + FAULT_MINUTE] <= 59 && days <= trailer;
 }
 
 // Entry age in minutes, from the entry's own fields plus the register's day
@@ -196,7 +218,7 @@ static inline int32_t fault_entry_age_minutes(const std::vector<uint8_t> &data, 
   uint8_t base = i * FAULT_ENTRY_SIZE;
   uint16_t days = ((uint16_t) data[base + FAULT_DAYS_HI] << 8) | data[base + FAULT_DAYS_LO];
   uint16_t trailer = ((uint16_t) data[70] << 8) | data[71];
-  uint16_t entry_min = data[base + FAULT_HOUR] * 60 + data[base + FAULT_MINUTE];
+  uint16_t entry_min = fault_entry_hour(data, i) * 60 + data[base + FAULT_MINUTE];
   return (int32_t) (trailer - days) * 1440 + (int32_t) now_bus_min - (int32_t) entry_min;
 }
 static const uint16_t REG_TSTAT_CLOUD = 0x4609;         // Cloud host, proxy server IP
