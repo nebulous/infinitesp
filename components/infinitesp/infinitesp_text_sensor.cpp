@@ -361,7 +361,7 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
         snprintf(buf, sizeof(buf), "%u%s src 0x%02X ?",
                  code, occ_suffix, source);
       }
-      size_t need = strlen(buf) + (result.empty() ? 0 : 2) + (shown + 1 < 10 ? 8 : 0);
+      size_t need = strlen(buf) + (result.empty() ? 0 : 2);
       if (result.size() + need > 250) {
         remaining++;
         continue;
@@ -372,6 +372,19 @@ void InfinitESPTextSensor::on_register_update(uint8_t device_addr, uint16_t regi
       shown++;
     }
     if (remaining > 0) {
+      // The tail costs at most "; +10 more" (10 chars). Reserve it only now,
+      // when a tail will actually print: reserving it per-row (the old
+      // `shown + 1 < 10 ? 8 : 0` term) dropped rows that fit whenever nothing
+      // ended up skipped (issue #66). If the tail would overflow the budget,
+      // pop rendered rows from the end until it fits.
+      while (shown > 0 && result.size() + 10 > 250) {
+        size_t last = result.rfind("; ");
+        if (last == std::string::npos)
+          break;
+        result.resize(last);
+        shown--;
+        remaining++;
+      }
       result += "; +" + std::to_string(remaining) + " more";
     }
 
